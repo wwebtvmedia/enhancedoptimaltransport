@@ -568,6 +568,9 @@ class EnhancedLabelTrainer:
         self.debug_counter = 0
         self.debug_interval = 50
         
+        # Add reference to global training schedule
+        self.TRAINING_SCHEDULE = TRAINING_SCHEDULE 
+        
         # OU reference process
         self.ou_ref = OUReference(theta=OU_THETA, sigma=OU_SIGMA) if USE_OU_BRIDGE else None
         
@@ -941,6 +944,9 @@ class EnhancedLabelTrainer:
 # ============================================================
 # TRAINING FUNCTION
 # ============================================================
+# ============================================================
+# TRAINING FUNCTION
+# ============================================================
 def train_model(num_epochs=EPOCHS, resume_from_snapshot=None):
     loader = dm.load_data()
     trainer = EnhancedLabelTrainer(loader)
@@ -957,9 +963,11 @@ def train_model(num_epochs=EPOCHS, resume_from_snapshot=None):
                 print("Starting fresh training...")
     logger.info(f"Starting training for {num_epochs} epochs")
     logger.info(f"Training schedule mode: {TRAINING_SCHEDULE['mode']}")
+    
     for epoch in range(trainer.epoch, num_epochs):
         trainer.epoch = epoch
         epoch_losses = trainer.train_epoch()
+        
         if USE_KPI_TRACKING:
             kpi_update = {
                 'latent_std': epoch_losses.get('latent_std', 0),
@@ -977,6 +985,7 @@ def train_model(num_epochs=EPOCHS, resume_from_snapshot=None):
             else:
                 kpi_update['loss'] = epoch_losses.get('drift', 0)
                 kpi_update['drift_loss'] = epoch_losses.get('drift', 0)
+            
             # Compute composite score from epoch losses
             comp_score = composite_score(epoch_losses, trainer.phase)
             kpi_update['composite_score'] = comp_score
@@ -985,24 +994,28 @@ def train_model(num_epochs=EPOCHS, resume_from_snapshot=None):
             # Check for new best composite score
             if comp_score > trainer.best_composite_score:
                 trainer.best_composite_score = comp_score
-                trainer.save_checkpoint(is_best_overall=True)
+                trainer.save_checkpoint(is_best_overall=True)  # <-- This line was causing the error
         
         if trainer.phase == 1:
             current_total_loss = epoch_losses.get('total', float('inf'))
         else:
             current_total_loss = epoch_losses.get('drift', float('inf'))
+            
         if current_total_loss < trainer.best_loss and current_total_loss != float('inf'):
             trainer.best_loss = current_total_loss
             trainer.save_checkpoint(is_best=True)
         elif (epoch + 1) % 5 == 0:
             trainer.save_checkpoint(is_best=False)
+            
         if (epoch + 1) % 10 == 0 and current_total_loss != float('inf'):
             logger.info("Generating samples...")
             trainer.generate_samples()
+            
         if USE_KPI_TRACKING and trainer.phase == 2:
             if trainer.kpi_tracker.should_stop(phase=trainer.phase):
                 logger.info(f"Early stopping triggered at epoch {epoch+1}")
                 break
+                
     logger.info(f"Training complete! Best loss: {trainer.best_loss:.4f}")
     logger.info(f"Best composite score: {trainer.best_composite_score:.4f}")
     if ONNX_AVAILABLE:

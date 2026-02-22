@@ -134,8 +134,15 @@ class SnapshotManager:
 # ============================================================
 # CHECKPOINT SAVE/LOAD FUNCTIONS (operate on trainer)
 # ============================================================
-def save_checkpoint(trainer, is_best=False, is_best_overall=False):
+# CHECKPOINT SAVE/LOAD FUNCTIONS (operate on trainer)
+# ============================================================
+save_checkpoint(trainer, is_best=False, is_best_overall=False):
     """Save training checkpoint."""
+    """Save training checkpoint."""
+    # Import the global TRAINING_SCHEDULE
+    import training
+    global_schedule = training.TRAINING_SCHEDULE
+
     checkpoint = {
         'epoch': trainer.epoch,
         'step': trainer.step,
@@ -149,7 +156,7 @@ def save_checkpoint(trainer, is_best=False, is_best_overall=False):
         'best_loss': trainer.best_loss,
         'best_composite_score': trainer.best_composite_score,
         'kpi_metrics': trainer.kpi_tracker.metrics,
-        'training_schedule': trainer.TRAINING_SCHEDULE
+        'training_schedule': global_schedule.TRAINING_SCHEDULE
     }
     
     latest_path = DIRS["ckpt"] / "latest.pt"
