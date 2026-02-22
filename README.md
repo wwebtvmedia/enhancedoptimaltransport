@@ -1,47 +1,88 @@
-# enhancedoptimaltransport
 Enhanced Label-Conditioned Schrödinger Bridge with Ornstein-Uhlenbeck Reference
 This project implements a generative model based on the Schrödinger Bridge (SB) problem, enabling high-quality image generation with explicit label conditioning. The core idea is to learn a stochastic process that transports a simple prior (standard Gaussian) to a complex data distribution over a fixed time interval. The model combines a conditional Variational Autoencoder (VAE) for latent representation with a drift network that learns the bridge dynamics. An optional Ornstein-Uhlenbeck (OU) reference process provides a theoretically grounded prior for the bridge (mvOU-SBP).
 
 Table of Contents
+Installation and Setup
+
+Prerequisites
+
+Creating a Virtual Environment
+
+Installing Dependencies
+
+Launching the Program
+
 Mathematical Foundations
-
-1. Schrödinger Bridge Problem
-
-2. Latent Space Representation
-
-3. Reference Process: Ornstein-Uhlenbeck
-
-4. Bridge Dynamics and Drift Network
-
-5. Loss Functions
-
-5.1 VAE Loss (Phase 1)
-
-5.2 Drift Loss (Phase 2)
-
-6. Training Schedule
 
 Key Features
 
-Installation
-
 Usage
-
-Main Menu Options
-
-Training
-
-Inference
-
-Snapshot Management
-
-Configuration
 
 Model Architecture
 
 Results and Monitoring
 
 References
+
+Installation and Setup
+Prerequisites
+Python 3.8 or higher
+
+pip (Python package installer)
+
+(Optional) CUDA-capable GPU for faster training (NVIDIA), or Apple Silicon (MPS), or AMD with DirectML
+
+Creating a Virtual Environment
+It is strongly recommended to use a virtual environment to isolate dependencies.
+
+On Windows (PowerShell or Command Prompt):
+
+bash
+python -m venv venv
+venv\Scripts\activate
+On macOS/Linux:
+
+bash
+python3 -m venv venv
+source venv/bin/activate
+After activation, your terminal prompt should show (venv).
+
+Installing Dependencies
+Install the required packages using pip:
+
+bash
+pip install torch torchvision numpy scipy tqdm onnx onnxruntime
+For AMD GPU support on Windows (DirectML):
+Replace the torch installation with:
+
+bash
+pip install torch-directml torchvision numpy scipy tqdm onnx onnxruntime
+For Apple Silicon (MPS):
+The standard PyTorch installation from pip includes MPS support. Ensure you have the latest version.
+
+Verify Installation:
+Run Python and check that PyTorch can see your device:
+
+python
+import torch
+print(torch.__version__)
+print(torch.cuda.is_available())      # For NVIDIA
+print(torch.backends.mps.is_available())  # For Apple Silicon
+Launching the Program
+Once dependencies are installed and the virtual environment is active, simply run:
+
+bash
+python main.py
+You will be presented with an interactive menu. Choose the desired option (e.g., 1 for training, 5 for inference). Follow the prompts to configure epochs, labels, etc.
+
+Example: Quick training test
+
+text
+python main.py
+> Enter choice (1-9): 2
+This will run a 5-epoch test to verify everything works.
+
+All output (checkpoints, logs, samples) will be saved in the enhanced_label_sb/ directory.
 
 Mathematical Foundations
 1. Schrödinger Bridge Problem
@@ -145,34 +186,9 @@ Ornstein-Uhlenbeck Bridge: Optional exact OU bridge sampling for theoretically g
 
 Multi-device Support: Runs on CPU, CUDA (NVIDIA), MPS (Apple Silicon), DirectML (AMD).
 
-Installation
-Clone the repository:
-
-text
-git clone <repo-url>
-cd enhanced_label_sb
-Create a virtual environment (optional but recommended):
-
-text
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-Install dependencies:
-
-text
-pip install torch torchvision numpy scipy tqdm onnx onnxruntime
-For DirectML support (AMD on Windows):
-
-text
-pip install torch-directml
-The code will automatically download CIFAR-10 on first run. You can also place your own images in ./data/images/ (organized by class subfolders).
-
 Usage
-Run the main script:
+After launching main.py, you will see an interactive menu. Options include:
 
-text
-python main.py
-Main Menu Options
 Enhanced training (fresh start): Train the model from scratch with full epochs (default 200). You can specify the number of epochs.
 
 Quick test (5 epochs): Run a short training loop to verify setup.
@@ -191,7 +207,6 @@ Configure training schedule: Set phase switching mode (auto, manual, custom, alt
 
 Toggle OU bridge: Enable/disable the exact OU bridge sampling (mvOU-SBP).
 
-Training
 During training, checkpoints are saved in enhanced_label_sb/checkpoints/:
 
 latest.pt: latest model (overwritten each epoch)
@@ -203,39 +218,6 @@ best_overall_epoch_XXXX.pt: model with highest composite score
 Snapshots are saved in enhanced_label_sb/snapshots/ every SNAPSHOT_INTERVAL (default 20) and kept up to SNAPSHOT_KEEP (default 5).
 
 Logs are written to enhanced_label_sb/logs/ and also printed to console.
-
-Inference
-You can generate images for specific labels and temperature. The model integrates the learned drift forward from t=0 to t=1 using Euler steps, then decodes the final latent.
-
-Snapshot Management
-The snapshot menu allows you to:
-
-List all available snapshots with metadata (epoch, loss, model type).
-
-Inspect a snapshot's contents and statistics.
-
-Compare two snapshots parameter norms.
-
-Load a snapshot for training (choose VAE only, Drift only, or both).
-
-Restart from a VAE snapshot (begin Phase 2 training with fresh drift).
-
-Configuration
-Training schedule can be set to:
-
-auto: switch at specified epoch (default 50)
-
-manual: force Phase 1 or Phase 2
-
-custom: define per-epoch phases
-
-alternate: alternate every N epochs
-
-vae_only: always Phase 1
-
-drift_only: always Phase 2
-
-The OU bridge toggle is available in the main menu.
 
 Model Architecture
 LabelConditionedVAE:
