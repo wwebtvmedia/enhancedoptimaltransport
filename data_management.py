@@ -7,45 +7,31 @@ import torch
 import torchvision.transforms as T
 import torchvision.datasets as datasets
 import torchvision.utils as vutils
-import logging
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from typing import Optional, List, Dict, Union, Tuple
+
+import config
 
 # ============================================================
-# GLOBAL CONSTANTS (will be updated by main after device detection)
+# USE CENTRALIZED CONFIGURATION
 # ============================================================
-IMG_SIZE = 64
-LATENT_CHANNELS = 4
-LATENT_H = IMG_SIZE // 8
-LATENT_W = IMG_SIZE // 8
-BATCH_SIZE = 64
-DEVICE = torch.device('cpu')
-LR = 2e-4
-EPOCHS = 200
-SNAPSHOT_INTERVAL = 20
-SNAPSHOT_KEEP = 5
-NUM_CLASSES = 6000
-LABEL_EMB_DIM = 128
-
-# Directories
-BASE_DIR = Path("enhanced_label_sb")
-DIRS = {
-    "ckpt": BASE_DIR / "checkpoints",
-    "logs": BASE_DIR / "logs",
-    "samples": BASE_DIR / "samples",
-    "snaps": BASE_DIR / "snapshots",
-    "onnx": BASE_DIR / "onnx",
-    "metrics": BASE_DIR / "metrics",
-    "inference": BASE_DIR / "inference",
-    "best": BASE_DIR / "best_models"
-}
-for d in DIRS.values():
-    d.mkdir(parents=True, exist_ok=True)
-
-# Logger (will be set later)
-logger = logging.getLogger("EnhancedTrainer")
+IMG_SIZE = config.IMG_SIZE
+LATENT_CHANNELS = config.LATENT_CHANNELS
+LATENT_H = config.LATENT_H
+LATENT_W = config.LATENT_W
+BATCH_SIZE = config.BATCH_SIZE
+DEVICE = config.DEVICE
+LR = config.LR
+EPOCHS = config.EPOCHS
+SNAPSHOT_INTERVAL = config.SNAPSHOT_INTERVAL
+SNAPSHOT_KEEP = config.SNAPSHOT_KEEP
+NUM_CLASSES = config.NUM_CLASSES
+LABEL_EMB_DIM = config.LABEL_EMB_DIM
+DIRS = config.DIRS
+logger = config.logger
 
 # ============================================================
 # SNAPSHOT MANAGER
@@ -69,11 +55,11 @@ class SnapshotManager:
             eta_min=LR * 0.1
         )
     
-    def step(self):
+    def step(self) -> None:
         """Update snapshot scheduler."""
         self.scheduler.step()
     
-    def save_snapshot(self, epoch, loss):
+    def save_snapshot(self, epoch: int, loss: float) -> Path:
         """Save model snapshot."""
         snapshot_path = self.snapshot_dir / f"{self.name}_snapshot_epoch_{epoch:04d}.pt"
         
@@ -100,9 +86,10 @@ class SnapshotManager:
             if os.path.exists(old_snapshot):
                 os.remove(old_snapshot)
         
+        logger.info(f"Saved {self.name} snapshot at epoch {epoch}")
         return snapshot_path
 
-    def revert(self):
+    def revert(self) -> bool:
         """Emergency revert to last good snapshot."""
         if not self.snapshots:
             logger.error(f"❌ No snapshots available for {self.name} to revert to!")
@@ -116,7 +103,7 @@ class SnapshotManager:
                 self.model.load_state_dict(snapshot['drift_state'])
                 if 'opt_drift_state' in snapshot:
                     self.optimizer.load_state_dict(snapshot['opt_drift_state'])
-            elif self.name == "vae" and 'model_state' in snapshot:
+            elif 'model_state' in snapshot:
                 self.model.load_state_dict(snapshot['model_state'])
                 if 'optimizer_state' in snapshot:
                     self.optimizer.load_state_dict(snapshot['optimizer_state'])
@@ -132,15 +119,10 @@ class SnapshotManager:
             return False
 
 # ============================================================
-# CHECKPOINT SAVE/LOAD FUNCTIONS (operate on trainer)
+# CHECKPOINT SAVE/LOAD FUNCTIONS
 # ============================================================
-def save_checkpoint(trainer, is_best=False, is_best_overall=False):
+def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = False) -> Path:
     """Save training checkpoint."""
-    """Save training checkpoint."""
-    # Import the global TRAINING_SCHEDULE directly
-    from training import TRAINING_SCHEDULE
-    global_schedule = TRAINING_SCHEDULE  # Now this is the dict itself
-
     checkpoint = {
         'epoch': trainer.epoch,
         'step': trainer.step,
@@ -154,11 +136,12 @@ def save_checkpoint(trainer, is_best=False, is_best_overall=False):
         'best_loss': trainer.best_loss,
         'best_composite_score': trainer.best_composite_score,
         'kpi_metrics': trainer.kpi_tracker.metrics,
-        'training_schedule': global_schedule
+        'training_schedule': config.TRAINING_SCHEDULE
     }
     
     latest_path = DIRS["ckpt"] / "latest.pt"
     torch.save(checkpoint, latest_path)
+    logger.info(f"Checkpoint saved to {latest_path}")
     
     if is_best:
         best_path = DIRS["ckpt"] / "best.pt"
@@ -172,7 +155,7 @@ def save_checkpoint(trainer, is_best=False, is_best_overall=False):
     
     return latest_path
 
-def load_checkpoint(trainer, path=None):
+def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
     """Load training checkpoint into trainer."""
     if path is None:
         path = DIRS["ckpt"] / "latest.pt"
@@ -197,7 +180,7 @@ def load_checkpoint(trainer, path=None):
         
         # Handle Phase 2 reference model
         if trainer.phase == 2 and not hasattr(trainer, 'vae_ref'):
-            from training import LabelConditionedVAE  # local import to avoid circular
+            from models import LabelConditionedVAE
             trainer.vae_ref = LabelConditionedVAE().to(DEVICE)
             trainer.vae_ref.load_state_dict(trainer.vae.state_dict())
             trainer.vae_ref.eval()
@@ -206,8 +189,7 @@ def load_checkpoint(trainer, path=None):
             logger.info("Reference anchor created from loaded Phase 2 VAE.")
         
         if 'training_schedule' in checkpoint:
-            import training
-            training.TRAINING_SCHEDULE.update(checkpoint['training_schedule'])
+            config.TRAINING_SCHEDULE.update(checkpoint['training_schedule'])
         
         trainer.best_loss = checkpoint.get('best_loss', float('inf'))
         trainer.best_composite_score = checkpoint.get('best_composite_score', float('-inf'))
@@ -220,7 +202,7 @@ def load_checkpoint(trainer, path=None):
         logger.error(f"Failed to load checkpoint: {e}")
         return False
 
-def load_for_inference(trainer, path=None):
+def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
     """Load only model weights for inference (ignore optimizer states)."""
     if path is None:
         path = DIRS["ckpt"] / "latest.pt"
@@ -250,7 +232,12 @@ def load_for_inference(trainer, path=None):
 # ============================================================
 # PNG GENERATION UTILITIES
 # ============================================================
-def save_image_grid(images, path, nrow=4, normalize=True):
+def save_image_grid(
+    images: torch.Tensor, 
+    path: Path, 
+    nrow: int = 4, 
+    normalize: bool = True
+) -> None:
     """Save a grid of images to PNG.
     
     Args:
@@ -267,7 +254,12 @@ def save_image_grid(images, path, nrow=4, normalize=True):
     grid = vutils.make_grid(images_display, nrow=nrow, padding=2)
     vutils.save_image(grid, path)
 
-def save_individual_images(images, labels, epoch, base_dir=None):
+def save_individual_images(
+    images: torch.Tensor, 
+    labels: List[int], 
+    epoch: int, 
+    base_dir: Optional[Path] = None
+) -> None:
     """Save each image individually with label in filename.
     
     Args:
@@ -282,7 +274,13 @@ def save_individual_images(images, labels, epoch, base_dir=None):
         individual_path = base_dir / f"gen_{idx}_label{labels[idx]}_epoch{epoch+1}.png"
         vutils.save_image(img, individual_path)
 
-def save_raw_tensors(z, images, labels, epoch, base_dir=None):
+def save_raw_tensors(
+    z: torch.Tensor, 
+    images: torch.Tensor, 
+    labels: List[int], 
+    epoch: int, 
+    base_dir: Optional[Path] = None
+) -> Path:
     """Save raw latent and image tensors for debugging."""
     if base_dir is None:
         base_dir = DIRS["samples"]
@@ -313,10 +311,10 @@ class LabeledImageDataset(Dataset):
         self.label_map = {cls: idx for idx, cls in enumerate(self.classes)}
         self.reverse_map = {idx: cls for cls, idx in self.label_map.items()}
     
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.dataset)
     
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Dict:
         item = self.dataset[idx]
         
         if isinstance(item, tuple):
@@ -340,41 +338,41 @@ class LabeledImageDataset(Dataset):
 # ============================================================
 # DEVICE-COMPATIBLE DATALOADER SETTINGS
 # ============================================================
-def get_dataloader_config():
+def get_dataloader_config() -> Dict:
     """Get dataloader configuration optimized for current device."""
-    config = {
+    config_dict = {
         'batch_size': BATCH_SIZE,
         'shuffle': True,
         'drop_last': True,
     }
     
     if DEVICE.type == 'cuda':
-        config.update({
+        config_dict.update({
             'num_workers': 4 if os.cpu_count() > 4 else 2,
             'pin_memory': True,
         })
     elif DEVICE.type == 'mps':
-        config.update({
+        config_dict.update({
             'num_workers': 0,
             'pin_memory': False,
         })
     elif DEVICE.type == 'directml':
-        config.update({
+        config_dict.update({
             'num_workers': 2,
             'pin_memory': True,
         })
-    else:
-        config.update({
+    else:  # CPU
+        config_dict.update({
             'num_workers': 0,
             'pin_memory': False,
         })
     
-    return config
+    return config_dict
 
 # ============================================================
 # DATA LOADING FUNCTION
 # ============================================================
-def load_data():
+def load_data() -> DataLoader:
     """Load dataset with device-optimized settings."""
     transform = T.Compose([
         T.Resize((IMG_SIZE, IMG_SIZE)),
@@ -415,7 +413,4 @@ def load_data():
     
     dataloader_config = get_dataloader_config()
     
-    return DataLoader(
-        combined_ds,
-        **dataloader_config
-    )
+    return DataLoader(combined_ds, **dataloader_config)

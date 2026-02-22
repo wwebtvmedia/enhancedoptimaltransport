@@ -1,30 +1,24 @@
 # ============================================================================
-# MATHEMATICAL FOUNDATIONS OF SCHRÖDINGER BRIDGE WITH LABEL CONDITIONING
-# ============================================================================
-#
-# ... (full comment block as in original, plus OU reference explanation) ...
-#
+# ENHANCED TRAINER FOR SCHRÖDINGER BRIDGE
 # ============================================================================
 
 import os
 import math
 import time
 import json
-import logging
 import warnings
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import torchvision.utils as vutils
-import copy
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 from scipy import stats
+from typing import Optional, List, Dict, Union, Tuple, Any
 
-# Optional Imports
+# Optional imports
 try:
     from tqdm import tqdm
     TQDM_AVAILABLE = True
@@ -38,144 +32,66 @@ try:
 except ImportError:
     ONNX_AVAILABLE = False
 
-# Import data management module
+# Import modules
+import config
 import data_management as dm
+import models
 
 warnings.filterwarnings('ignore')
 
 # ============================================================
-# GLOBAL TRAINING PHASE CONTROL
+# USE CENTRALIZED CONFIGURATION
 # ============================================================
-TRAINING_SCHEDULE = {
-    'mode': 'auto',  # 'auto', 'manual', 'custom'
-    'force_phase': None,  # None, 1 (VAE only), 2 (Drift only)
-    'custom_schedule': {},  # {epoch: phase} for custom schedules
-    'switch_epoch': 50,  # Default switch epoch for auto mode
-    'vae_epochs': list(range(0, 50)),  # Epochs to train VAE
-    'drift_epochs': list(range(50, 200)),  # Epochs to train Drift
-    'alternate_freq': 5,
-}
+IMG_SIZE = config.IMG_SIZE
+LATENT_CHANNELS = config.LATENT_CHANNELS
+LATENT_H = config.LATENT_H
+LATENT_W = config.LATENT_W
+LATENT_DIM = config.LATENT_DIM
 
-def set_training_phase(epoch, mode='auto', force_phase=None, switch_epoch=50):
-    """Global function to set training phase for each epoch."""
-    global TRAINING_SCHEDULE
-    
-    if mode:
-        TRAINING_SCHEDULE['mode'] = mode
-    if force_phase is not None:
-        TRAINING_SCHEDULE['force_phase'] = force_phase
-    if switch_epoch:
-        TRAINING_SCHEDULE['switch_epoch'] = switch_epoch
-    
-    if TRAINING_SCHEDULE['mode'] == 'manual':
-        return TRAINING_SCHEDULE['force_phase']
-    elif TRAINING_SCHEDULE['mode'] == 'custom':
-        return TRAINING_SCHEDULE['custom_schedule'].get(epoch, 1)
-    elif TRAINING_SCHEDULE['mode'] == 'alternate':
-        alternate_freq = TRAINING_SCHEDULE.get('alternate_freq', 5)
-        return 1 if (epoch // alternate_freq) % 2 == 0 else 2
-    else:  # 'auto' mode
-        return 1 if epoch < TRAINING_SCHEDULE['switch_epoch'] else 2
+LR = config.LR
+EPOCHS = config.EPOCHS
+WEIGHT_DECAY = config.WEIGHT_DECAY
+GRAD_CLIP = config.GRAD_CLIP
 
-def configure_training_schedule(
-    mode='auto', 
-    vae_epochs=None, 
-    drift_epochs=None, 
-    switch_epoch=50,
-    alternate_freq=5,
-    custom_schedule=None
-):
-    """Configure the global training schedule."""
-    global TRAINING_SCHEDULE
-    
-    if mode == 'vae_only':
-        TRAINING_SCHEDULE['mode'] = 'manual'
-        TRAINING_SCHEDULE['force_phase'] = 1
-    elif mode == 'drift_only':
-        TRAINING_SCHEDULE['mode'] = 'manual'
-        TRAINING_SCHEDULE['force_phase'] = 2
-    elif mode == 'auto':
-        TRAINING_SCHEDULE['mode'] = 'auto'
-        TRAINING_SCHEDULE['switch_epoch'] = switch_epoch
-        TRAINING_SCHEDULE['vae_epochs'] = list(range(switch_epoch))
-        TRAINING_SCHEDULE['drift_epochs'] = list(range(switch_epoch, 1000))
-    elif mode == 'alternate':
-        TRAINING_SCHEDULE['mode'] = 'alternate'
-        TRAINING_SCHEDULE['alternate_freq'] = alternate_freq
-    elif mode == 'custom':
-        TRAINING_SCHEDULE['mode'] = 'custom'
-        TRAINING_SCHEDULE['custom_schedule'] = custom_schedule or {}
-    elif mode == 'manual':
-        TRAINING_SCHEDULE['mode'] = 'manual'
-    
-    if vae_epochs is not None:
-        TRAINING_SCHEDULE['vae_epochs'] = vae_epochs
-    if drift_epochs is not None:
-        TRAINING_SCHEDULE['drift_epochs'] = drift_epochs
-    
-    logger.info(f"Training schedule configured: mode={TRAINING_SCHEDULE['mode']}")
-    return TRAINING_SCHEDULE
+NUM_CLASSES = config.NUM_CLASSES
+LABEL_EMB_DIM = config.LABEL_EMB_DIM
 
-# ============================================================
-# CONFIGURATION (some constants are imported from dm)
-# ============================================================
-IMG_SIZE = dm.IMG_SIZE
-LATENT_CHANNELS = dm.LATENT_CHANNELS
-LATENT_H = dm.LATENT_H
-LATENT_W = dm.LATENT_W
-LATENT_DIM = LATENT_CHANNELS * LATENT_H * LATENT_W
+# Loss weights
+KL_WEIGHT = config.KL_WEIGHT
+RECON_WEIGHT = config.RECON_WEIGHT
+DRIFT_WEIGHT = config.DRIFT_WEIGHT
+DIVERSITY_WEIGHT = config.DIVERSITY_WEIGHT
+CONSISTENCY_WEIGHT = config.CONSISTENCY_WEIGHT
 
-LR = dm.LR
-EPOCHS = dm.EPOCHS
-PHASE_1_EPOCHS = 50  # Default switch epoch
-WEIGHT_DECAY = 1e-4
-GRAD_CLIP = 1.0
+# Feature toggles
+USE_PERCENTILE = config.USE_PERCENTILE
+USE_SNAPSHOTS = config.USE_SNAPSHOTS
+USE_KPI_TRACKING = config.USE_KPI_TRACKING
+USE_OU_BRIDGE = config.USE_OU_BRIDGE
+USE_AMP = config.USE_AMP
 
-NUM_CLASSES = dm.NUM_CLASSES
-LABEL_EMB_DIM = dm.LABEL_EMB_DIM
+# Inference parameters
+INFERENCE_TEMPERATURE = config.INFERENCE_TEMPERATURE
+DEFAULT_STEPS = config.DEFAULT_STEPS
+DEFAULT_SEED = config.DEFAULT_SEED
 
-USE_PERCENTILE = True
-USE_SNAPSHOTS = True
-USE_KPI_TRACKING = True
-TARGET_SNR = 30.0
-SNAPSHOT_INTERVAL = dm.SNAPSHOT_INTERVAL
-SNAPSHOT_KEEP = dm.SNAPSHOT_KEEP
-KPI_WINDOW_SIZE = 100
-EARLY_STOP_PATIENCE = 15
+# KPI tracking
+KPI_WINDOW_SIZE = config.KPI_WINDOW_SIZE
+EARLY_STOP_PATIENCE = config.EARLY_STOP_PATIENCE
+TARGET_SNR = config.TARGET_SNR
+REVERT_THRESHOLD = config.REVERT_THRESHOLD
 
-KL_WEIGHT = 0.001
-RECON_WEIGHT = 1.0
-DRIFT_WEIGHT = 0.5
-DIVERSITY_WEIGHT = 0.01
+# OU reference
+OU_THETA = config.OU_THETA
+OU_SIGMA = config.OU_SIGMA
 
-INFERENCE_TEMPERATURE = 0.8
-DEFAULT_STEPS = 50
-DEFAULT_SEED = 42  # Added missing constant
-CONSISTENCY_WEIGHT = 0.5
-REVERT_THRESHOLD = 2.5
-
-# Ornstein-Uhlenbeck reference configuration
-USE_OU_BRIDGE = False  # Set to True to use exact OU bridge sampling (mvOU-SBP)
-OU_THETA = 1.0         # Mean reversion rate (controls speed of mean reversion)
-OU_SIGMA = np.sqrt(2)  # Diffusion coefficient (gives stationary variance = 1)
+# Training schedule
+SWITCH_EPOCH = config.SWITCH_EPOCH
+TRAINING_SCHEDULE = config.TRAINING_SCHEDULE
 
 # Paths
-DIRS = dm.DIRS
-
-# ============================================================
-# LOGGER SETUP (use the one from dm or create new)
-# ============================================================
-logger = logging.getLogger("EnhancedTrainer")
-if not logger.handlers:
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
-    ch = logging.StreamHandler()
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
-    log_path = DIRS["logs"] / f"train_{int(time.time())}.log"
-    fh = logging.FileHandler(log_path, mode='w')
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
+DIRS = config.DIRS
+logger = config.logger
 
 # ============================================================
 # ORNSTEIN-UHLENBECK REFERENCE PROCESS
@@ -203,14 +119,8 @@ class OUReference:
         Sample from the exact OU bridge between z0 at t=0 and z1 at t=1.
         Returns mean and variance of the bridge at time t (0 <= t <= 1).
         
-        The bridge satisfies:
-            z_t | z0, z1 ~ N(μ(t), σ²(t))
-        where
-            μ(t) = (sinh(θ(1-t)) / sinh(θ)) * z0 + (sinh(θ t) / sinh(θ)) * z1
-            σ²(t) = (σ²/(2θ)) * (sinh(θ t) * sinh(θ(1-t)) / sinh(θ))
         Using exponential forms for numerical stability.
         """
-        # Use exponential forms to avoid numerical issues
         exp_neg_theta_t = torch.exp(-self.theta * t)
         exp_neg_theta_1_t = torch.exp(-self.theta * (1 - t))
         exp_neg_theta = torch.exp(-self.theta)
@@ -224,96 +134,108 @@ class OUReference:
         # Variance
         var = (self.sigma**2 / (2 * self.theta)) * \
               ((1 - exp_neg_theta_t**2) * (1 - exp_neg_theta_1_t**2)) / (1 - exp_neg_theta**2)
-        var = var.clamp(min=0)  # Numerical safety
+        var = var.clamp(min=0)
         
         return mean, var
 
 # ============================================================
 # UTILITIES
 # ============================================================
-def calc_snr(real, recon):
+def calc_snr(real: torch.Tensor, recon: torch.Tensor) -> float:
     """Calculate Signal-to-Noise Ratio."""
     mse = F.mse_loss(recon, real)
     if mse == 0: 
         return 100.0
     return 10 * torch.log10(1.0 / (mse + 1e-8)).item()
 
-def kl_divergence_spatial(mu, logvar):
+def kl_divergence_spatial(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
     """KL divergence for spatial latent variables."""
     kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
     return torch.mean(torch.sum(kl, dim=[1, 2, 3]))
 
-def channel_diversity_loss(mu):
-    """Encourage all latent channels to be used."""
-    channel_stds = mu.std(dim=[0, 2, 3])  # [channels]
-    min_std = 0.05
-    diversity_loss = torch.mean(F.relu(min_std - channel_stds))
-    balance_loss = channel_stds.std()
-    return diversity_loss + 0.1 * balance_loss
-
-def composite_score(loss_dict, phase):
+def composite_score(loss_dict: Dict, phase: int) -> float:
     """Compute a composite score for model selection."""
     score = 0.0
     if phase == 1:
-        # For VAE phase: higher SNR, lower KL, higher diversity are good
+        # VAE phase: higher SNR, lower KL, higher diversity are good
         if 'snr' in loss_dict:
-            score += loss_dict['snr'] / 30.0  # normalize target SNR 30dB
+            score += loss_dict['snr'] / TARGET_SNR
         if 'kl' in loss_dict:
-            score -= loss_dict['kl'] * 10  # penalize high KL
+            score -= loss_dict['kl'] * 10
         if 'diversity' in loss_dict:
-            score += loss_dict['diversity'] * 100  # reward diversity
+            score += loss_dict['diversity'] * 100
         if 'min_channel_std' in loss_dict:
-            score += loss_dict['min_channel_std'] * 20  # reward higher min std
+            score += loss_dict['min_channel_std'] * 20
     else:
-        # For drift phase: lower drift error is better
+        # Drift phase: lower drift error is better
         if 'drift' in loss_dict:
             score -= loss_dict['drift'] * 10
         if 'consistency' in loss_dict:
             score -= loss_dict['consistency'] * 10
     return score
 
-# ============================================================
-# PERCENTILE RESCALING (same as before)
-# ============================================================
-class PercentileRescale(nn.Module):
-    # ... (identical to previous) ...
-    def __init__(self, features, p_low=1.0, p_high=99.0, momentum=0.1):
-        super().__init__()
-        self.register_buffer('low', torch.zeros(features))
-        self.register_buffer('high', torch.ones(features))
-        self.p_low, self.p_high, self.m = p_low, p_high, momentum
-        self._is_exporting = False
+def set_training_phase(epoch: int) -> int:
+    """Global function to set training phase for each epoch."""
+    mode = TRAINING_SCHEDULE['mode']
+    
+    if mode == 'manual':
+        phase = TRAINING_SCHEDULE['force_phase']
+        return 1 if phase is None else phase
+    elif mode == 'custom':
+        return TRAINING_SCHEDULE['custom_schedule'].get(epoch, 1)
+    elif mode == 'alternate':
+        alternate_freq = TRAINING_SCHEDULE.get('alternate_freq', 5)
+        return 1 if (epoch // alternate_freq) % 2 == 0 else 2
+    else:  # 'auto' mode
+        return 1 if epoch < TRAINING_SCHEDULE['switch_epoch'] else 2
 
-    def _set_export_mode(self, is_exporting=True):
-        self._is_exporting = is_exporting
-
-    def forward(self, x):
-        if self._is_exporting or not self.training:
-            scale = (self.high - self.low).clamp(min=1e-6).view(1, -1, 1, 1)
-            shift = self.low.view(1, -1, 1, 1)
-            return torch.tanh((x - shift) / scale)
-        if self.training:
-            with torch.no_grad():
-                flat = x.float().transpose(0, 1).reshape(x.shape[1], -1)
-                if flat.numel() > 0:
-                    l = torch.quantile(flat, self.p_low/100, dim=1)
-                    h = torch.quantile(flat, self.p_high/100, dim=1)
-                    self.low.mul_(1 - self.m).add_(l, alpha=self.m)
-                    self.high.mul_(1 - self.m).add_(h, alpha=self.m)
-        scale = (self.high - self.low).clamp(min=1e-6).view(1, -1, 1, 1)
-        shift = self.low.view(1, -1, 1, 1)
-        return torch.tanh((x - shift) / scale)
+def configure_training_schedule(
+    mode: str = 'auto', 
+    vae_epochs: Optional[List[int]] = None, 
+    drift_epochs: Optional[List[int]] = None, 
+    switch_epoch: int = 50,
+    alternate_freq: int = 5,
+    custom_schedule: Optional[Dict] = None
+) -> Dict:
+    """Configure the global training schedule."""
+    if mode == 'vae_only':
+        TRAINING_SCHEDULE['mode'] = 'manual'
+        TRAINING_SCHEDULE['force_phase'] = 1
+    elif mode == 'drift_only':
+        TRAINING_SCHEDULE['mode'] = 'manual'
+        TRAINING_SCHEDULE['force_phase'] = 2
+    elif mode == 'auto':
+        TRAINING_SCHEDULE['mode'] = 'auto'
+        TRAINING_SCHEDULE['switch_epoch'] = switch_epoch
+    elif mode == 'alternate':
+        TRAINING_SCHEDULE['mode'] = 'alternate'
+        TRAINING_SCHEDULE['alternate_freq'] = alternate_freq
+    elif mode == 'custom':
+        TRAINING_SCHEDULE['mode'] = 'custom'
+        TRAINING_SCHEDULE['custom_schedule'] = custom_schedule or {}
+    elif mode == 'manual':
+        TRAINING_SCHEDULE['mode'] = 'manual'
+    
+    if vae_epochs is not None:
+        TRAINING_SCHEDULE['vae_epochs'] = vae_epochs
+    if drift_epochs is not None:
+        TRAINING_SCHEDULE['drift_epochs'] = drift_epochs
+    
+    logger.info(f"Training schedule configured: mode={TRAINING_SCHEDULE['mode']}")
+    return TRAINING_SCHEDULE
 
 # ============================================================
-# KPI TRACKER (enhanced with composite score)
+# KPI TRACKER
 # ============================================================
 class KPITracker:
+    """Track key performance indicators during training."""
+    
     def __init__(self, window_size=100):
         self.window_size = window_size
         self.metrics = defaultdict(list)
         self.composite_scores = []
         
-    def update(self, metrics_dict):
+    def update(self, metrics_dict: Dict) -> None:
         for key, value in metrics_dict.items():
             if value is not None:
                 if key not in self.metrics:
@@ -328,7 +250,8 @@ class KPITracker:
             if len(self.composite_scores) > self.window_size:
                 self.composite_scores.pop(0)
                 
-    def compute_convergence(self):
+    def compute_convergence(self) -> Dict:
+        """Compute convergence metrics."""
         convergence = {}
         for metric_name, values in self.metrics.items():
             if len(values) >= 10:
@@ -349,19 +272,18 @@ class KPITracker:
             convergence['convergence_score'] = 1.0 / (1.0 + loss_std)
         return convergence
         
-    def should_stop(self, patience=EARLY_STOP_PATIENCE, min_delta=1e-4, phase=1):
+    def should_stop(self, patience: int = EARLY_STOP_PATIENCE, min_delta: float = 1e-4, phase: int = 1) -> bool:
+        """Determine if training should stop early."""
         if phase == 1:
             return False
         if 'loss' not in self.metrics or len(self.metrics['loss']) < patience * 2:
             return False
         if len(self.metrics['loss']) < 30:
             return False
+        
         recent_losses = self.metrics['loss'][-patience:]
-        is_increasing = True
-        for i in range(len(recent_losses)-1):
-            if recent_losses[i] >= recent_losses[i+1]:
-                is_increasing = False
-                break
+        is_increasing = all(recent_losses[i] < recent_losses[i+1] for i in range(len(recent_losses)-1))
+        
         if is_increasing:
             best_loss_in_window = min(recent_losses)
             current_loss = recent_losses[-1]
@@ -371,208 +293,47 @@ class KPITracker:
         return False
 
 # ============================================================
-# ARCHITECTURE WITH LABEL CONDITIONING (same as original)
-# ============================================================
-class LabelConditionedBlock(nn.Module):
-    # ... (full code as before) ...
-    def __init__(self, c_in, c_out, label_dim=LABEL_EMB_DIM, use_spectral_norm=False):
-        super().__init__()
-        groups = min(8, c_in)
-        self.norm1 = nn.GroupNorm(groups, c_in)
-        if use_spectral_norm:
-            self.conv1 = nn.utils.spectral_norm(nn.Conv2d(c_in, c_out, 3, 1, 1))
-        else:
-            self.conv1 = nn.Conv2d(c_in, c_out, 3, 1, 1)
-        self.label_proj = nn.Sequential(
-            nn.Linear(label_dim, c_out * 2),
-            nn.SiLU(),
-            nn.Linear(c_out * 2, c_out * 2)
-        )
-        groups_out = min(8, c_out)
-        self.norm2 = nn.GroupNorm(groups_out, c_out)
-        if use_spectral_norm:
-            self.conv2 = nn.utils.spectral_norm(nn.Conv2d(c_out, c_out, 3, 1, 1))
-        else:
-            self.conv2 = nn.Conv2d(c_out, c_out, 3, 1, 1)
-        self.rescale = PercentileRescale(c_out) if USE_PERCENTILE else nn.Identity()
-        if use_spectral_norm and c_in != c_out:
-            self.skip = nn.utils.spectral_norm(nn.Conv2d(c_in, c_out, 1))
-        elif c_in != c_out:
-            self.skip = nn.Conv2d(c_in, c_out, 1)
-        else:
-            self.skip = nn.Identity()
-
-    def forward(self, x, labels=None):
-        h = F.silu(self.norm1(x))
-        h = self.conv1(h)
-        if labels is not None:
-            scale_shift = self.label_proj(labels)
-            scale, shift = scale_shift.chunk(2, dim=1)
-            h = h * (1 + scale.view(-1, scale.shape[1], 1, 1)) + shift.view(-1, shift.shape[1], 1, 1)
-        h = F.silu(self.norm2(h))
-        h = self.conv2(h)
-        return self.rescale(self.skip(x) + h)
-
-class LabelConditionedVAE(nn.Module):
-    def __init__(self, free_bits=2.0):
-        super().__init__()
-        self.free_bits = free_bits
-        self.label_emb = nn.Embedding(NUM_CLASSES, LABEL_EMB_DIM)
-        self.enc_in = nn.Conv2d(3, 32, 3, 1, 1)
-        self.enc_blocks = nn.ModuleList([
-            LabelConditionedBlock(32, 64),
-            nn.Conv2d(64, 64, 4, 2, 1),
-            LabelConditionedBlock(64, 128),
-            nn.Conv2d(128, 128, 4, 2, 1),
-            LabelConditionedBlock(128, 256),
-            nn.Conv2d(256, 256, 4, 2, 1),
-        ])
-        self.z_mean = nn.Conv2d(256, LATENT_CHANNELS, 3, 1, 1)
-        self.z_logvar = nn.Conv2d(256, LATENT_CHANNELS, 3, 1, 1)
-        self.dec_in = nn.Conv2d(LATENT_CHANNELS, 256, 3, 1, 1)
-        self.dec_blocks = nn.ModuleList([
-            nn.ConvTranspose2d(256, 128, 4, 2, 1),
-            LabelConditionedBlock(128, 128),
-            nn.ConvTranspose2d(128, 64, 4, 2, 1),
-            LabelConditionedBlock(64, 64),
-            nn.ConvTranspose2d(64, 32, 4, 2, 1),
-            LabelConditionedBlock(32, 32),
-        ])
-        self.dec_out = nn.Conv2d(32, 3, 3, 1, 1)
-        self.diversity_loss = None
-
-    def encode(self, x, labels):
-        label_emb = self.label_emb(labels)
-        h = self.enc_in(x)
-        for block in self.enc_blocks:
-            if isinstance(block, LabelConditionedBlock):
-                h = block(h, label_emb)
-            else:
-                h = block(h)
-        mu = self.z_mean(h) * 0.05
-        if self.training:
-            mu = mu + torch.randn_like(mu) * 0.01
-        if self.training:
-            channel_mask = torch.ones_like(mu)
-            if torch.rand(1).item() < 0.05:
-                channel_mask = torch.bernoulli(torch.full_like(mu, 0.95))
-            mu = mu * channel_mask
-        logvar = torch.clamp(self.z_logvar(h), min=-4, max=4)
-        if self.training:
-            self.diversity_loss = channel_diversity_loss(mu)
-        return mu, logvar
-
-    def decode(self, z, labels):
-        label_emb = self.label_emb(labels)
-        h = self.dec_in(z)
-        for block in self.dec_blocks:
-            if isinstance(block, LabelConditionedBlock):
-                h = block(h, label_emb)
-            else:
-                h = block(h)
-        return torch.tanh(self.dec_out(h))
-
-    def forward(self, x, labels):
-        mu, logvar = self.encode(x, labels)
-        if self.training:
-            std = torch.exp(0.5 * logvar)
-            z = mu + std * torch.randn_like(std)
-        else:
-            z = mu
-        return self.decode(z, labels), mu, logvar
-
-    def reparameterize(self, mu, logvar):
-        if self.training:
-            std = torch.exp(0.5 * logvar)
-            eps = torch.randn_like(std)
-            return mu + eps * std
-        else:
-            return mu
-
-class LabelConditionedDrift(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.time_mlp = nn.Sequential(
-            nn.Linear(1, 128),
-            nn.SiLU(),
-            nn.Linear(128, 128)
-        )
-        self.label_emb = nn.Embedding(NUM_CLASSES, LABEL_EMB_DIM)
-        self.cond_proj = nn.Sequential(
-            nn.Linear(128 + LABEL_EMB_DIM, 128),
-            nn.SiLU(),
-            nn.Linear(128, 128)
-        )
-        self.time_weight_net = nn.Sequential(
-            nn.Linear(1, 32),
-            nn.SiLU(),
-            nn.Linear(32, 1),
-            nn.Sigmoid()
-        )
-        self.head = nn.utils.spectral_norm(nn.Conv2d(LATENT_CHANNELS, 64, 3, 1, 1))
-        self.down1 = LabelConditionedBlock(64, 128, label_dim=128, use_spectral_norm=True)
-        self.down2_conv = nn.utils.spectral_norm(nn.Conv2d(128, 256, 4, 2, 1))
-        self.down2_block = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
-        self.mid = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
-        self.up2_conv = nn.ConvTranspose2d(256, 128, 4, 2, 1)
-        self.up2_block = LabelConditionedBlock(128, 128, label_dim=128, use_spectral_norm=True)
-        self.up1 = LabelConditionedBlock(128, 64, label_dim=128, use_spectral_norm=True)
-        self.tail = nn.utils.spectral_norm(nn.Conv2d(64, LATENT_CHANNELS, 3, 1, 1))
-        self.output_scale = nn.Parameter(torch.tensor(0.1))
-        self.time_scales = nn.Parameter(torch.ones(4) * 0.1)
-
-    def forward(self, z, t, labels):
-        t_emb = self.time_mlp(t)
-        label_emb = self.label_emb(labels)
-        cond = torch.cat([t_emb, label_emb], dim=-1)
-        cond = self.cond_proj(cond)
-        time_weight = self.time_weight_net(t)
-        t_val = t.squeeze()
-        time_indices = (t_val * 3).long().clamp(0, 3)
-        time_scale = self.time_scales[time_indices].view(-1, 1, 1, 1)
-        z = torch.tanh(z) * 0.5
-        h = self.head(z)
-        d1 = self.down1(h, cond)
-        d2 = self.down2_conv(d1)
-        d2 = self.down2_block(d2, cond)
-        m = self.mid(d2, cond)
-        u2 = self.up2_conv(m)
-        u2 = self.up2_block(u2, cond)
-        u1 = self.up1(u2 + d1, cond)
-        out = self.tail(u1)
-        out = torch.tanh(out) * self.output_scale * (1.0 + time_weight.view(-1, 1, 1, 1))
-        out = out * (1.0 + time_scale)
-        return out
-
-# ============================================================
-# ENHANCED TRAINER (with OU bridge support)
+# ENHANCED TRAINER
 # ============================================================
 class EnhancedLabelTrainer:
+    """Main trainer class for label-conditioned Schrödinger Bridge."""
+    
     def __init__(self, loader):
         self.loader = loader
-        self.vae = LabelConditionedVAE().to(dm.DEVICE)
-        self.drift = LabelConditionedDrift().to(dm.DEVICE)
+        self.vae = models.LabelConditionedVAE().to(config.DEVICE)
+        self.drift = models.LabelConditionedDrift().to(config.DEVICE)
+        
         self.opt_vae = optim.AdamW(self.vae.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
         self.opt_drift = optim.AdamW(self.drift.parameters(), lr=LR * 2, weight_decay=WEIGHT_DECAY)
-        self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(self.opt_vae, T_max=EPOCHS, eta_min=LR*0.01)
-        self.scheduler_drift = optim.lr_scheduler.CosineAnnealingLR(self.opt_drift, T_max=EPOCHS, eta_min=LR*0.01)
+        
+        self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
+            self.opt_vae, T_max=EPOCHS, eta_min=LR*0.01
+        )
+        self.scheduler_drift = optim.lr_scheduler.CosineAnnealingLR(
+            self.opt_drift, T_max=EPOCHS, eta_min=LR*0.01
+        )
+        
         self.kpi_tracker = KPITracker(window_size=KPI_WINDOW_SIZE)
+        
         self.snapshot_vae = dm.SnapshotManager(self.vae, self.opt_vae, name="vae") if USE_SNAPSHOTS else None
         self.snapshot_drift = dm.SnapshotManager(self.drift, self.opt_drift, name="drift") if USE_SNAPSHOTS else None
+        
         self.epoch = 0
         self.step = 0
         self.phase = 1
-        self.phase_preference = None
         self.best_loss = float('inf')
         self.best_composite_score = float('-inf')
         self.debug_counter = 0
         self.debug_interval = 50
         
-        # Add reference to global training schedule
-        self.TRAINING_SCHEDULE = TRAINING_SCHEDULE 
+        # Reference for Phase 2
+        self.vae_ref = None
         
         # OU reference process
         self.ou_ref = OUReference(theta=OU_THETA, sigma=OU_SIGMA) if USE_OU_BRIDGE else None
+        
+        # AMP scaler
+        self.scaler = torch.cuda.amp.GradScaler() if USE_AMP and config.DEVICE.type == 'cuda' else None
         
         logger.info(f"Models initialized:")
         logger.info(f"  VAE params: {sum(p.numel() for p in self.vae.parameters()):,}")
@@ -580,22 +341,25 @@ class EnhancedLabelTrainer:
         if USE_OU_BRIDGE:
             logger.info(f"  Using OU bridge reference (theta={OU_THETA})")
 
-    def get_training_phase(self, epoch):
-        global TRAINING_SCHEDULE
+    def get_training_phase(self, epoch: int) -> int:
+        """Get training phase for current epoch."""
         phase = set_training_phase(epoch)
         if phase != self.phase:
             logger.info(f"🔄 Phase changed from {self.phase} to {phase} at epoch {epoch+1}")
             self.phase = phase
-            if phase == 2 and epoch == TRAINING_SCHEDULE['switch_epoch']:
+            if phase == 2 and epoch == SWITCH_EPOCH:
                 self._handle_phase_transition()
         return phase
 
-    def _handle_phase_transition(self):
-        self.vae_ref = LabelConditionedVAE().to(dm.DEVICE)
+    def _handle_phase_transition(self) -> None:
+        """Handle transition from Phase 1 to Phase 2."""
+        self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
         self.vae_ref.load_state_dict(self.vae.state_dict())
         self.vae_ref.eval()
         for param in self.vae_ref.parameters():
             param.requires_grad = False
+        
+        # Freeze most VAE layers, keep encoder trainable
         unfrozen_count = 0
         for name, param in self.vae.named_parameters():
             if any(k in name for k in ['enc_', 'label_emb', 'z_mean', 'z_logvar']):
@@ -603,7 +367,10 @@ class EnhancedLabelTrainer:
                 unfrozen_count += param.numel()
             else:
                 param.requires_grad = False
+        
         logger.info(f"PHASE 2: Unfrozen {unfrozen_count:,} params. Consistency Anchor Set.")
+        
+        # Recreate optimizer for VAE with frozen layers
         self.opt_vae = optim.AdamW(
             filter(lambda p: p.requires_grad, self.vae.parameters()),
             lr=LR * 0.1,
@@ -615,43 +382,57 @@ class EnhancedLabelTrainer:
             eta_min=LR * 0.005
         )
 
-    def compute_loss(self, batch, phase=1):
+    def compute_loss(self, batch: Dict, phase: int = 1) -> Dict:
+        """Compute loss for current batch based on training phase."""
+        # Extract images and labels
         if isinstance(batch, dict):
-            images = batch['image'].to(dm.DEVICE)
-            labels = batch['label'].to(dm.DEVICE)
+            images = batch['image'].to(config.DEVICE)
+            labels = batch['label'].to(config.DEVICE)
         elif isinstance(batch, (list, tuple)) and len(batch) == 2:
-            images = batch[0].to(dm.DEVICE)
-            labels = batch[1].to(dm.DEVICE)
+            images = batch[0].to(config.DEVICE)
+            labels = batch[1].to(config.DEVICE)
         else:
             raise TypeError(f"Unexpected batch type: {type(batch)}")
 
+        # Debug logging
         if self.debug_counter % self.debug_interval == 0:
             logger.info(f"\n=== DEBUG Epoch {self.epoch+1}, Batch {self.debug_counter} ===")
             logger.info(f"Images - min: {images.min().item():.4f}, max: {images.max().item():.4f}, mean: {images.mean().item():.4f}")
 
         if phase == 1:
+            # Phase 1: Train VAE
             recon, mu, logvar = self.vae(images, labels)
+            
+            # Compute metrics
             latent_std = torch.exp(0.5 * logvar).mean().item()
             channel_stds = mu.std(dim=[0, 2, 3]).detach().cpu().numpy()
             min_channel_std = channel_stds.min()
+            
             if self.debug_counter % self.debug_interval == 0:
                 logger.info(f"Mu std: {mu.std().item():.3f}")
                 logger.info(f"Channel stds: {channel_stds}")
+            
+            # Adaptive KL weight based on channel usage
             raw_mse = F.mse_loss(recon, images)
             raw_kl = kl_divergence_spatial(mu, logvar)
+            
             if latent_std < 0.3:
                 current_kl_weight = KL_WEIGHT * 10.0
             elif min_channel_std < 0.01:
                 current_kl_weight = KL_WEIGHT * 5.0
             else:
                 current_kl_weight = KL_WEIGHT
-            diversity_loss = self.vae.diversity_loss if self.vae.diversity_loss is not None else torch.tensor(0.0, device=dm.DEVICE)
+            
+            diversity_loss = self.vae.diversity_loss if self.vae.diversity_loss is not None else torch.tensor(0.0, device=config.DEVICE)
             kl_annealing = min(1.0, self.epoch / 10.0)
+            
             kl_loss = raw_kl * current_kl_weight * kl_annealing
             recon_loss = raw_mse * RECON_WEIGHT
             total_loss = recon_loss + kl_loss + diversity_loss * DIVERSITY_WEIGHT
+            
             snr = calc_snr(images, recon)
             self.debug_counter += 1
+            
             loss_dict = {
                 'total': total_loss,
                 'recon': recon_loss.item(),
@@ -663,41 +444,50 @@ class EnhancedLabelTrainer:
                 'latent_std': latent_std,
                 'min_channel_std': min_channel_std,
                 'max_channel_std': channel_stds.max(),
-                'channel_stds': channel_stds
             }
         else:
+            # Phase 2: Train Drift with consistency
             with torch.no_grad():
                 mu_ref, _ = self.vae_ref.encode(images, labels)
                 mu, logvar = self.vae.encode(images, labels)
                 consistency_loss = F.mse_loss(mu, mu_ref)
-                temperature = 0.3 + 0.7 * (1 - self.epoch / 200)
+                
+                # Temperature annealing based on global EPOCHS
+                temperature = 0.3 + 0.7 * (1 - self.epoch / EPOCHS)
                 z1 = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * temperature
-            if self.epoch > 50:
+            
+            # Sample time with beta distribution after sufficient training
+            if self.epoch > SWITCH_EPOCH + EPOCHS // 6:  # After 1/6 of drift training
                 beta_dist = torch.distributions.Beta(2, 2)
-                t = beta_dist.sample((images.shape[0], 1)).to(dm.DEVICE)
+                t = beta_dist.sample((images.shape[0], 1)).to(config.DEVICE)
             else:
-                t = torch.rand(images.shape[0], 1, device=dm.DEVICE)
+                t = torch.rand(images.shape[0], 1, device=config.DEVICE)
+            
+            # Start from noise with std=0.8 to match training
             z0 = torch.randn_like(z1) * 0.8
             
             # Sample intermediate latent using either linear interpolation or OU bridge
             if USE_OU_BRIDGE and self.ou_ref is not None:
-                # Use exact OU bridge sampling
                 mean, var = self.ou_ref.bridge_sample(z0, z1, t)
                 zt = mean + torch.sqrt(var + 1e-8) * torch.randn_like(mean)
-                # Target is still z1 - z0 (the overall displacement), though the path is non-linear
                 target = z1 - z0
             else:
-                # Linear interpolation (original)
                 zt = (1 - t.view(-1, 1, 1, 1)) * z0 + t.view(-1, 1, 1, 1) * z1
                 target = z1 - z0
             
+            # Add noise to targets only (not to state)
             if self.drift.training:
                 noise_scale = 0.01 * (1 - t.view(-1, 1, 1, 1))
                 target = target + torch.randn_like(target) * noise_scale
+            
             pred = self.drift(zt, t, labels)
+            
+            # Time-weighted loss
             time_weights = 1.0 + 2.0 * t.view(-1, 1, 1, 1)
             drift_loss_base = F.huber_loss(pred * time_weights, target * time_weights, delta=1.0) * DRIFT_WEIGHT
+            
             total_loss = drift_loss_base + (consistency_loss * CONSISTENCY_WEIGHT)
+            
             loss_dict = {
                 'total': total_loss,
                 'drift': drift_loss_base.item(),
@@ -705,46 +495,59 @@ class EnhancedLabelTrainer:
                 'temperature': temperature
             }
         
-        # Add composite score for model selection
+        # Add composite score
         loss_dict['composite_score'] = composite_score(loss_dict, phase)
         return loss_dict
 
-    def debug_training_loop(self, batch, loss_dict):
-        # (same as original)
-        pass
-
-    def train_epoch(self):
+    def train_epoch(self) -> Dict:
+        """Train for one epoch."""
         losses = defaultdict(float)
         snr_values = []
         latent_std_values = []
         channel_std_values = []
+        
         current_epoch = self.epoch + 1
         phase = self.get_training_phase(current_epoch)
         mode = "VAE" if phase == 1 else "Drift"
         self.debug_counter = 0
+        
+        # Set train/eval modes
         if phase == 1:
             self.vae.train()
             self.drift.eval()
         else:
             self.vae.eval()
             self.drift.train()
+        
+        # Progress bar
         if TQDM_AVAILABLE:
             pbar = tqdm(self.loader, desc=f"Epoch {current_epoch} ({mode})")
         else:
             pbar = self.loader
             logger.info(f"Epoch {current_epoch} ({mode})")
+        
         batch_count = 0
         for batch_idx, batch in enumerate(pbar):
             try:
+                # Prepare batch
                 if isinstance(batch, (list, tuple)) and len(batch) == 2:
                     batch_dict = {'image': batch[0], 'label': batch[1], 'index': batch_idx}
                 elif isinstance(batch, dict):
                     batch_dict = batch
                 else:
                     continue
-                loss_dict = self.compute_loss(batch_dict, phase=phase)
+                
+                # Forward pass with AMP if enabled
+                if self.scaler is not None and phase == 2:
+                    with torch.cuda.amp.autocast():
+                        loss_dict = self.compute_loss(batch_dict, phase=phase)
+                else:
+                    loss_dict = self.compute_loss(batch_dict, phase=phase)
+                
+                # Check for NaN/Inf
                 if not isinstance(loss_dict, dict) or 'total' not in loss_dict:
                     continue
+                
                 if torch.isnan(loss_dict['total']) or torch.isinf(loss_dict['total']):
                     logger.error(f" NaN/Inf detected!")
                     reverted = False
@@ -756,15 +559,21 @@ class EnhancedLabelTrainer:
                         continue
                     else:
                         break
+                
+                # Debug logging
                 if batch_idx % 50 == 0 and batch_idx > 0:
-                    self.debug_training_loop(batch_dict, loss_dict)
+                    self._debug_training_loop(batch_dict, loss_dict)
+                
+                # Backward pass
                 if phase == 1:
                     self.opt_vae.zero_grad()
                     loss_dict['total'].backward()
                     torch.nn.utils.clip_grad_norm_(self.vae.parameters(), GRAD_CLIP)
                     self.opt_vae.step()
+                    
                     if self.snapshot_vae:
                         self.snapshot_vae.step()
+                    
                     if 'snr' in loss_dict:
                         snr_values.append(loss_dict['snr'])
                     if 'latent_std' in loss_dict:
@@ -773,28 +582,36 @@ class EnhancedLabelTrainer:
                         channel_std_values.append(loss_dict['min_channel_std'])
                 else:
                     self.opt_drift.zero_grad()
-                    loss_dict['total'].backward()
-                    torch.nn.utils.clip_grad_norm_(self.drift.parameters(), GRAD_CLIP * 0.5)
-                    total_norm = 0
-                    for p in self.drift.parameters():
-                        if p.grad is not None:
-                            total_norm += p.grad.norm().item() ** 2
-                    total_norm = total_norm ** 0.5
-                    if total_norm > 0.01:
-                        self.opt_drift.step()
+                    
+                    if self.scaler is not None:
+                        self.scaler.scale(loss_dict['total']).backward()
+                        self.scaler.unscale_(self.opt_drift)
+                        torch.nn.utils.clip_grad_norm_(self.drift.parameters(), GRAD_CLIP * 0.5)
+                        self.scaler.step(self.opt_drift)
+                        self.scaler.update()
                     else:
-                        logger.warning(f"Skipping drift update - gradient norm too small: {total_norm:.4f}")
+                        loss_dict['total'].backward()
+                        torch.nn.utils.clip_grad_norm_(self.drift.parameters(), GRAD_CLIP * 0.5)
+                        self.opt_drift.step()
+                    
                     if self.snapshot_drift:
                         self.snapshot_drift.step()
+                
+                # Accumulate losses
                 for key, value in loss_dict.items():
-                    if key not in ['total', 'raw_mse', 'raw_kl', 'snr', 'latent_std', 'min_channel_std', 'max_channel_std', 'channel_stds', 'temperature', 'composite_score']:
+                    if key not in ['total', 'raw_mse', 'raw_kl', 'snr', 'latent_std', 
+                                  'min_channel_std', 'max_channel_std', 'channel_stds', 
+                                  'temperature', 'composite_score']:
                         if isinstance(value, (int, float)):
                             losses[key] += value
                         elif isinstance(value, torch.Tensor):
                             losses[key] += value.item()
+                
                 self.step += 1
                 self.debug_counter += 1
                 batch_count += 1
+                
+                # Update progress bar
                 if TQDM_AVAILABLE and batch_idx % 10 == 0:
                     current_loss_val = loss_dict['total'].item() if isinstance(loss_dict['total'], torch.Tensor) else loss_dict['total']
                     avg_snr = np.mean(snr_values[-10:]) if snr_values else 0
@@ -804,34 +621,37 @@ class EnhancedLabelTrainer:
                     if channel_std_values:
                         postfix['min_std'] = f"{channel_std_values[-1]:.3f}"
                     pbar.set_postfix(postfix)
+                    
             except Exception as e:
                 logger.error(f"Error processing batch {batch_idx}: {e}")
                 continue
+        
+        # Update schedulers
         if phase == 1:
             self.scheduler_vae.step()
         else:
             self.scheduler_drift.step()
+        
+        # Compute average losses
         if batch_count > 0:
             avg_losses = {}
             for key, value in losses.items():
                 avg_losses[key] = value / batch_count
-            if avg_losses:
-                avg_losses['total'] = sum(avg_losses.values())
-            else:
-                avg_losses['total'] = 0.0
+            
             if snr_values:
                 avg_losses['snr'] = np.mean(snr_values)
             if latent_std_values:
                 avg_losses['latent_std'] = np.mean(latent_std_values)
             if channel_std_values:
                 avg_losses['min_channel_std'] = np.mean(channel_std_values)
-            # Compute average composite score (optional)
-            # We don't have composite score per batch, so we'll compute from the last loss_dict or skip.
         else:
             avg_losses = {'total': float('inf')}
             logger.error("No batches were successfully processed in this epoch!")
+        
+        # Log results
         logger.info(f"Epoch {current_epoch}/{EPOCHS} complete:")
         logger.info(f"  Total loss: {avg_losses.get('total', 0):.4f}")
+        
         if phase == 1:
             logger.info(f"  Recon loss: {avg_losses.get('recon', 0):.4f}")
             logger.info(f"  KL loss: {avg_losses.get('kl', 0):.6f}")
@@ -841,126 +661,240 @@ class EnhancedLabelTrainer:
                 logger.info(f"  SNR: {avg_losses['snr']:.2f}dB")
         else:
             logger.info(f"  Drift loss: {avg_losses.get('drift', 0):.4f}")
+        
         return avg_losses
 
-    def save_checkpoint(self, is_best=False, is_best_overall=False):
+    def _debug_training_loop(self, batch: Dict, loss_dict: Dict) -> None:
+        """Debug helper for training loop."""
+        logger.info("=== DEBUG INFO ===")
+        for key, value in loss_dict.items():
+            if isinstance(value, (int, float)):
+                logger.info(f"  {key}: {value:.4f}")
+            elif isinstance(value, torch.Tensor) and value.numel() == 1:
+                logger.info(f"  {key}: {value.item():.4f}")
+
+    def save_checkpoint(self, is_best: bool = False, is_best_overall: bool = False) -> Path:
+        """Save training checkpoint."""
         return dm.save_checkpoint(self, is_best, is_best_overall)
 
-    def load_checkpoint(self, path=None):
+    def load_checkpoint(self, path: Optional[Path] = None) -> bool:
+        """Load training checkpoint."""
         return dm.load_checkpoint(self, path)
 
-    def load_for_inference(self, path=None):
+    def load_for_inference(self, path: Optional[Path] = None) -> bool:
+        """Load model for inference."""
         return dm.load_for_inference(self, path)
 
-    def generate_samples(self, labels=None, num_samples=8, temperature=0.8):
+    def load_from_snapshot(self, snapshot_path: Path, load_vae: bool = True, 
+                          load_drift: bool = True, phase: Optional[int] = None) -> bool:
+        """Load model from a snapshot file."""
+        if not os.path.exists(snapshot_path):
+            logger.error(f"Snapshot not found: {snapshot_path}")
+            return False
+        
+        try:
+            snapshot = torch.load(snapshot_path, map_location=config.DEVICE, weights_only=False)
+            
+            if load_vae and 'model_state' in snapshot and snapshot.get('model_type') == 'vae':
+                self.vae.load_state_dict(snapshot['model_state'])
+                if 'optimizer_state' in snapshot:
+                    self.opt_vae.load_state_dict(snapshot['optimizer_state'])
+                logger.info(f"Loaded VAE from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+            
+            if load_drift and 'drift_state' in snapshot and snapshot.get('model_type') == 'drift':
+                self.drift.load_state_dict(snapshot['drift_state'])
+                if 'opt_drift_state' in snapshot:
+                    self.opt_drift.load_state_dict(snapshot['opt_drift_state'])
+                logger.info(f"Loaded Drift from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+            
+            if phase is not None:
+                self.phase = phase
+                logger.info(f"Set phase to {phase}")
+            
+            if 'epoch' in snapshot:
+                self.epoch = snapshot['epoch']
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to load snapshot: {e}")
+            return False
+
+    def generate_samples(self, labels: Optional[List[int]] = None, 
+                        num_samples: int = 8, temperature: float = 0.8) -> Path:
+        """
+        Generate samples using probability flow ODE.
+        
+        FIXES APPLIED:
+        1. Match training noise scale: z0 = randn * 0.8
+        2. Remove spurious Langevin noise
+        3. Replace tanh with gentle clamping
+        4. Use adaptive clipping based on running statistics
+        5. Temperature based on global EPOCHS
+        """
         self.vae.eval()
         self.drift.eval()
+        
         if labels is None:
             labels = [i % 10 for i in range(num_samples)]
+        
         with torch.no_grad():
-            labels_tensor = torch.tensor(labels, dtype=torch.long, device=dm.DEVICE)
-            z = torch.randn(num_samples, LATENT_CHANNELS, LATENT_H, LATENT_W, device=dm.DEVICE) * 0.5
+            labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
+            
+            # FIX #1: Match training scale (0.8)
+            z = torch.randn(num_samples, LATENT_CHANNELS, LATENT_H, LATENT_W, device=config.DEVICE) * 0.8
+            
             steps = DEFAULT_STEPS
             dt = 1.0 / steps
+            
+            # FIX #5: Temperature based on global EPOCHS
+            if hasattr(self, 'epoch') and self.epoch > 0:
+                # Match training annealing schedule
+                effective_temp = 0.3 + 0.7 * (1 - self.epoch / EPOCHS)
+                temperature = temperature * effective_temp
+            
             for i in range(steps):
-                t = torch.full((num_samples, 1), i * dt, device=dm.DEVICE)
-                if i < steps // 2:
-                    noise_scale = 0.01 * (1 - i/steps) * temperature
-                    z = z + torch.randn_like(z) * noise_scale
+                t = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
+                
+                # FIX #2: Removed Langevin-style noise injection
+                # No noise added to state during inference
+                
+                # Get drift prediction
                 drift = self.drift(z, t, labels_tensor)
+                
+                # FIX #4: Adaptive clipping based on running statistics
+                adaptive_threshold = self.drift.get_adaptive_threshold(num_std=3.0)
                 drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1, keepdim=True).view(-1, 1, 1, 1)
-                target_norm = 5.0
-                mask = drift_norm > target_norm
+                
+                mask = drift_norm > adaptive_threshold
                 if mask.any():
                     drift = torch.where(
                         mask,
-                        drift * (target_norm / (drift_norm + 1e-8)),
+                        drift * (adaptive_threshold / (drift_norm + 1e-8)),
                         drift
                     )
+                
+                # Euler step
                 z = z + drift * dt
-                if USE_PERCENTILE:
-                    z = torch.tanh(z)
+                
+                # FIX #3: Gentle clamping instead of tanh
+                z = torch.clamp(z, -10, 10)
+                
                 if torch.isnan(z).any():
                     logger.error(f"NaN detected at step {i}!")
                     break
+            
+            # Decode to images
             images = self.vae.decode(z, labels_tensor)
             images = torch.clamp(images, -1, 1)
 
-            # Save using dm utilities
+            # Save results
             images_display = (images + 1) / 2
             images_display = torch.clamp(images_display, 0, 1)
 
-            grid_path = dm.DIRS["samples"] / f"gen_epoch{self.epoch+1}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            grid_path = DIRS["samples"] / f"gen_epoch{self.epoch+1}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             dm.save_image_grid(images_display, grid_path, nrow=4, normalize=False)
-
-            dm.save_individual_images(images_display, labels, self.epoch, base_dir=dm.DIRS["samples"])
-            dm.save_raw_tensors(z, images, labels, self.epoch, base_dir=dm.DIRS["samples"])
+            dm.save_individual_images(images_display, labels, self.epoch, base_dir=DIRS["samples"])
+            dm.save_raw_tensors(z, images, labels, self.epoch, base_dir=DIRS["samples"])
 
             logger.info(f"Generated {num_samples} samples for labels {labels}")
             logger.info(f"Images saved to: {grid_path}")
             return grid_path
 
-    # Snapshot methods (remain unchanged, but can be kept as is or call dm equivalents)
-    def load_from_snapshot(self, snapshot_path, load_vae=True, load_drift=True, phase=None):
-        # (implementation unchanged - can be kept)
-        pass
+    def list_available_snapshots(self) -> List[Path]:
+        """List all available snapshots."""
+        snap_files = list(DIRS["snaps"].glob("*_snapshot_epoch_*.pt"))
+        snap_files.sort(key=lambda x: int(x.stem.split('_')[-1]))
+        return snap_files
 
-    def restart_from_vae_snapshot(self, vae_snapshot_path):
-        # (implementation unchanged)
-        pass
+    def inspect_snapshot(self, snapshot_path: Path) -> Dict:
+        """Inspect snapshot contents without loading."""
+        try:
+            snapshot = torch.load(snapshot_path, map_location='cpu', weights_only=False)
+            info = {
+                'path': snapshot_path,
+                'epoch': snapshot.get('epoch', 'unknown'),
+                'loss': snapshot.get('loss', 'N/A'),
+                'timestamp': snapshot.get('timestamp', 'unknown'),
+                'model_type': snapshot.get('model_type', 'unknown'),
+                'has_vae': 'model_state' in snapshot or snapshot.get('model_type') == 'vae',
+                'has_drift': 'drift_state' in snapshot or snapshot.get('model_type') == 'drift',
+            }
+            return info
+        except Exception as e:
+            logger.error(f"Failed to inspect snapshot: {e}")
+            return {'path': snapshot_path, 'error': str(e)}
 
-    def list_available_snapshots(self):
-        # (implementation unchanged)
-        pass
-
-    def inspect_snapshot(self, snapshot_path):
-        # (implementation unchanged)
-        pass
-
-    def compare_snapshots(self, snapshot_path1, snapshot_path2):
-        # (implementation unchanged)
-        pass
-
-    def run_snapshot_tests(self):
-        # (implementation unchanged)
-        pass
-
-    def test_vae_at_snapshot(self, test_images, test_labels):
-        # (implementation unchanged)
-        pass
-
-    def test_drift_at_snapshot(self, test_images, test_labels):
-        # (implementation unchanged)
-        pass
-
-    def visualize_interpolation(self, z0, z1, labels, steps=8, save_path=None):
-        # (implementation unchanged)
-        pass
-
-    def export_onnx(self):
-        # (implementation unchanged)
-        pass
+    def export_onnx(self) -> None:
+        """Export models to ONNX format."""
+        if not ONNX_AVAILABLE:
+            logger.warning("ONNX export requires onnx and onnxruntime packages")
+            return
+        
+        try:
+            # Export VAE
+            dummy_img = torch.randn(1, 3, IMG_SIZE, IMG_SIZE, device=config.DEVICE)
+            dummy_label = torch.tensor([0], device=config.DEVICE)
+            
+            vae_path = DIRS["onnx"] / "vae.onnx"
+            torch.onnx.export(
+                self.vae,
+                (dummy_img, dummy_label),
+                vae_path,
+                input_names=['image', 'label'],
+                output_names=['reconstruction', 'mu', 'logvar'],
+                dynamic_axes={
+                    'image': {0: 'batch_size'},
+                    'label': {0: 'batch_size'},
+                    'reconstruction': {0: 'batch_size'}
+                },
+                opset_version=11
+            )
+            logger.info(f"VAE exported to {vae_path}")
+            
+            # Export Drift
+            dummy_z = torch.randn(1, LATENT_CHANNELS, LATENT_H, LATENT_W, device=config.DEVICE)
+            dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
+            
+            drift_path = DIRS["onnx"] / "drift.onnx"
+            torch.onnx.export(
+                self.drift,
+                (dummy_z, dummy_t, dummy_label),
+                drift_path,
+                input_names=['z', 't', 'label'],
+                output_names=['drift'],
+                dynamic_axes={
+                    'z': {0: 'batch_size'},
+                    'label': {0: 'batch_size'},
+                    'drift': {0: 'batch_size'}
+                },
+                opset_version=11
+            )
+            logger.info(f"Drift exported to {drift_path}")
+            
+        except Exception as e:
+            logger.error(f"ONNX export failed: {e}")
 
 # ============================================================
 # TRAINING FUNCTION
 # ============================================================
-# ============================================================
-# TRAINING FUNCTION
-# ============================================================
-def train_model(num_epochs=EPOCHS, resume_from_snapshot=None):
+def train_model(num_epochs: int = EPOCHS, resume_from_snapshot: Optional[Path] = None) -> None:
+    """Main training loop."""
     loader = dm.load_data()
     trainer = EnhancedLabelTrainer(loader)
+    
     if resume_from_snapshot:
         print(f"\n Resuming from snapshot: {resume_from_snapshot}")
         trainer.load_from_snapshot(resume_from_snapshot)
     else:
-        latest_checkpoint = dm.DIRS["ckpt"] / "latest.pt"
+        latest_checkpoint = DIRS["ckpt"] / "latest.pt"
         if latest_checkpoint.exists():
             resume = input("\n Found existing checkpoint. Resume training? (y/n): ").strip().lower()
             if resume == 'y':
                 trainer.load_checkpoint()
             else:
                 print("Starting fresh training...")
+    
     logger.info(f"Starting training for {num_epochs} epochs")
     logger.info(f"Training schedule mode: {TRAINING_SCHEDULE['mode']}")
     
@@ -986,7 +920,7 @@ def train_model(num_epochs=EPOCHS, resume_from_snapshot=None):
                 kpi_update['loss'] = epoch_losses.get('drift', 0)
                 kpi_update['drift_loss'] = epoch_losses.get('drift', 0)
             
-            # Compute composite score from epoch losses
+            # Compute composite score
             comp_score = composite_score(epoch_losses, trainer.phase)
             kpi_update['composite_score'] = comp_score
             trainer.kpi_tracker.update(kpi_update)
@@ -994,30 +928,36 @@ def train_model(num_epochs=EPOCHS, resume_from_snapshot=None):
             # Check for new best composite score
             if comp_score > trainer.best_composite_score:
                 trainer.best_composite_score = comp_score
-                trainer.save_checkpoint(is_best_overall=True)  # <-- This line was causing the error
+                # FIX: Added is_best parameter
+                trainer.save_checkpoint(is_best=False, is_best_overall=True)
         
+        # Check for best loss
         if trainer.phase == 1:
             current_total_loss = epoch_losses.get('total', float('inf'))
         else:
             current_total_loss = epoch_losses.get('drift', float('inf'))
-            
+        
         if current_total_loss < trainer.best_loss and current_total_loss != float('inf'):
             trainer.best_loss = current_total_loss
-            trainer.save_checkpoint(is_best=True)
+            trainer.save_checkpoint(is_best=True, is_best_overall=False)
         elif (epoch + 1) % 5 == 0:
-            trainer.save_checkpoint(is_best=False)
-            
+            trainer.save_checkpoint(is_best=False, is_best_overall=False)
+        
+        # Generate samples periodically
         if (epoch + 1) % 10 == 0 and current_total_loss != float('inf'):
             logger.info("Generating samples...")
             trainer.generate_samples()
-            
+        
+        # Check early stopping
         if USE_KPI_TRACKING and trainer.phase == 2:
             if trainer.kpi_tracker.should_stop(phase=trainer.phase):
                 logger.info(f"Early stopping triggered at epoch {epoch+1}")
                 break
-                
+    
     logger.info(f"Training complete! Best loss: {trainer.best_loss:.4f}")
     logger.info(f"Best composite score: {trainer.best_composite_score:.4f}")
+    
     if ONNX_AVAILABLE:
         trainer.export_onnx()
+    
     trainer.generate_samples(labels=list(range(8)))
