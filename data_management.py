@@ -134,9 +134,7 @@ class SnapshotManager:
 # ============================================================
 # CHECKPOINT SAVE/LOAD FUNCTIONS (operate on trainer)
 # ============================================================
-# CHECKPOINT SAVE/LOAD FUNCTIONS (operate on trainer)
-# ============================================================
-save_checkpoint(trainer, is_best=False, is_best_overall=False):
+def save_checkpoint(trainer, is_best=False, is_best_overall=False):
     """Save training checkpoint."""
     """Save training checkpoint."""
     # Import the global TRAINING_SCHEDULE
