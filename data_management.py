@@ -38,7 +38,8 @@ DIRS = {
     "snaps": BASE_DIR / "snapshots",
     "onnx": BASE_DIR / "onnx",
     "metrics": BASE_DIR / "metrics",
-    "inference": BASE_DIR / "inference"
+    "inference": BASE_DIR / "inference",
+    "best": BASE_DIR / "best_models"
 }
 for d in DIRS.values():
     d.mkdir(parents=True, exist_ok=True)
@@ -133,7 +134,7 @@ class SnapshotManager:
 # ============================================================
 # CHECKPOINT SAVE/LOAD FUNCTIONS (operate on trainer)
 # ============================================================
-def save_checkpoint(trainer, is_best=False):
+def save_checkpoint(trainer, is_best=False, is_best_overall=False):
     """Save training checkpoint."""
     checkpoint = {
         'epoch': trainer.epoch,
@@ -146,8 +147,9 @@ def save_checkpoint(trainer, is_best=False):
         'scheduler_vae_state': trainer.scheduler_vae.state_dict(),
         'scheduler_drift_state': trainer.scheduler_drift.state_dict(),
         'best_loss': trainer.best_loss,
+        'best_composite_score': trainer.best_composite_score,
         'kpi_metrics': trainer.kpi_tracker.metrics,
-        'training_schedule': trainer.TRAINING_SCHEDULE  # assuming trainer has this global
+        'training_schedule': trainer.TRAINING_SCHEDULE
     }
     
     latest_path = DIRS["ckpt"] / "latest.pt"
@@ -158,7 +160,11 @@ def save_checkpoint(trainer, is_best=False):
         torch.save(checkpoint, best_path)
         logger.info(f"New best model saved (loss: {trainer.best_loss:.4f})")
     
-    # Snapshots are handled separately via SnapshotManager
+    if is_best_overall:
+        overall_best_path = DIRS["best"] / f"best_overall_epoch_{trainer.epoch+1:04d}.pt"
+        torch.save(checkpoint, overall_best_path)
+        logger.info(f"New overall best model saved (composite score: {trainer.best_composite_score:.4f})")
+    
     return latest_path
 
 def load_checkpoint(trainer, path=None):
@@ -198,8 +204,9 @@ def load_checkpoint(trainer, path=None):
             import training
             training.TRAINING_SCHEDULE.update(checkpoint['training_schedule'])
         
-        trainer.best_loss = float('inf')
-        trainer.kpi_tracker.metrics = {}
+        trainer.best_loss = checkpoint.get('best_loss', float('inf'))
+        trainer.best_composite_score = checkpoint.get('best_composite_score', float('-inf'))
+        trainer.kpi_tracker.metrics = checkpoint.get('kpi_metrics', {})
         
         logger.info(f"Loaded checkpoint from epoch {trainer.epoch}, step {trainer.step}")
         return True

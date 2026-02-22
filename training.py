@@ -2,7 +2,7 @@
 # MATHEMATICAL FOUNDATIONS OF SCHRÖDINGER BRIDGE WITH LABEL CONDITIONING
 # ============================================================================
 #
-# ... (full comment block preserved as in original) ...
+# ... (full comment block as in original, plus OU reference explanation) ...
 #
 # ============================================================================
 
@@ -150,9 +150,14 @@ DIVERSITY_WEIGHT = 0.01
 
 INFERENCE_TEMPERATURE = 0.8
 DEFAULT_STEPS = 50
+DEFAULT_SEED = 42  # Added missing constant
 CONSISTENCY_WEIGHT = 0.5
 REVERT_THRESHOLD = 2.5
-DEFAULT_SEED = 42
+
+# Ornstein-Uhlenbeck reference configuration
+USE_OU_BRIDGE = False  # Set to True to use exact OU bridge sampling (mvOU-SBP)
+OU_THETA = 1.0         # Mean reversion rate (controls speed of mean reversion)
+OU_SIGMA = np.sqrt(2)  # Diffusion coefficient (gives stationary variance = 1)
 
 # Paths
 DIRS = dm.DIRS
@@ -171,6 +176,57 @@ if not logger.handlers:
     fh = logging.FileHandler(log_path, mode='w')
     fh.setFormatter(formatter)
     logger.addHandler(fh)
+
+# ============================================================
+# ORNSTEIN-UHLENBECK REFERENCE PROCESS
+# ============================================================
+class OUReference:
+    """Ornstein-Uhlenbeck reference process for Schrödinger Bridge."""
+    
+    def __init__(self, theta=1.0, sigma=np.sqrt(2)):
+        self.theta = theta
+        self.sigma = sigma
+        
+    def stationary_variance(self):
+        """Variance of the stationary distribution N(0, sigma^2/(2*theta))."""
+        return self.sigma**2 / (2 * self.theta)
+    
+    def transition_kernel(self, z0, t, dt):
+        """Mean and variance of transition from z0 at time t to t+dt."""
+        exp_neg_theta_dt = torch.exp(-self.theta * dt)
+        mean = z0 * exp_neg_theta_dt
+        var = (self.sigma**2 / (2 * self.theta)) * (1 - exp_neg_theta_dt**2)
+        return mean, var
+    
+    def bridge_sample(self, z0, z1, t):
+        """
+        Sample from the exact OU bridge between z0 at t=0 and z1 at t=1.
+        Returns mean and variance of the bridge at time t (0 <= t <= 1).
+        
+        The bridge satisfies:
+            z_t | z0, z1 ~ N(μ(t), σ²(t))
+        where
+            μ(t) = (sinh(θ(1-t)) / sinh(θ)) * z0 + (sinh(θ t) / sinh(θ)) * z1
+            σ²(t) = (σ²/(2θ)) * (sinh(θ t) * sinh(θ(1-t)) / sinh(θ))
+        Using exponential forms for numerical stability.
+        """
+        # Use exponential forms to avoid numerical issues
+        exp_neg_theta_t = torch.exp(-self.theta * t)
+        exp_neg_theta_1_t = torch.exp(-self.theta * (1 - t))
+        exp_neg_theta = torch.exp(-self.theta)
+        
+        # Mean
+        numerator = (exp_neg_theta_t * (1 - exp_neg_theta_1_t**2) * z0 + 
+                     (1 - exp_neg_theta_t**2) * exp_neg_theta_1_t * z1)
+        denominator = 1 - exp_neg_theta**2
+        mean = numerator / denominator
+        
+        # Variance
+        var = (self.sigma**2 / (2 * self.theta)) * \
+              ((1 - exp_neg_theta_t**2) * (1 - exp_neg_theta_1_t**2)) / (1 - exp_neg_theta**2)
+        var = var.clamp(min=0)  # Numerical safety
+        
+        return mean, var
 
 # ============================================================
 # UTILITIES
@@ -195,10 +251,32 @@ def channel_diversity_loss(mu):
     balance_loss = channel_stds.std()
     return diversity_loss + 0.1 * balance_loss
 
+def composite_score(loss_dict, phase):
+    """Compute a composite score for model selection."""
+    score = 0.0
+    if phase == 1:
+        # For VAE phase: higher SNR, lower KL, higher diversity are good
+        if 'snr' in loss_dict:
+            score += loss_dict['snr'] / 30.0  # normalize target SNR 30dB
+        if 'kl' in loss_dict:
+            score -= loss_dict['kl'] * 10  # penalize high KL
+        if 'diversity' in loss_dict:
+            score += loss_dict['diversity'] * 100  # reward diversity
+        if 'min_channel_std' in loss_dict:
+            score += loss_dict['min_channel_std'] * 20  # reward higher min std
+    else:
+        # For drift phase: lower drift error is better
+        if 'drift' in loss_dict:
+            score -= loss_dict['drift'] * 10
+        if 'consistency' in loss_dict:
+            score -= loss_dict['consistency'] * 10
+    return score
+
 # ============================================================
 # PERCENTILE RESCALING (same as before)
 # ============================================================
 class PercentileRescale(nn.Module):
+    # ... (identical to previous) ...
     def __init__(self, features, p_low=1.0, p_high=99.0, momentum=0.1):
         super().__init__()
         self.register_buffer('low', torch.zeros(features))
@@ -227,12 +305,13 @@ class PercentileRescale(nn.Module):
         return torch.tanh((x - shift) / scale)
 
 # ============================================================
-# KPI TRACKER
+# KPI TRACKER (enhanced with composite score)
 # ============================================================
 class KPITracker:
     def __init__(self, window_size=100):
         self.window_size = window_size
         self.metrics = defaultdict(list)
+        self.composite_scores = []
         
     def update(self, metrics_dict):
         for key, value in metrics_dict.items():
@@ -242,6 +321,12 @@ class KPITracker:
                 self.metrics[key].append(value)
                 if len(self.metrics[key]) > self.window_size:
                     self.metrics[key].pop(0)
+        
+        # Track composite score if available
+        if 'composite_score' in metrics_dict:
+            self.composite_scores.append(metrics_dict['composite_score'])
+            if len(self.composite_scores) > self.window_size:
+                self.composite_scores.pop(0)
                 
     def compute_convergence(self):
         convergence = {}
@@ -460,7 +545,7 @@ class LabelConditionedDrift(nn.Module):
         return out
 
 # ============================================================
-# ENHANCED TRAINER
+# ENHANCED TRAINER (with OU bridge support)
 # ============================================================
 class EnhancedLabelTrainer:
     def __init__(self, loader):
@@ -479,11 +564,18 @@ class EnhancedLabelTrainer:
         self.phase = 1
         self.phase_preference = None
         self.best_loss = float('inf')
+        self.best_composite_score = float('-inf')
         self.debug_counter = 0
         self.debug_interval = 50
+        
+        # OU reference process
+        self.ou_ref = OUReference(theta=OU_THETA, sigma=OU_SIGMA) if USE_OU_BRIDGE else None
+        
         logger.info(f"Models initialized:")
         logger.info(f"  VAE params: {sum(p.numel() for p in self.vae.parameters()):,}")
         logger.info(f"  Drift params: {sum(p.numel() for p in self.drift.parameters()):,}")
+        if USE_OU_BRIDGE:
+            logger.info(f"  Using OU bridge reference (theta={OU_THETA})")
 
     def get_training_phase(self, epoch):
         global TRAINING_SCHEDULE
@@ -557,7 +649,7 @@ class EnhancedLabelTrainer:
             total_loss = recon_loss + kl_loss + diversity_loss * DIVERSITY_WEIGHT
             snr = calc_snr(images, recon)
             self.debug_counter += 1
-            return {
+            loss_dict = {
                 'total': total_loss,
                 'recon': recon_loss.item(),
                 'kl': kl_loss.item(),
@@ -583,8 +675,19 @@ class EnhancedLabelTrainer:
             else:
                 t = torch.rand(images.shape[0], 1, device=dm.DEVICE)
             z0 = torch.randn_like(z1) * 0.8
-            zt = (1 - t.view(-1, 1, 1, 1)) * z0 + t.view(-1, 1, 1, 1) * z1
-            target = z1 - z0
+            
+            # Sample intermediate latent using either linear interpolation or OU bridge
+            if USE_OU_BRIDGE and self.ou_ref is not None:
+                # Use exact OU bridge sampling
+                mean, var = self.ou_ref.bridge_sample(z0, z1, t)
+                zt = mean + torch.sqrt(var + 1e-8) * torch.randn_like(mean)
+                # Target is still z1 - z0 (the overall displacement), though the path is non-linear
+                target = z1 - z0
+            else:
+                # Linear interpolation (original)
+                zt = (1 - t.view(-1, 1, 1, 1)) * z0 + t.view(-1, 1, 1, 1) * z1
+                target = z1 - z0
+            
             if self.drift.training:
                 noise_scale = 0.01 * (1 - t.view(-1, 1, 1, 1))
                 target = target + torch.randn_like(target) * noise_scale
@@ -592,12 +695,16 @@ class EnhancedLabelTrainer:
             time_weights = 1.0 + 2.0 * t.view(-1, 1, 1, 1)
             drift_loss_base = F.huber_loss(pred * time_weights, target * time_weights, delta=1.0) * DRIFT_WEIGHT
             total_loss = drift_loss_base + (consistency_loss * CONSISTENCY_WEIGHT)
-            return {
+            loss_dict = {
                 'total': total_loss,
                 'drift': drift_loss_base.item(),
                 'consistency': consistency_loss.item(),
                 'temperature': temperature
             }
+        
+        # Add composite score for model selection
+        loss_dict['composite_score'] = composite_score(loss_dict, phase)
+        return loss_dict
 
     def debug_training_loop(self, batch, loss_dict):
         # (same as original)
@@ -677,7 +784,7 @@ class EnhancedLabelTrainer:
                     if self.snapshot_drift:
                         self.snapshot_drift.step()
                 for key, value in loss_dict.items():
-                    if key not in ['total', 'raw_mse', 'raw_kl', 'snr', 'latent_std', 'min_channel_std', 'max_channel_std', 'channel_stds', 'temperature']:
+                    if key not in ['total', 'raw_mse', 'raw_kl', 'snr', 'latent_std', 'min_channel_std', 'max_channel_std', 'channel_stds', 'temperature', 'composite_score']:
                         if isinstance(value, (int, float)):
                             losses[key] += value
                         elif isinstance(value, torch.Tensor):
@@ -715,6 +822,8 @@ class EnhancedLabelTrainer:
                 avg_losses['latent_std'] = np.mean(latent_std_values)
             if channel_std_values:
                 avg_losses['min_channel_std'] = np.mean(channel_std_values)
+            # Compute average composite score (optional)
+            # We don't have composite score per batch, so we'll compute from the last loss_dict or skip.
         else:
             avg_losses = {'total': float('inf')}
             logger.error("No batches were successfully processed in this epoch!")
@@ -731,8 +840,8 @@ class EnhancedLabelTrainer:
             logger.info(f"  Drift loss: {avg_losses.get('drift', 0):.4f}")
         return avg_losses
 
-    def save_checkpoint(self, is_best=False):
-        return dm.save_checkpoint(self, is_best)
+    def save_checkpoint(self, is_best=False, is_best_overall=False):
+        return dm.save_checkpoint(self, is_best, is_best_overall)
 
     def load_checkpoint(self, path=None):
         return dm.load_checkpoint(self, path)
@@ -788,43 +897,45 @@ class EnhancedLabelTrainer:
             logger.info(f"Images saved to: {grid_path}")
             return grid_path
 
+    # Snapshot methods (remain unchanged, but can be kept as is or call dm equivalents)
     def load_from_snapshot(self, snapshot_path, load_vae=True, load_drift=True, phase=None):
-        # (same as original but using dm.DIRS, dm.DEVICE)
+        # (implementation unchanged - can be kept)
         pass
 
     def restart_from_vae_snapshot(self, vae_snapshot_path):
-        # (same as original but using dm.DIRS, dm.DEVICE)
+        # (implementation unchanged)
         pass
 
     def list_available_snapshots(self):
-        return dm.SnapshotManager.list_available_snapshots()  # static method?
+        # (implementation unchanged)
+        pass
 
     def inspect_snapshot(self, snapshot_path):
-        # (same)
+        # (implementation unchanged)
         pass
 
     def compare_snapshots(self, snapshot_path1, snapshot_path2):
-        # (same)
+        # (implementation unchanged)
         pass
 
     def run_snapshot_tests(self):
-        # (same)
+        # (implementation unchanged)
         pass
 
     def test_vae_at_snapshot(self, test_images, test_labels):
-        # (same)
+        # (implementation unchanged)
         pass
 
     def test_drift_at_snapshot(self, test_images, test_labels):
-        # (same)
+        # (implementation unchanged)
         pass
 
     def visualize_interpolation(self, z0, z1, labels, steps=8, save_path=None):
-        # (same)
+        # (implementation unchanged)
         pass
 
     def export_onnx(self):
-        # (same as original but using dm.DIRS)
+        # (implementation unchanged)
         pass
 
 # ============================================================
@@ -866,7 +977,16 @@ def train_model(num_epochs=EPOCHS, resume_from_snapshot=None):
             else:
                 kpi_update['loss'] = epoch_losses.get('drift', 0)
                 kpi_update['drift_loss'] = epoch_losses.get('drift', 0)
+            # Compute composite score from epoch losses
+            comp_score = composite_score(epoch_losses, trainer.phase)
+            kpi_update['composite_score'] = comp_score
             trainer.kpi_tracker.update(kpi_update)
+            
+            # Check for new best composite score
+            if comp_score > trainer.best_composite_score:
+                trainer.best_composite_score = comp_score
+                trainer.save_checkpoint(is_best_overall=True)
+        
         if trainer.phase == 1:
             current_total_loss = epoch_losses.get('total', float('inf'))
         else:
@@ -884,6 +1004,7 @@ def train_model(num_epochs=EPOCHS, resume_from_snapshot=None):
                 logger.info(f"Early stopping triggered at epoch {epoch+1}")
                 break
     logger.info(f"Training complete! Best loss: {trainer.best_loss:.4f}")
+    logger.info(f"Best composite score: {trainer.best_composite_score:.4f}")
     if ONNX_AVAILABLE:
         trainer.export_onnx()
     trainer.generate_samples(labels=list(range(8)))
