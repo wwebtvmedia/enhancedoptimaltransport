@@ -139,7 +139,7 @@ def save_checkpoint(trainer, is_best=False, is_best_overall=False):
     """Save training checkpoint."""
     # Import the global TRAINING_SCHEDULE
     import training
-    global_schedule = training.TRAINING_SCHEDULE
+    global_schedule = TRAINING_SCHEDULE
 
     checkpoint = {
         'epoch': trainer.epoch,
