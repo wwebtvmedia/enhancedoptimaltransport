@@ -137,9 +137,9 @@ class SnapshotManager:
 def save_checkpoint(trainer, is_best=False, is_best_overall=False):
     """Save training checkpoint."""
     """Save training checkpoint."""
-    # Import the global TRAINING_SCHEDULE
-    import training
-    global_schedule = TRAINING_SCHEDULE
+    # Import the global TRAINING_SCHEDULE directly
+    from training import TRAINING_SCHEDULE
+    global_schedule = TRAINING_SCHEDULE  # Now this is the dict itself
 
     checkpoint = {
         'epoch': trainer.epoch,
