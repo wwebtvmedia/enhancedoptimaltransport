@@ -23,7 +23,6 @@ LATENT_CHANNELS = config.LATENT_CHANNELS
 LATENT_H = config.LATENT_H
 LATENT_W = config.LATENT_W
 BATCH_SIZE = config.BATCH_SIZE
-DEVICE = config.DEVICE
 LR = config.LR
 EPOCHS = config.EPOCHS
 SNAPSHOT_INTERVAL = config.SNAPSHOT_INTERVAL
@@ -97,7 +96,7 @@ class SnapshotManager:
         
         latest_snapshot = self.snapshots[-1]
         try:
-            snapshot = torch.load(latest_snapshot, map_location=DEVICE, weights_only=False)
+            snapshot = torch.load(latest_snapshot, map_location=config.DEVICE, weights_only=False)
             
             if self.name == "drift" and 'drift_state' in snapshot:
                 self.model.load_state_dict(snapshot['drift_state'])
@@ -165,7 +164,7 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         return False
     
     try:
-        checkpoint = torch.load(path, map_location=DEVICE, weights_only=False)
+        checkpoint = torch.load(path, map_location=config.DEVICE, weights_only=False)
         
         trainer.vae.load_state_dict(checkpoint['vae_state'])
         trainer.drift.load_state_dict(checkpoint['drift_state'])
@@ -181,7 +180,7 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         # Handle Phase 2 reference model
         if trainer.phase == 2 and not hasattr(trainer, 'vae_ref'):
             from models import LabelConditionedVAE
-            trainer.vae_ref = LabelConditionedVAE().to(DEVICE)
+            trainer.vae_ref = LabelConditionedVAE().to(config.DEVICE)
             trainer.vae_ref.load_state_dict(trainer.vae.state_dict())
             trainer.vae_ref.eval()
             for param in trainer.vae_ref.parameters():
@@ -212,7 +211,7 @@ def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
         return False
     
     try:
-        checkpoint = torch.load(path, map_location=DEVICE, weights_only=False)
+        checkpoint = torch.load(path, map_location=config.DEVICE, weights_only=False)
         
         trainer.vae.load_state_dict(checkpoint['vae_state'])
         trainer.drift.load_state_dict(checkpoint['drift_state'])
@@ -336,7 +335,7 @@ class LabeledImageDataset(Dataset):
         }
 
 # ============================================================
-# DEVICE-COMPATIBLE DATALOADER SETTINGS
+# config.DEVICE-COMPATIBLE DATALOADER SETTINGS
 # ============================================================
 def get_dataloader_config() -> Dict:
     """Get dataloader configuration optimized for current device."""
@@ -346,17 +345,17 @@ def get_dataloader_config() -> Dict:
         'drop_last': True,
     }
     
-    if DEVICE.type == 'cuda':
+    if config.DEVICE.type == 'cuda':
         config_dict.update({
             'num_workers': 4 if os.cpu_count() > 4 else 2,
             'pin_memory': True,
         })
-    elif DEVICE.type == 'mps':
+    elif config.DEVICE.type == 'mps':
         config_dict.update({
             'num_workers': 0,
             'pin_memory': False,
         })
-    elif DEVICE.type == 'directml':
+    elif config.DEVICE.type == 'directml':
         config_dict.update({
             'num_workers': 2,
             'pin_memory': True,

@@ -347,7 +347,7 @@ class EnhancedLabelTrainer:
         if phase != self.phase:
             logger.info(f"🔄 Phase changed from {self.phase} to {phase} at epoch {epoch+1}")
             self.phase = phase
-            if phase == 2 and epoch == SWITCH_EPOCH:
+            if phase == 2 and self.vae_ref is None:
                 self._handle_phase_transition()
         return phase
 
