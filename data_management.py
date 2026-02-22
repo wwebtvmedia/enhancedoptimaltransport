@@ -154,7 +154,7 @@ def save_checkpoint(trainer, is_best=False, is_best_overall=False):
         'best_loss': trainer.best_loss,
         'best_composite_score': trainer.best_composite_score,
         'kpi_metrics': trainer.kpi_tracker.metrics,
-        'training_schedule': global_schedule.TRAINING_SCHEDULE
+        'training_schedule': global_schedule
     }
     
     latest_path = DIRS["ckpt"] / "latest.pt"
