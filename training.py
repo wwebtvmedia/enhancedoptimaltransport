@@ -12,11 +12,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torchvision.utils as vutils
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 from scipy import stats
 from typing import Optional, List, Dict, Union, Tuple, Any
+
 
 # Optional imports
 try:
