@@ -461,18 +461,67 @@ def main():
                 print(" No trained model found!")
                 
         elif choice == '4':
+            # Generate samples from checkpoint with interactive parameters
             trainer = training.EnhancedLabelTrainer(dummy_loader)
             checkpoint_path = config.DIRS["ckpt"] / "latest.pt"
             if checkpoint_path.exists():
                 trainer.load_for_inference()
-                trainer.generate_samples()
+                
+                # Prompt for generation parameters
+                num_samples = input("Number of samples to generate [8]: ").strip()
+                num_samples = int(num_samples) if num_samples else 8
+                
+                labels_input = input("Labels (comma-separated, e.g., 0,1,2,3) [random]: ").strip()
+                if labels_input:
+                    labels = [int(x.strip()) for x in labels_input.split(',')]
+                else:
+                    labels = None  # random labels
+                
+                temp_input = input(f"Temperature [default: {config.INFERENCE_TEMPERATURE}] (0.3-1.2): ").strip()
+                temperature = float(temp_input) if temp_input else config.INFERENCE_TEMPERATURE
+                
+                method_input = input("Integration method (euler / rk4) [default: rk4]: ").strip().lower()
+                method = method_input if method_input in ['euler', 'rk4'] else 'rk4'
+                
+                print(f"\n Generating {num_samples} samples with temperature {temperature} using {method.upper()}...")
+                trainer.generate_samples(labels=labels, num_samples=num_samples,
+                                         temperature=temperature, method=method)
                 print(f"\n Samples saved to: {config.DIRS['samples']}")
             else:
                 print(" No trained model found!")
                 
         elif choice == '5':
-            inference.run_inference()
+            # Label-conditioned inference – gather all inputs here and pass to inference.run_inference()
+            print("\n Inference Configuration")
+            print("-" * 30)
             
+            # Labels
+            print("\nAvailable labels: 0-9 for CIFAR-10 classes")
+            print("(0: airplane, 1: automobile, 2: bird, 3: cat, 4: deer,")
+            print(" 5: dog, 6: frog, 7: horse, 8: ship, 9: truck)")
+            label_input = input("\nEnter labels (comma-separated, e.g., 0,1,2,3) [default: 0,1,2,3]: ").strip()
+            if label_input:
+                labels = [int(x.strip()) for x in label_input.split(',')]
+            else:
+                labels = [0, 1, 2, 3]
+            
+            # Samples per label
+            samples_input = input(f"Samples per label [default: 2]: ").strip()
+            samples_per_label = int(samples_input) if samples_input else 2
+            
+            # Temperature
+            temp_input = input(f"Temperature [default: {config.INFERENCE_TEMPERATURE}] (0.3-1.2): ").strip()
+            temperature = float(temp_input) if temp_input else config.INFERENCE_TEMPERATURE
+            
+            # Integration method
+            method_input = input("Integration method (euler / rk4) [default: rk4]: ").strip().lower()
+            method = method_input if method_input in ['euler', 'rk4'] else 'rk4'
+            
+            # Call inference with the collected parameters
+            inference.run_inference(labels=labels,
+                                    samples_per_label=samples_per_label,
+                                    temperature=temperature,
+                                    method=method)            
         elif choice == '6':
             trainer = training.EnhancedLabelTrainer(dummy_loader)
             result = interactive_snapshot_loader(trainer)

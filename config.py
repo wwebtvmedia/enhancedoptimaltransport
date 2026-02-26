@@ -36,6 +36,10 @@ DRIFT_WEIGHT = 0.5
 DIVERSITY_WEIGHT = 0.01
 CONSISTENCY_WEIGHT = 0.5
 
+# Fourier feature positional encoding (for VAE encoder)
+USE_FOURIER_FEATURES = True          # set to False to disable
+FOURIER_FREQS = [1, 2, 4, 8, 16]     # frequencies (multiples of π)
+
 # ============================================================
 # TRAINING PHASE CONTROL
 # ============================================================

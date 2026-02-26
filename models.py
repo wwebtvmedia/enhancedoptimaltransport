@@ -120,7 +120,14 @@ class LabelConditionedVAE(nn.Module):
         self.label_emb = nn.Embedding(NUM_CLASSES, LABEL_EMB_DIM)
         
         # Encoder
-        self.enc_in = nn.Conv2d(3, 32, 3, 1, 1)
+        # Fourier feature
+        if config.USE_FOURIER_FEATURES:
+            self.fourier_channels = len(config.FOURIER_FREQS) * 4   # sin(x), cos(x), sin(y), cos(y) per freq
+        else:
+            self.fourier_channels = 0
+
+        self.enc_in = nn.Conv2d(3 + self.fourier_channels, 32, 3, 1, 1)
+
         self.enc_blocks = nn.ModuleList([
             LabelConditionedBlock(32, 64),
             nn.Conv2d(64, 64, 4, 2, 1),
@@ -147,11 +154,39 @@ class LabelConditionedVAE(nn.Module):
         self.dec_out = nn.Conv2d(32, 3, 3, 1, 1)
         self.diversity_loss = None
 
+    def _get_fourier_features(self, x):
+        """
+        x: image tensor of shape (B, 3, H, W), values in [-1,1]
+        Returns: tensor of shape (B, C_fourier, H, W) or None if disabled.
+        """
+        if not config.USE_FOURIER_FEATURES:
+            return None
+        B, C, H, W = x.shape
+        # Normalised coordinates in [-1, 1]
+        y_coords = torch.linspace(-1, 1, H, device=x.device).view(1, 1, H, 1)
+        x_coords = torch.linspace(-1, 1, W, device=x.device).view(1, 1, 1, W)
+        y_grid = y_coords.expand(B, 1, H, W)   # (B,1,H,W)
+        x_grid = x_coords.expand(B, 1, H, W)
+        feats = []
+        for f in config.FOURIER_FREQS:
+            feats.append(torch.sin(np.pi * f * x_grid))
+            feats.append(torch.cos(np.pi * f * x_grid))
+            feats.append(torch.sin(np.pi * f * y_grid))
+            feats.append(torch.cos(np.pi * f * y_grid))
+        return torch.cat(feats, dim=1)   # (B, 4*len(FOURIER_FREQS), H, W)
+
+
+
     def encode(self, x, labels):
         """Encode images to latent distribution parameters."""
         label_emb = self.label_emb(labels)
+      
+        if config.USE_FOURIER_FEATURES:
+            fourier = self._get_fourier_features(x)
+            x = torch.cat([x, fourier], dim=1)   # (B, 3+4*len(FREQS), H, W)
         
         h = self.enc_in(x)
+        
         for block in self.enc_blocks:
             if isinstance(block, LabelConditionedBlock):
                 h = block(h, label_emb)
