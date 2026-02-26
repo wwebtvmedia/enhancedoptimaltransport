@@ -637,6 +637,11 @@ class EnhancedLabelTrainer:
             avg_losses = {}
             for key, value in losses.items():
                 avg_losses[key] = value / batch_count
+
+            if avg_losses:
+                avg_losses['total'] = sum(avg_losses.values())
+            else:
+                avg_losses['total'] = 0.0            
             
             if snr_values:
                 avg_losses['snr'] = np.mean(snr_values)
