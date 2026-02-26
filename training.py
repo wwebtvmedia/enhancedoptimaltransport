@@ -759,16 +759,20 @@ class EnhancedLabelTrainer:
             # ----- ODE integration -----
             for i in range(steps):
                 t_cur = torch.full((num_samples, 1), i * dt, device=DEVICE)
-                    
+                used_for_norm = None
+
+                
                 if method == 'euler':
                     drift = self.drift(z, t_cur, labels_tensor)
                     z = z + drift * dt
+                    used_for_norm = drift
                 elif method == 'heun':
                     k1 = self.drift(z, t_cur, labels_tensor)
                     t_next = torch.full((num_samples, 1), (i + 1) * dt, device=DEVICE)
                     z_pred = z + dt * k1
                     k2 = self.drift(z_pred, t_next, labels_tensor)
                     z = z + (dt / 2.0) * (k1 + k2)
+                    used_for_norm = k1
                 elif method == 'rk4':
                     k1 = self.drift(z, t_cur, labels_tensor)
                     t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=DEVICE)
@@ -780,15 +784,16 @@ class EnhancedLabelTrainer:
                     z_next = z + dt * k3
                     k4 = self.drift(z_next, t_next, labels_tensor)
                     z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+                    used_for_norm = k1
                 else:
                     raise ValueError(f"Unknown method: {method}")
     
                 z = torch.clamp(z, -10, 10)   # gentle clamping
                 
                 if i % 10 == 0:
-                    drift_norm = (k1 if method == 'rk4' else drift).flatten(start_dim=1).norm(p=2, dim=1).mean().item()
+                    drift_norm = used_for_norm.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
                     logger.info(f"Step {i:3d}, t={i*dt:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std():.4f}")
-                
+                                
                 if torch.isnan(z).any():
                     logger.error(f"NaN detected at step {i}!")
                     break
