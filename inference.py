@@ -86,7 +86,7 @@ def run_inference(labels: Optional[List[int]] = None,
             langevin_score_scale = 1.0
     
     # Ensure method is valid
-    method = method if method in ['euler', 'rk4'] else 'rk4'
+    method = method if method in ['euler', 'heun', 'rk4'] else 'heun'
     
     # Build list of labels
     all_labels = []

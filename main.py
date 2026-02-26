@@ -480,7 +480,7 @@ def main():
                 temp_input = input(f"Temperature [default: {config.INFERENCE_TEMPERATURE}] (0.3-1.2): ").strip()
                 temperature = float(temp_input) if temp_input else config.INFERENCE_TEMPERATURE
                 
-                method_input = input("Integration method (euler / rk4) [default: rk4]: ").strip().lower()
+                method_input = input("Integration method (euler / heun / rk4) [default: heun]: ").strip().lower()
                 method = method_input if method_input in ['euler', 'rk4'] else 'rk4'
                 
                 # Langevin refinement options
@@ -530,7 +530,7 @@ def main():
             temperature = float(temp_input) if temp_input else config.INFERENCE_TEMPERATURE
             
             # Integration method
-            method_input = input("Integration method (euler / rk4) [default: rk4]: ").strip().lower()
+            method_input = input("Integration method (euler / heun / rk4) [default: heun]: ").strip().lower()
             method = method_input if method_input in ['euler', 'rk4'] else 'rk4'
             
             # Langevin refinement

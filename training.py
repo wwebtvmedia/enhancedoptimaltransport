@@ -720,7 +720,7 @@ class EnhancedLabelTrainer:
             logger.error(f"Failed to load snapshot: {e}")
             return False
 
-    def generate_samples(self, labels=None, num_samples=8, temperature=None, method='rk4',
+    def generate_samples(self, labels=None, num_samples=8, temperature=None, method='heun',
                         langevin_steps=0, langevin_step_size=0.1, langevin_score_scale=1.0):
         """
         Generate samples with label conditioning.
@@ -754,10 +754,16 @@ class EnhancedLabelTrainer:
             # ----- ODE integration -----
             for i in range(steps):
                 t_cur = torch.full((num_samples, 1), i * dt, device=DEVICE)
-                
+                    
                 if method == 'euler':
                     drift = self.drift(z, t_cur, labels_tensor)
                     z = z + drift * dt
+                elif method == 'heun':
+                    k1 = self.drift(z, t_cur, labels_tensor)
+                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=DEVICE)
+                    z_pred = z + dt * k1
+                    k2 = self.drift(z_pred, t_next, labels_tensor)
+                    z = z + (dt / 2.0) * (k1 + k2)
                 elif method == 'rk4':
                     k1 = self.drift(z, t_cur, labels_tensor)
                     t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=DEVICE)
@@ -771,7 +777,7 @@ class EnhancedLabelTrainer:
                     z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
                 else:
                     raise ValueError(f"Unknown method: {method}")
-                
+    
                 z = torch.clamp(z, -10, 10)   # gentle clamping
                 
                 if i % 10 == 0:
