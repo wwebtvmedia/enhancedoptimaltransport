@@ -12,7 +12,10 @@ import config
 def run_inference(labels: Optional[List[int]] = None,
                   samples_per_label: Optional[int] = None,
                   temperature: Optional[float] = None,
-                  method: str = 'rk4') -> None:
+                  method: str = 'rk4',
+                  langevin_steps: Optional[int] = None,
+                  langevin_step_size: Optional[float] = None,
+                  langevin_score_scale: Optional[float] = None) -> None:
     """
     Run inference with label conditioning.
     
@@ -20,7 +23,10 @@ def run_inference(labels: Optional[List[int]] = None,
         labels: List of class labels. If None, prompts user.
         samples_per_label: Number of samples per label. If None, prompts user.
         temperature: Sampling temperature. If None, prompts user.
-        method: Integration method ('euler' or 'rk4'). Default 'rk4'.
+        method: Integration method ('euler' or 'rk4').
+        langevin_steps: Number of Langevin refinement steps. If None, prompts user.
+        langevin_step_size: Step size for Langevin dynamics. If None, prompts user.
+        langevin_score_scale: Scaling factor for the approximate score. If None, prompts user.
     """
     checkpoint_path = dm.DIRS["ckpt"] / "latest.pt"
     if not checkpoint_path.exists():
@@ -60,6 +66,25 @@ def run_inference(labels: Optional[List[int]] = None,
         temp_input = input(f"Temperature [default: {config.INFERENCE_TEMPERATURE}] (0.3-1.2): ").strip()
         temperature = float(temp_input) if temp_input else config.INFERENCE_TEMPERATURE
     
+    # Langevin refinement options
+    if langevin_steps is None:
+        langevin_input = input("Langevin refinement steps [default: 0 (disabled)]: ").strip()
+        langevin_steps = int(langevin_input) if langevin_input else 0
+    
+    if langevin_step_size is None:
+        if langevin_steps > 0:
+            step_input = input("Langevin step size [default: 0.1]: ").strip()
+            langevin_step_size = float(step_input) if step_input else 0.1
+        else:
+            langevin_step_size = 0.1  # placeholder, not used
+    
+    if langevin_score_scale is None:
+        if langevin_steps > 0:
+            scale_input = input("Langevin score scale [default: 1.0]: ").strip()
+            langevin_score_scale = float(scale_input) if scale_input else 1.0
+        else:
+            langevin_score_scale = 1.0
+    
     # Ensure method is valid
     method = method if method in ['euler', 'rk4'] else 'rk4'
     
@@ -69,12 +94,17 @@ def run_inference(labels: Optional[List[int]] = None,
         all_labels.extend([label] * samples_per_label)
     
     print(f"\n Generating {len(all_labels)} samples with temperature {temperature} using {method.upper()}...")
+    if langevin_steps > 0:
+        print(f"  + {langevin_steps} Langevin refinement steps (step_size={langevin_step_size}, scale={langevin_score_scale})")
     
     # Generate samples
     grid_path = trainer.generate_samples(
         labels=all_labels,
         temperature=temperature,
-        method=method
+        method=method,
+        langevin_steps=langevin_steps,
+        langevin_step_size=langevin_step_size,
+        langevin_score_scale=langevin_score_scale
     )
     
     print(f"\n Generated {len(all_labels)} samples")

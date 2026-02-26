@@ -720,17 +720,19 @@ class EnhancedLabelTrainer:
             logger.error(f"Failed to load snapshot: {e}")
             return False
 
-    def generate_samples(self, labels: Optional[List[int]] = None, 
-                        num_samples: int = 8, temperature: float = 0.8) -> Path:
+    def generate_samples(self, labels=None, num_samples=8, temperature=None, method='rk4',
+                        langevin_steps=0, langevin_step_size=0.1, langevin_score_scale=1.0):
         """
-        Generate samples using probability flow ODE.
+        Generate samples with label conditioning.
         
-        FIXES APPLIED:
-        1. Match training noise scale: z0 = randn * 0.8
-        2. Remove spurious Langevin noise
-        3. Replace tanh with gentle clamping
-        4. Use adaptive clipping based on running statistics
-        5. Temperature based on global EPOCHS
+        Args:
+            labels: List of class labels
+            num_samples: Number of samples to generate
+            temperature: Ignored (kept for API compatibility)
+            method: 'euler' or 'rk4'
+            langevin_steps: Number of Langevin refinement steps (0 = disable)
+            langevin_step_size: Step size for Langevin dynamics
+            langevin_score_scale: Scaling factor for the approximate score (drift)
         """
         self.vae.eval()
         self.drift.eval()
@@ -739,66 +741,90 @@ class EnhancedLabelTrainer:
             labels = [i % 10 for i in range(num_samples)]
         
         with torch.no_grad():
-            labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
+            labels_tensor = torch.tensor(labels, dtype=torch.long, device=DEVICE)
             
-            # FIX #1: Match training scale (0.8)
-            z = torch.randn(num_samples, LATENT_CHANNELS, LATENT_H, LATENT_W, device=config.DEVICE) * 0.8
+            # Match training noise scale (0.8)
+            z = torch.randn(num_samples, LATENT_CHANNELS, LATENT_H, LATENT_W, device=DEVICE) * 0.8
+            
+            logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
             
             steps = DEFAULT_STEPS
             dt = 1.0 / steps
             
-            # FIX #5: Temperature based on global EPOCHS
-            if hasattr(self, 'epoch') and self.epoch > 0:
-                # Match training annealing schedule
-                effective_temp = 0.3 + 0.7 * (1 - self.epoch / EPOCHS)
-                temperature = temperature * effective_temp
-            
+            # ----- ODE integration -----
             for i in range(steps):
-                t = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
+                t_cur = torch.full((num_samples, 1), i * dt, device=DEVICE)
                 
-                # FIX #2: Removed Langevin-style noise injection
-                # No noise added to state during inference
+                if method == 'euler':
+                    drift = self.drift(z, t_cur, labels_tensor)
+                    z = z + drift * dt
+                elif method == 'rk4':
+                    k1 = self.drift(z, t_cur, labels_tensor)
+                    t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=DEVICE)
+                    z_half = z + 0.5 * dt * k1
+                    k2 = self.drift(z_half, t_half, labels_tensor)
+                    z_half2 = z + 0.5 * dt * k2
+                    k3 = self.drift(z_half2, t_half, labels_tensor)
+                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=DEVICE)
+                    z_next = z + dt * k3
+                    k4 = self.drift(z_next, t_next, labels_tensor)
+                    z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+                else:
+                    raise ValueError(f"Unknown method: {method}")
                 
-                # Get drift prediction
-                drift = self.drift(z, t, labels_tensor)
+                z = torch.clamp(z, -10, 10)   # gentle clamping
                 
-                # FIX #4: Adaptive clipping based on running statistics
-                adaptive_threshold = self.drift.get_adaptive_threshold(num_std=3.0)
-                drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1, keepdim=True).view(-1, 1, 1, 1)
-                
-                mask = drift_norm > adaptive_threshold
-                if mask.any():
-                    drift = torch.where(
-                        mask,
-                        drift * (adaptive_threshold / (drift_norm + 1e-8)),
-                        drift
-                    )
-                
-                # Euler step
-                z = z + drift * dt
-                
-                # FIX #3: Gentle clamping instead of tanh
-                z = torch.clamp(z, -10, 10)
+                if i % 10 == 0:
+                    drift_norm = (k1 if method == 'rk4' else drift).flatten(start_dim=1).norm(p=2, dim=1).mean().item()
+                    logger.info(f"Step {i:3d}, t={i*dt:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std():.4f}")
                 
                 if torch.isnan(z).any():
                     logger.error(f"NaN detected at step {i}!")
                     break
             
-            # Decode to images
+            # ----- Langevin refinement (optional) -----
+            if langevin_steps > 0:
+                logger.info(f"Starting {langevin_steps} Langevin refinement steps...")
+                t_one = torch.full((num_samples, 1), 1.0, device=DEVICE)
+                for step in range(langevin_steps):
+                    noise = torch.randn_like(z) * np.sqrt(2 * langevin_step_size)
+                    # Use drift at t=1 as an approximate score direction
+                    drift_at_end = self.drift(z, t_one, labels_tensor)
+                    z = z + 0.5 * langevin_step_size * langevin_score_scale * drift_at_end + noise
+                    z = torch.clamp(z, -10, 10)
+                    logger.info(f"Langevin step {step+1}: z std = {z.std():.4f}")
+            
+            logger.info(f"Final z - mean: {z.mean():.3f}, std: {z.std():.3f}")
+            
+            # Decode
             images = self.vae.decode(z, labels_tensor)
             images = torch.clamp(images, -1, 1)
-
-            # Save results
+            
+            logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")
+            
+            # Save images (existing saving code)
             images_display = (images + 1) / 2
             images_display = torch.clamp(images_display, 0, 1)
-
-            grid_path = DIRS["samples"] / f"gen_epoch{self.epoch+1}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-            dm.save_image_grid(images_display, grid_path, nrow=4, normalize=False)
-            dm.save_individual_images(images_display, labels, self.epoch, base_dir=DIRS["samples"])
-            dm.save_raw_tensors(z, images, labels, self.epoch, base_dir=DIRS["samples"])
-
+            
+            grid = vutils.make_grid(images_display, nrow=4, padding=2)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            grid_path = DIRS["samples"] / f"gen_epoch{self.epoch+1}_{timestamp}.png"
+            vutils.save_image(grid, grid_path)
+            
+            for idx, img in enumerate(images_display):
+                individual_path = DIRS["samples"] / f"gen_{idx}_label{labels[idx]}_epoch{self.epoch+1}.png"
+                vutils.save_image(img, individual_path)
+            
+            debug_path = DIRS["samples"] / f"raw_epoch{self.epoch+1}_{timestamp}.pt"
+            torch.save({
+                'z': z.cpu(),
+                'images': images.cpu(),
+                'labels': labels
+            }, debug_path)
+            
             logger.info(f"Generated {num_samples} samples for labels {labels}")
             logger.info(f"Images saved to: {grid_path}")
+            
             return grid_path
 
     def list_available_snapshots(self) -> List[Path]:

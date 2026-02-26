@@ -483,15 +483,31 @@ def main():
                 method_input = input("Integration method (euler / rk4) [default: rk4]: ").strip().lower()
                 method = method_input if method_input in ['euler', 'rk4'] else 'rk4'
                 
+                # Langevin refinement options
+                langevin_steps_input = input("Langevin refinement steps [default: 0 (disabled)]: ").strip()
+                langevin_steps = int(langevin_steps_input) if langevin_steps_input else 0
+                langevin_step_size = 0.1
+                langevin_score_scale = 1.0
+                if langevin_steps > 0:
+                    step_input = input("Langevin step size [default: 0.1]: ").strip()
+                    langevin_step_size = float(step_input) if step_input else 0.1
+                    scale_input = input("Langevin score scale [default: 1.0]: ").strip()
+                    langevin_score_scale = float(scale_input) if scale_input else 1.0
+                
                 print(f"\n Generating {num_samples} samples with temperature {temperature} using {method.upper()}...")
+                if langevin_steps > 0:
+                    print(f"  + {langevin_steps} Langevin steps (step_size={langevin_step_size}, scale={langevin_score_scale})")
+                
                 trainer.generate_samples(labels=labels, num_samples=num_samples,
-                                         temperature=temperature, method=method)
+                                        temperature=temperature, method=method,
+                                        langevin_steps=langevin_steps,
+                                        langevin_step_size=langevin_step_size,
+                                        langevin_score_scale=langevin_score_scale)
                 print(f"\n Samples saved to: {config.DIRS['samples']}")
             else:
-                print(" No trained model found!")
-                
+                print(" No trained model found!")       
         elif choice == '5':
-            # Label-conditioned inference – gather all inputs here and pass to inference.run_inference()
+            # Label-conditioned inference – gather all inputs and pass to inference.run_inference()
             print("\n Inference Configuration")
             print("-" * 30)
             
@@ -517,11 +533,25 @@ def main():
             method_input = input("Integration method (euler / rk4) [default: rk4]: ").strip().lower()
             method = method_input if method_input in ['euler', 'rk4'] else 'rk4'
             
+            # Langevin refinement
+            langevin_steps_input = input("Langevin refinement steps [default: 0 (disabled)]: ").strip()
+            langevin_steps = int(langevin_steps_input) if langevin_steps_input else 0
+            langevin_step_size = 0.1
+            langevin_score_scale = 1.0
+            if langevin_steps > 0:
+                step_input = input("Langevin step size [default: 0.1]: ").strip()
+                langevin_step_size = float(step_input) if step_input else 0.1
+                scale_input = input("Langevin score scale [default: 1.0]: ").strip()
+                langevin_score_scale = float(scale_input) if scale_input else 1.0
+            
             # Call inference with the collected parameters
             inference.run_inference(labels=labels,
                                     samples_per_label=samples_per_label,
                                     temperature=temperature,
-                                    method=method)            
+                                    method=method,
+                                    langevin_steps=langevin_steps,
+                                    langevin_step_size=langevin_step_size,
+                                    langevin_score_scale=langevin_score_scale)
         elif choice == '6':
             trainer = training.EnhancedLabelTrainer(dummy_loader)
             result = interactive_snapshot_loader(trainer)
@@ -545,8 +575,7 @@ def main():
                 else:
                     print(" Failed to load snapshot into real trainer.")
             else:
-                print("Snapshot loading cancelled.")
-                
+                print("Snapshot loading cancelled.")                
         elif choice == '7':
             trainer = training.EnhancedLabelTrainer(dummy_loader)
             if trainer.load_checkpoint():
