@@ -358,6 +358,9 @@ class EnhancedLabelTrainer:
         self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
         self.vae_ref.load_state_dict(self.vae.state_dict())
         self.vae_ref.eval()
+        
+        print("Anchor requires_grad:", any(p.requires_grad for p in self.vae_ref.parameters())) # Should be False
+        
         for param in self.vae_ref.parameters():
             param.requires_grad = False
         
@@ -378,6 +381,14 @@ class EnhancedLabelTrainer:
             lr=LR * 0.1,
             weight_decay=WEIGHT_DECAY
         )
+        
+        trainable_count = 0
+        for name, param in self.vae.named_parameters():
+            if param.requires_grad:
+                print(f"Trainable: {name}")
+                trainable_count += param.numel()
+        logger.info(f"Total trainable VAE params in Phase 2: {trainable_count:,}")
+        
         self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
             self.opt_vae,
             T_max=EPOCHS - self.epoch,
