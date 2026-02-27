@@ -388,7 +388,7 @@ class EnhancedLabelTrainer:
 
         elif new_phase == 2:
             # Phase 2: Drift only, freeze decoder, unfreeze encoder, create anchor
-            self.vae_ref = LabelConditionedVAE().to(DEVICE)
+            self.vae_ref = models.LabelConditionedVAE().to(DEVICE)
             self.vae_ref.load_state_dict(self.vae.state_dict())
             self.vae_ref.eval()
             for param in self.vae_ref.parameters():
