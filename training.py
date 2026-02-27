@@ -518,6 +518,8 @@ class EnhancedLabelTrainer:
             }
         
         else:  # Drift training (phase 2 or 3)
+             # Get the epoch when drift training started
+            drift_start_epoch = getattr(self, 'phase2_start_epoch', TRAINING_SCHEDULE.get('switch_epoch_1', TRAINING_SCHEDULE.get('switch_epoch', 50)))
             with torch.no_grad():
                 mu_ref, _ = self.vae_ref.encode(images, labels)   # always use frozen anchor
                 mu, logvar = self.vae.encode(images, labels)
