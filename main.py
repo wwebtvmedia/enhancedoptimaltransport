@@ -297,45 +297,40 @@ def interactive_snapshot_loader(trainer) -> Optional[Tuple[Path, bool, bool, Opt
     
     return snap_path, load_vae, load_drift, phase
 
-def configure_training_schedule_interactive() -> None:
-    """Interactive menu for configuring training schedule."""
+def configure_training_schedule_interactive():
+    global TRAINING_SCHEDULE
     print("\n" + "="*70)
     print(" TRAINING SCHEDULE CONFIGURATION")
     print("="*70)
+    print(f"\nCurrent mode: {TRAINING_SCHEDULE['mode']}")
+    print("\nAvailable modes:")
+    print("  1. auto          - Switch at specified epoch")
+    print("  2. manual        - Force a specific phase (1,2,3) regardless of epoch")
+    print("  3. custom        - Custom schedule per epoch")
+    print("  4. alternate     - Alternate every N epochs")
+    print("  5. vae_only      - Train VAE only (phase 1 always)")
+    print("  6. drift_only    - Train Drift only (phase 2 always)")
+    print("  7. three_phase   - VAE only → Drift only → Both (adaptive)")
+    print("  8. keep current  - No change")
+    mode_choice = input("\nSelect mode (1-8): ").strip()
     
-    print("\nCurrent schedule:")
-    print(f"  Mode: {config.TRAINING_SCHEDULE['mode']}")
-    print(f"  Switch epoch: {config.TRAINING_SCHEDULE.get('switch_epoch', 50)}")
-    
-    print("\nSelect mode:")
-    print("  1. Auto (VAE for first N epochs, then Drift)")
-    print("  2. VAE only")
-    print("  3. Drift only")
-    print("  4. Alternate (switch every N epochs)")
-    print("  5. Custom (manual epoch mapping)")
-    
-    choice = input("\n Enter choice (1-5): ").strip()
-    
-    if choice == '1':
-        switch = input(f" Switch epoch [default: 50]: ").strip()
+    if mode_choice == '1':   # auto
+        switch = input(f"  Switch epoch [default: 50]: ").strip()
         switch_epoch = int(switch) if switch else 50
         training.configure_training_schedule(mode='auto', switch_epoch=switch_epoch)
     
-    elif choice == '2':
-        training.configure_training_schedule(mode='vae_only')
+    elif mode_choice == '2':   # manual
+        force_phase = input("  Force phase (1=VAE, 2=Drift, 3=Both): ").strip()
+        if force_phase in ('1','2','3'):
+            training.configure_training_schedule(mode='manual', force_phase=int(force_phase))
+        else:
+            print("  Invalid phase. Keeping current schedule.")
+            return
     
-    elif choice == '3':
-        training.configure_training_schedule(mode='drift_only')
-    
-    elif choice == '4':
-        freq = input(f" Alternate frequency [default: 5]: ").strip()
-        alt_freq = int(freq) if freq else 5
-        training.configure_training_schedule(mode='alternate', alternate_freq=alt_freq)
-    
-    elif choice == '5':
-        print("\n Enter custom schedule as epoch:phase pairs")
-        print(" Example: 0:1,10:1,20:2,30:2")
-        custom = input(" Schedule: ").strip()
+    elif mode_choice == '3':   # custom
+        print("\n  Enter custom schedule as epoch:phase pairs")
+        print("  Example: 0:1,10:1,20:2,30:2")
+        custom = input("  Schedule: ").strip()
         schedule = {}
         if custom:
             for pair in custom.split(','):
@@ -344,8 +339,29 @@ def configure_training_schedule_interactive() -> None:
                     schedule[int(e.strip())] = int(p.strip())
         training.configure_training_schedule(mode='custom', custom_schedule=schedule)
     
-    print(f"\n Schedule updated to mode: {config.TRAINING_SCHEDULE['mode']}")
-
+    elif mode_choice == '4':   # alternate
+        freq = input(f"  Alternate frequency [default: 5]: ").strip()
+        alt_freq = int(freq) if freq else 5
+        training.configure_training_schedule(mode='alternate', alternate_freq=alt_freq)
+    
+    elif mode_choice == '5':   # vae_only
+        training.configure_training_schedule(mode='vae_only')
+    
+    elif mode_choice == '6':   # drift_only
+        training.configure_training_schedule(mode='drift_only')
+    
+    elif mode_choice == '7':   # three_phase
+        training.configure_training_schedule(mode='three_phase')
+    
+    elif mode_choice == '8':   # keep current
+        return
+    
+    else:
+        print("  Invalid choice. No changes made.")
+        return
+    
+    print(f"\n  Schedule updated to mode: {config.TRAINING_SCHEDULE['mode']}")
+    
 def continue_training_from_snapshot(trainer, remaining_epochs: Optional[int] = None) -> None:
     """Continue training from a loaded snapshot."""
     if remaining_epochs is None:

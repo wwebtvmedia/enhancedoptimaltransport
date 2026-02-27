@@ -2,6 +2,7 @@
 # CENTRALIZED CONFIGURATION FOR SCHRÖDINGER BRIDGE
 # ============================================================================
 
+from logging import config
 import os
 import torch
 import logging
@@ -40,15 +41,24 @@ CONSISTENCY_WEIGHT = 0.5
 USE_FOURIER_FEATURES = True          # set to False to disable
 FOURIER_FREQS = [1, 2, 4, 8, 16]     # frequencies (multiples of π)
 
+# Three‑phase training (when mode='three_phase')
+PHASE1_EPOCHS = max(50, int(EPOCHS / 6))    # end of phase 1
+PHASE2_EPOCHS = max(50, int(EPOCHS / 2))   # end of phase 2
+
 # ============================================================
 # TRAINING PHASE CONTROL
 # ============================================================
 SWITCH_EPOCH = 50  # Default epoch to switch from VAE to Drift
+
 TRAINING_SCHEDULE = {
-    'mode': 'auto',  # 'auto', 'manual', 'custom', 'alternate'
-    'force_phase': None,  # None, 1 (VAE only), 2 (Drift only)
-    'custom_schedule': {},  # {epoch: phase} for custom schedules
-    'switch_epoch': SWITCH_EPOCH,
+    'mode': 'auto',               # 'auto', 'manual', 'custom', 'alternate', 'three_phase'
+    'force_phase': None,          # 1 (VAE), 2 (Drift), 3 (Both) for manual mode
+    'custom_schedule': {},        # {epoch: phase}
+    'switch_epoch': 50,           # for auto mode (single switch)
+    'switch_epoch_1': PHASE1_EPOCHS,   # for three_phase mode
+    'switch_epoch_2': PHASE2_EPOCHS,   # for three_phase mode
+    'vae_epochs': list(range(0, 50)),
+    'drift_epochs': list(range(50, 200)),
     'alternate_freq': 5,
 }
 

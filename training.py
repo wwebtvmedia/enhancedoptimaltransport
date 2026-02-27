@@ -183,21 +183,36 @@ def set_training_phase(epoch: int) -> int:
     if mode == 'manual':
         phase = TRAINING_SCHEDULE['force_phase']
         return 1 if phase is None else phase
+    
     elif mode == 'custom':
         return TRAINING_SCHEDULE['custom_schedule'].get(epoch, 1)
+    
     elif mode == 'alternate':
-        alternate_freq = TRAINING_SCHEDULE.get('alternate_freq', 5)
-        return 1 if (epoch // alternate_freq) % 2 == 0 else 2
-    else:  # 'auto' mode
+        alt_freq = TRAINING_SCHEDULE.get('alternate_freq', 5)
+        return 1 if (epoch // alt_freq) % 2 == 0 else 2
+    
+    elif mode == 'three_phase':
+        e1 = TRAINING_SCHEDULE['switch_epoch_1']
+        e2 = TRAINING_SCHEDULE['switch_epoch_2']
+        if epoch < e1:
+            return 1
+        elif epoch < e2:
+            return 2
+        else:
+            return 3
+    
+    else:  # 'auto' mode (single switch)
         return 1 if epoch < TRAINING_SCHEDULE['switch_epoch'] else 2
 
 def configure_training_schedule(
-    mode: str = 'auto', 
-    vae_epochs: Optional[List[int]] = None, 
-    drift_epochs: Optional[List[int]] = None, 
+    mode: str = 'auto',
+    vae_epochs: Optional[List[int]] = None,
+    drift_epochs: Optional[List[int]] = None,
     switch_epoch: int = 50,
     alternate_freq: int = 5,
-    custom_schedule: Optional[Dict] = None
+    custom_schedule: Optional[Dict] = None,
+    switch_epoch_1: Optional[int] = None,   # new
+    switch_epoch_2: Optional[int] = None,   # new
 ) -> Dict:
     """Configure the global training schedule."""
     if mode == 'vae_only':
@@ -215,6 +230,10 @@ def configure_training_schedule(
     elif mode == 'custom':
         TRAINING_SCHEDULE['mode'] = 'custom'
         TRAINING_SCHEDULE['custom_schedule'] = custom_schedule or {}
+    elif mode == 'three_phase':
+        TRAINING_SCHEDULE['mode'] = 'three_phase'
+        TRAINING_SCHEDULE['switch_epoch_1'] = switch_epoch_1 or config.PHASE1_EPOCHS
+        TRAINING_SCHEDULE['switch_epoch_2'] = switch_epoch_2 or config.PHASE2_EPOCHS
     elif mode == 'manual':
         TRAINING_SCHEDULE['mode'] = 'manual'
     
@@ -353,47 +372,86 @@ class EnhancedLabelTrainer:
                 self._handle_phase_transition()
         return phase
 
-    def _handle_phase_transition(self) -> None:
-        """Handle transition from Phase 1 to Phase 2."""
-        self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
-        self.vae_ref.load_state_dict(self.vae.state_dict())
-        self.vae_ref.eval()
-        
-        print("Anchor requires_grad:", any(p.requires_grad for p in self.vae_ref.parameters())) # Should be False
-        
-        for param in self.vae_ref.parameters():
-            param.requires_grad = False
-        
-        # Freeze most VAE layers, keep encoder trainable
-        unfrozen_count = 0
-        for name, param in self.vae.named_parameters():
-            if any(k in name for k in ['enc_', 'label_emb', 'z_mean', 'z_logvar']):
+    def _switch_to_phase(self, new_phase: int):
+        """Handle transition between training phases."""
+        if new_phase == 1:
+            # Phase 1: VAE only (already the initial state)
+            self.vae.train()
+            self.drift.eval()
+            # Ensure all VAE params are trainable (they already are)
+            for param in self.vae.parameters():
                 param.requires_grad = True
-                unfrozen_count += param.numel()
-            else:
+            # Recreate optimizer with full VAE (if needed)
+            self.opt_vae = optim.AdamW(self.vae.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+            self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(self.opt_vae, T_max=EPOCHS, eta_min=LR*0.01)
+            self.vae_ref = None  # no anchor needed
+
+        elif new_phase == 2:
+            # Phase 2: Drift only, freeze decoder, unfreeze encoder, create anchor
+            self.vae_ref = LabelConditionedVAE().to(DEVICE)
+            self.vae_ref.load_state_dict(self.vae.state_dict())
+            self.vae_ref.eval()
+            for param in self.vae_ref.parameters():
                 param.requires_grad = False
-        
-        logger.info(f"PHASE 2: Unfrozen {unfrozen_count:,} params. Consistency Anchor Set.")
-        
-        # Recreate optimizer for VAE with frozen layers
-        self.opt_vae = optim.AdamW(
-            filter(lambda p: p.requires_grad, self.vae.parameters()),
-            lr=LR * 0.1,
-            weight_decay=WEIGHT_DECAY
-        )
-        
-        trainable_count = 0
-        for name, param in self.vae.named_parameters():
-            if param.requires_grad:
-                print(f"Trainable: {name}")
-                trainable_count += param.numel()
-        logger.info(f"Total trainable VAE params in Phase 2: {trainable_count:,}")
-        
-        self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
-            self.opt_vae,
-            T_max=EPOCHS - self.epoch,
-            eta_min=LR * 0.005
-        )
+
+            # Unfreeze encoder parts only
+            unfrozen_count = 0
+            for name, param in self.vae.named_parameters():
+                if any(k in name for k in ['enc_', 'label_emb', 'z_mean', 'z_logvar']):
+                    param.requires_grad = True
+                    unfrozen_count += param.numel()
+                else:
+                    param.requires_grad = False
+            logger.info(f"Phase 2: Unfrozen {unfrozen_count:,} encoder params. Anchor set.")
+
+            # Re‑create optimizer for VAE (only encoder parts)
+            self.opt_vae = optim.AdamW(
+                filter(lambda p: p.requires_grad, self.vae.parameters()),
+                lr=LR * 0.1,
+                weight_decay=WEIGHT_DECAY
+            )
+            self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
+                self.opt_vae, T_max=EPOCHS - self.epoch, eta_min=LR * 0.005
+            )
+
+        elif new_phase == 3:
+            # Phase 3: Both trainable – unfreeze decoder as well
+            # Keep the reference anchor (still frozen)
+            # Unfreeze all VAE parameters
+            for name, param in self.vae.named_parameters():
+                param.requires_grad = True
+            logger.info("Phase 3: Unfroze all VAE parameters (encoder + decoder).")
+
+            # Re‑create optimizer with full VAE (maybe lower LR)
+            self.opt_vae = optim.AdamW(
+                self.vae.parameters(),
+                lr=LR * 0.05,   # even smaller LR for fine‑tuning
+                weight_decay=WEIGHT_DECAY
+            )
+            self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
+                self.opt_vae, T_max=EPOCHS - self.epoch, eta_min=LR * 0.001
+            )
+            # Drift optimizer unchanged (already in train mode)
+
+        # Ensure correct train/eval modes
+        if new_phase == 1:
+            self.vae.train()
+            self.drift.eval()
+        elif new_phase == 2:
+            self.vae.eval()   # VAE in eval mode? Actually we want encoder to train, but decoder is frozen. It's fine to keep VAE in train mode because only encoder parts are trainable and they will update.
+            self.vae.train()   # Let's put VAE in train mode so that BatchNorm etc update.
+            self.drift.train()
+        elif new_phase == 3:
+            self.vae.train()
+            self.drift.train()
+   
+    def get_training_phase(self, epoch):
+        phase = set_training_phase(epoch)
+        if phase != self.phase:
+            logger.info(f"🔄 Phase changed from {self.phase} to {phase} at epoch {epoch+1}")
+            self._switch_to_phase(phase)
+            self.phase = phase
+        return phase
 
     def compute_loss(self, batch: Dict, phase: int = 1) -> Dict:
         """Compute loss for current batch based on training phase."""
@@ -458,16 +516,18 @@ class EnhancedLabelTrainer:
                 'min_channel_std': min_channel_std,
                 'max_channel_std': channel_stds.max(),
             }
-        else:
-            # Phase 2: Train Drift with consistency
+        
+        else:  # Drift training (phase 2 or 3)
             with torch.no_grad():
-                mu_ref, _ = self.vae_ref.encode(images, labels)
+                mu_ref, _ = self.vae_ref.encode(images, labels)   # always use frozen anchor
                 mu, logvar = self.vae.encode(images, labels)
+                std_from_logvar = torch.exp(0.5 * logvar).mean().item()
                 consistency_loss = F.mse_loss(mu, mu_ref)
-                
-                # Temperature annealing based on global EPOCHS
+                mu_global_std = mu.std().item()
+
                 temperature = 0.3 + 0.7 * (1 - self.epoch / EPOCHS)
                 z1 = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * temperature
+                z_global_std = z1.std().item()
             
             # Sample time with beta distribution after sufficient training
             if self.epoch > SWITCH_EPOCH + EPOCHS // 6:  # After 1/6 of drift training
@@ -498,8 +558,10 @@ class EnhancedLabelTrainer:
             # Time-weighted loss
             time_weights = 1.0 + 2.0 * t.view(-1, 1, 1, 1)
             drift_loss_base = F.huber_loss(pred * time_weights, target * time_weights, delta=1.0) * DRIFT_WEIGHT
-            
-            total_loss = drift_loss_base + (consistency_loss * CONSISTENCY_WEIGHT)
+
+            consistency_decay = max(0.1, 1.0 - (self.epoch - drift_start_epoch) / (EPOCHS - drift_start_epoch))
+            # In Phase 3, we might want a different decay schedule; for now keep same.
+            total_loss = drift_loss_base + (consistency_loss * CONSISTENCY_WEIGHT * consistency_decay)
             
             loss_dict = {
                 'total': total_loss,
