@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-
 import config
 
 # ============================================================
@@ -114,15 +113,14 @@ class LabelConditionedBlock(nn.Module):
 class LabelConditionedVAE(nn.Module):
     """VAE with label conditioning for latent space encoding."""
     
-    def __init__(self, free_bits=2.0):
+    def __init__(self, free_bits=config.FREE_BITS):
         super().__init__()
         self.free_bits = free_bits
         self.label_emb = nn.Embedding(NUM_CLASSES, LABEL_EMB_DIM)
-        
-        # Encoder
-        # Fourier feature
+
+        # Fourier feature channels
         if config.USE_FOURIER_FEATURES:
-            self.fourier_channels = len(config.FOURIER_FREQS) * 4   # sin(x), cos(x), sin(y), cos(y) per freq
+            self.fourier_channels = len(config.FOURIER_FREQS) * 4
         else:
             self.fourier_channels = 0
 
@@ -175,7 +173,13 @@ class LabelConditionedVAE(nn.Module):
             feats.append(torch.cos(np.pi * f * y_grid))
         return torch.cat(feats, dim=1)   # (B, 4*len(FOURIER_FREQS), H, W)
 
-
+    def _channel_diversity_loss(self, mu):
+        """Compute diversity loss to encourage all channels to be used."""
+        channel_stds = mu.std(dim=[0, 2, 3])
+        min_std = torch.tensor(config.DIVERSITY_TARGET_STD, device=mu.device, dtype=mu.dtype)
+        diversity_loss = torch.mean(F.relu(min_std - channel_stds))
+        balance_loss = channel_stds.std() * config.DIVERSITY_BALANCE_WEIGHT
+        return diversity_loss + balance_loss
 
     def encode(self, x, labels):
         """Encode images to latent distribution parameters."""
@@ -193,31 +197,25 @@ class LabelConditionedVAE(nn.Module):
             else:
                 h = block(h)
         
-        # Stabilized mean prediction
-        mu = self.z_mean(h) * 0.05
-        if self.training:
-            mu = mu + torch.randn_like(mu) * 0.01
+        # Stabilized mean prediction with scaling
+        mu = self.z_mean(h) * config.LATENT_SCALE
         
-        # Channel dropout for regularization
-        if self.training and torch.rand(1).item() < 0.05:
-            channel_mask = torch.bernoulli(torch.full_like(mu, 0.95))
+        # Add small noise during training for stability
+        if self.training:
+            mu = mu + torch.randn_like(mu) * config.MU_NOISE_SCALE
+        
+        # Channel dropout for regularization - using config values
+        if self.training and torch.rand(1).item() < config.CHANNEL_DROPOUT_PROB:
+            channel_mask = torch.bernoulli(torch.full_like(mu, config.CHANNEL_DROPOUT_SURVIVAL))
             mu = mu * channel_mask
         
-        logvar = torch.clamp(self.z_logvar(h), min=-4, max=4)
+        logvar = torch.clamp(self.z_logvar(h), min=config.LOGVAR_CLAMP_MIN, max=config.LOGVAR_CLAMP_MAX)
         
-        # Track channel diversity
+        # Track channel diversity loss during training
         if self.training:
             self.diversity_loss = self._channel_diversity_loss(mu)
         
         return mu, logvar
-    
-    def _channel_diversity_loss(self, mu):
-        """Encourage all latent channels to be used."""
-        channel_stds = mu.std(dim=[0, 2, 3])  # [channels]
-        min_std = 0.05
-        diversity_loss = torch.mean(F.relu(min_std - channel_stds))
-        balance_loss = channel_stds.std()
-        return diversity_loss + 0.1 * balance_loss
 
     def decode(self, z, labels):
         """Decode latents to images."""

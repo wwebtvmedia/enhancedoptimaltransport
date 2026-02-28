@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torchvision.utils as vutils
+import config
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -76,6 +77,8 @@ USE_AMP = config.USE_AMP
 INFERENCE_TEMPERATURE = config.INFERENCE_TEMPERATURE
 DEFAULT_STEPS = config.DEFAULT_STEPS
 DEFAULT_SEED = config.DEFAULT_SEED
+LANGEVIN_STEP_SIZE = config.LANGEVIN_STEP_SIZE
+LANGEVIN_SCORE_SCALE = config.LANGEVIN_SCORE_SCALE
 
 # KPI tracking
 KPI_WINDOW_SIZE = config.KPI_WINDOW_SIZE
@@ -88,7 +91,7 @@ OU_THETA = config.OU_THETA
 OU_SIGMA = config.OU_SIGMA
 
 # Training schedule
-SWITCH_EPOCH = config.SWITCH_EPOCH
+SWITCH_EPOCH = config.TRAINING_SCHEDULE['switch_epoch']
 TRAINING_SCHEDULE = config.TRAINING_SCHEDULE
 
 # Paths
@@ -149,11 +152,12 @@ def calc_snr(real: torch.Tensor, recon: torch.Tensor) -> float:
     if mse == 0: 
         return 100.0
     return 10 * torch.log10(1.0 / (mse + 1e-8)).item()
-
-def kl_divergence_spatial(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-    """KL divergence for spatial latent variables."""
+    
+def kl_divergence_spatial(mu, logvar):
     kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-    return torch.mean(torch.sum(kl, dim=[1, 2, 3]))
+    kl = torch.sum(kl, dim=[1, 2, 3])
+    kl = torch.max(kl, torch.full_like(kl, config.FREE_BITS))
+    return torch.mean(kl)
 
 def composite_score(loss_dict: Dict, phase: int) -> float:
     """Compute a composite score for model selection."""
@@ -211,8 +215,8 @@ def configure_training_schedule(
     switch_epoch: int = 50,
     alternate_freq: int = 5,
     custom_schedule: Optional[Dict] = None,
-    switch_epoch_1: Optional[int] = None,   # new
-    switch_epoch_2: Optional[int] = None,   # new
+    switch_epoch_1: Optional[int] = None,
+    switch_epoch_2: Optional[int] = None,
 ) -> Dict:
     """Configure the global training schedule."""
     if mode == 'vae_only':
@@ -321,11 +325,17 @@ class EnhancedLabelTrainer:
     
     def __init__(self, loader):
         self.loader = loader
+
         self.vae = models.LabelConditionedVAE().to(config.DEVICE)
         self.drift = models.LabelConditionedDrift().to(config.DEVICE)
-        
         self.opt_vae = optim.AdamW(self.vae.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
-        self.opt_drift = optim.AdamW(self.drift.parameters(), lr=LR * 2, weight_decay=WEIGHT_DECAY)
+
+        # Drift optimizer with multiplier from config
+        self.opt_drift = optim.AdamW(
+            self.drift.parameters(),
+            lr=LR * config.DRIFT_LR_MULTIPLIER,
+            weight_decay=WEIGHT_DECAY
+        )
         
         self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
             self.opt_vae, T_max=EPOCHS, eta_min=LR*0.01
@@ -362,16 +372,6 @@ class EnhancedLabelTrainer:
         if USE_OU_BRIDGE:
             logger.info(f"  Using OU bridge reference (theta={OU_THETA})")
 
-    def get_training_phase(self, epoch: int) -> int:
-        """Get training phase for current epoch."""
-        phase = set_training_phase(epoch)
-        if phase != self.phase:
-            logger.info(f"🔄 Phase changed from {self.phase} to {phase} at epoch {epoch+1}")
-            self.phase = phase
-            if phase == 2 and self.vae_ref is None:
-                self._handle_phase_transition()
-        return phase
-
     def _switch_to_phase(self, new_phase: int):
         """Handle transition between training phases."""
         if new_phase == 1:
@@ -388,7 +388,7 @@ class EnhancedLabelTrainer:
 
         elif new_phase == 2:
             # Phase 2: Drift only, freeze decoder, unfreeze encoder, create anchor
-            self.vae_ref = models.LabelConditionedVAE().to(DEVICE)
+            self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
             self.vae_ref.load_state_dict(self.vae.state_dict())
             self.vae_ref.eval()
             for param in self.vae_ref.parameters():
@@ -404,15 +404,17 @@ class EnhancedLabelTrainer:
                     param.requires_grad = False
             logger.info(f"Phase 2: Unfrozen {unfrozen_count:,} encoder params. Anchor set.")
 
-            # Re‑create optimizer for VAE (only encoder parts)
+            # Recreate optimizer for VAE (only encoder parts)
             self.opt_vae = optim.AdamW(
                 filter(lambda p: p.requires_grad, self.vae.parameters()),
-                lr=LR * 0.1,
+                lr=LR * config.PHASE2_VAE_LR_FACTOR,
                 weight_decay=WEIGHT_DECAY
             )
             self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
                 self.opt_vae, T_max=EPOCHS - self.epoch, eta_min=LR * 0.005
             )
+            # Store the epoch when Phase 2 started
+            self.phase2_start_epoch = self.epoch
 
         elif new_phase == 3:
             # Phase 3: Both trainable – unfreeze decoder as well
@@ -422,10 +424,10 @@ class EnhancedLabelTrainer:
                 param.requires_grad = True
             logger.info("Phase 3: Unfroze all VAE parameters (encoder + decoder).")
 
-            # Re‑create optimizer with full VAE (maybe lower LR)
+            # Recreate optimizer with full VAE (maybe lower LR)
             self.opt_vae = optim.AdamW(
                 self.vae.parameters(),
-                lr=LR * 0.05,   # even smaller LR for fine‑tuning
+                lr=LR * config.PHASE3_VAE_LR_FACTOR,
                 weight_decay=WEIGHT_DECAY
             )
             self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
@@ -448,7 +450,7 @@ class EnhancedLabelTrainer:
     def get_training_phase(self, epoch):
         phase = set_training_phase(epoch)
         if phase != self.phase:
-            logger.info(f"🔄 Phase changed from {self.phase} to {phase} at epoch {epoch+1}")
+            logger.info(f" Phase changed from {self.phase} to {phase} at epoch {epoch+1}")
             self._switch_to_phase(phase)
             self.phase = phase
         return phase
@@ -495,7 +497,7 @@ class EnhancedLabelTrainer:
                 current_kl_weight = KL_WEIGHT
             
             diversity_loss = self.vae.diversity_loss if self.vae.diversity_loss is not None else torch.tensor(0.0, device=config.DEVICE)
-            kl_annealing = min(1.0, self.epoch / 10.0)
+            kl_annealing = min(1.0, self.epoch / config.KL_ANNEALING_EPOCHS)
             
             kl_loss = raw_kl * current_kl_weight * kl_annealing
             recon_loss = raw_mse * RECON_WEIGHT
@@ -518,7 +520,7 @@ class EnhancedLabelTrainer:
             }
         
         else:  # Drift training (phase 2 or 3)
-             # Get the epoch when drift training started
+            # Get the epoch when drift training started
             drift_start_epoch = getattr(self, 'phase2_start_epoch', TRAINING_SCHEDULE.get('switch_epoch_1', TRAINING_SCHEDULE.get('switch_epoch', 50)))
             with torch.no_grad():
                 mu_ref, _ = self.vae_ref.encode(images, labels)   # always use frozen anchor
@@ -527,7 +529,8 @@ class EnhancedLabelTrainer:
                 consistency_loss = F.mse_loss(mu, mu_ref)
                 mu_global_std = mu.std().item()
 
-                temperature = 0.3 + 0.7 * (1 - self.epoch / EPOCHS)
+                # Temperature annealing using config values
+                temperature = config.TEMPERATURE_END + (config.TEMPERATURE_START - config.TEMPERATURE_END) * (1 - self.epoch / EPOCHS)
                 z1 = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * temperature
                 z_global_std = z1.std().item()
             
@@ -550,15 +553,15 @@ class EnhancedLabelTrainer:
                 zt = (1 - t.view(-1, 1, 1, 1)) * z0 + t.view(-1, 1, 1, 1) * z1
                 target = z1 - z0
             
-            # Add noise to targets only (not to state)
+            # Add noise to targets only (not to state) – scale from config
             if self.drift.training:
-                noise_scale = 0.01 * (1 - t.view(-1, 1, 1, 1))
+                noise_scale = config.DRIFT_TARGET_NOISE_SCALE * (1 - t.view(-1, 1, 1, 1))
                 target = target + torch.randn_like(target) * noise_scale
             
             pred = self.drift(zt, t, labels)
             
-            # Time-weighted loss
-            time_weights = 1.0 + 2.0 * t.view(-1, 1, 1, 1)
+            # Time-weighted loss using config factor
+            time_weights = 1.0 + config.TIME_WEIGHT_FACTOR * t.view(-1, 1, 1, 1)
             drift_loss_base = F.huber_loss(pred * time_weights, target * time_weights, delta=1.0) * DRIFT_WEIGHT
 
             consistency_decay = max(0.1, 1.0 - (self.epoch - drift_start_epoch) / (EPOCHS - drift_start_epoch))
@@ -593,7 +596,7 @@ class EnhancedLabelTrainer:
             self.vae.train()
             self.drift.eval()
         else:
-            self.vae.eval()
+            self.vae.train()
             self.drift.train()
         
         # Progress bar
@@ -663,12 +666,13 @@ class EnhancedLabelTrainer:
                     if self.scaler is not None:
                         self.scaler.scale(loss_dict['total']).backward()
                         self.scaler.unscale_(self.opt_drift)
-                        torch.nn.utils.clip_grad_norm_(self.drift.parameters(), GRAD_CLIP * 0.5)
+                        # Use config factor for drift grad clip
+                        torch.nn.utils.clip_grad_norm_(self.drift.parameters(), GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR)
                         self.scaler.step(self.opt_drift)
                         self.scaler.update()
                     else:
                         loss_dict['total'].backward()
-                        torch.nn.utils.clip_grad_norm_(self.drift.parameters(), GRAD_CLIP * 0.5)
+                        torch.nn.utils.clip_grad_norm_(self.drift.parameters(), GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR)
                         self.opt_drift.step()
                     
                     if self.snapshot_drift:
@@ -803,7 +807,7 @@ class EnhancedLabelTrainer:
             return False
 
     def generate_samples(self, labels=None, num_samples=8, temperature=None, method='heun',
-                        langevin_steps=0, langevin_step_size=0.1, langevin_score_scale=1.0):
+                        langevin_steps=0, langevin_step_size=None, langevin_score_scale=None):
         """
         Generate samples with label conditioning.
         
@@ -811,11 +815,16 @@ class EnhancedLabelTrainer:
             labels: List of class labels
             num_samples: Number of samples to generate
             temperature: Ignored (kept for API compatibility)
-            method: 'euler' or 'rk4'
+            method: 'euler', 'heun', or 'rk4'
             langevin_steps: Number of Langevin refinement steps (0 = disable)
-            langevin_step_size: Step size for Langevin dynamics
-            langevin_score_scale: Scaling factor for the approximate score (drift)
+            langevin_step_size: Step size for Langevin dynamics (default from config)
+            langevin_score_scale: Scaling factor for the approximate score (default from config)
         """
+        if langevin_step_size is None:
+            langevin_step_size = LANGEVIN_STEP_SIZE
+        if langevin_score_scale is None:
+            langevin_score_scale = LANGEVIN_SCORE_SCALE
+
         self.vae.eval()
         self.drift.eval()
         
@@ -823,10 +832,10 @@ class EnhancedLabelTrainer:
             labels = [i % 10 for i in range(num_samples)]
         
         with torch.no_grad():
-            labels_tensor = torch.tensor(labels, dtype=torch.long, device=DEVICE)
+            labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
             
             # Match training noise scale (0.8)
-            z = torch.randn(num_samples, LATENT_CHANNELS, LATENT_H, LATENT_W, device=DEVICE) * 0.8
+            z = torch.randn(num_samples, LATENT_CHANNELS, LATENT_H, LATENT_W, device=config.DEVICE) * 0.8
             
             logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
             
@@ -835,29 +844,28 @@ class EnhancedLabelTrainer:
             
             # ----- ODE integration -----
             for i in range(steps):
-                t_cur = torch.full((num_samples, 1), i * dt, device=DEVICE)
+                t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
                 used_for_norm = None
 
-                
                 if method == 'euler':
                     drift = self.drift(z, t_cur, labels_tensor)
                     z = z + drift * dt
                     used_for_norm = drift
                 elif method == 'heun':
                     k1 = self.drift(z, t_cur, labels_tensor)
-                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=DEVICE)
+                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_pred = z + dt * k1
                     k2 = self.drift(z_pred, t_next, labels_tensor)
                     z = z + (dt / 2.0) * (k1 + k2)
                     used_for_norm = k1
                 elif method == 'rk4':
                     k1 = self.drift(z, t_cur, labels_tensor)
-                    t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=DEVICE)
+                    t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
                     z_half = z + 0.5 * dt * k1
                     k2 = self.drift(z_half, t_half, labels_tensor)
                     z_half2 = z + 0.5 * dt * k2
                     k3 = self.drift(z_half2, t_half, labels_tensor)
-                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=DEVICE)
+                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_next = z + dt * k3
                     k4 = self.drift(z_next, t_next, labels_tensor)
                     z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
@@ -878,7 +886,7 @@ class EnhancedLabelTrainer:
             # ----- Langevin refinement (optional) -----
             if langevin_steps > 0:
                 logger.info(f"Starting {langevin_steps} Langevin refinement steps...")
-                t_one = torch.full((num_samples, 1), 1.0, device=DEVICE)
+                t_one = torch.full((num_samples, 1), 1.0, device=config.DEVICE)
                 for step in range(langevin_steps):
                     noise = torch.randn_like(z) * np.sqrt(2 * langevin_step_size)
                     # Use drift at t=1 as an approximate score direction
@@ -895,7 +903,7 @@ class EnhancedLabelTrainer:
             
             logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")
             
-            # Save images (existing saving code)
+            # Save images
             images_display = (images + 1) / 2
             images_display = torch.clamp(images_display, 0, 1)
             
@@ -1047,7 +1055,6 @@ def train_model(num_epochs: int = EPOCHS, resume_from_snapshot: Optional[Path] =
             # Check for new best composite score
             if comp_score > trainer.best_composite_score:
                 trainer.best_composite_score = comp_score
-                # FIX: Added is_best parameter
                 trainer.save_checkpoint(is_best=False, is_best_overall=True)
         
         # Check for best loss
