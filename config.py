@@ -20,7 +20,8 @@ DIRS = {
     "snaps": BASE_DIR / "snapshots",
     "onnx": BASE_DIR / "onnx",
     "metrics": BASE_DIR / "metrics",
-    "inference": BASE_DIR / "inference"
+    "inference": BASE_DIR / "inference",
+    "best": BASE_DIR / "best_models"
 }
 
 # ============================================================================
