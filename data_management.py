@@ -33,6 +33,13 @@ DIRS = config.DIRS
 logger = config.logger
 
 # ============================================================
+# CREATE ALL NECESSARY DIRECTORIES
+# ============================================================
+for d in config.DIRS.values():
+    d.mkdir(parents=True, exist_ok=True)
+
+
+# ============================================================
 # SNAPSHOT MANAGER
 # ============================================================
 class SnapshotManager:
@@ -122,10 +129,12 @@ class SnapshotManager:
 # ============================================================
 def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = False) -> Path:
     """Save training checkpoint."""
+
     checkpoint = {
         'epoch': trainer.epoch,
         'step': trainer.step,
         'phase': trainer.phase,
+        'phase2_start_epoch': getattr(trainer, 'phase2_start_epoch', None),
         'vae_state': trainer.vae.state_dict(),
         'drift_state': trainer.drift.state_dict(),
         'opt_vae_state': trainer.opt_vae.state_dict(),
@@ -178,6 +187,19 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         trainer.step = checkpoint['step']
         trainer.phase = checkpoint.get('phase', 1)
         
+        # Restore phase2_start_epoch if it exists, otherwise set a sensible default
+        if 'phase2_start_epoch' in checkpoint and checkpoint['phase2_start_epoch'] is not None:
+            trainer.phase2_start_epoch = checkpoint['phase2_start_epoch']
+        else:
+            # Fallback: if current phase >= 2, assume phase2 started at the epoch stored in config
+            if trainer.phase >= 2:
+                # Use the configured switch epoch (Phase 1 end) from the training schedule
+                trainer.phase2_start_epoch = config.TRAINING_SCHEDULE.get('switch_epoch_1', 
+                                            config.TRAINING_SCHEDULE.get('switch_epoch', 50))
+            else:
+                trainer.phase2_start_epoch = None
+
+
         # Handle Phase 2 reference model
         if trainer.phase == 2 and not hasattr(trainer, 'vae_ref'):
             from models import LabelConditionedVAE

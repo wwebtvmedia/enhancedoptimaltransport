@@ -952,13 +952,22 @@ class EnhancedLabelTrainer:
             logger.error(f"Failed to inspect snapshot: {e}")
             return {'path': snapshot_path, 'error': str(e)}
 
+
     def export_onnx(self) -> None:
-        """Export models to ONNX format."""
         if not ONNX_AVAILABLE:
             logger.warning("ONNX export requires onnx and onnxruntime packages")
             return
         
+        # Helper to set export mode on PercentileRescale modules
+        def set_export_mode(module, mode=True):
+            if hasattr(module, '_set_export_mode'):
+                module._set_export_mode(mode)
+        
         try:
+            # --- Set export mode for VAE and Drift ---
+            self.vae.apply(lambda m: set_export_mode(m, True))
+            self.drift.apply(lambda m: set_export_mode(m, True))
+            
             # Export VAE
             dummy_img = torch.randn(1, 3, IMG_SIZE, IMG_SIZE, device=config.DEVICE)
             dummy_label = torch.tensor([0], device=config.DEVICE)
@@ -998,6 +1007,10 @@ class EnhancedLabelTrainer:
                 opset_version=11
             )
             logger.info(f"Drift exported to {drift_path}")
+            
+            # --- Reset export mode (optional) ---
+            self.vae.apply(lambda m: set_export_mode(m, False))
+            self.drift.apply(lambda m: set_export_mode(m, False))
             
         except Exception as e:
             logger.error(f"ONNX export failed: {e}")
