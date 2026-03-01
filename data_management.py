@@ -149,6 +149,7 @@ def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = Fals
     
     if is_best_overall:
         overall_best_path = DIRS["best"] / f"best_overall_epoch_{trainer.epoch+1:04d}.pt"
+        overall_best_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(checkpoint, overall_best_path)
         logger.info(f"New overall best model saved (composite score: {trainer.best_composite_score:.4f})")
     

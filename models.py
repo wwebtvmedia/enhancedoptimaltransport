@@ -206,9 +206,9 @@ class LabelConditionedVAE(nn.Module):
         
         # Channel dropout for regularization - using config values
         if self.training and torch.rand(1).item() < config.CHANNEL_DROPOUT_PROB:
-            channel_mask = torch.bernoulli(torch.full_like(mu, config.CHANNEL_DROPOUT_SURVIVAL))
+            channel_mask = torch.bernoulli(torch.full((mu.shape[0], mu.shape[1], 1, 1), config.CHANNEL_DROPOUT_SURVIVAL, device=mu.device))
             mu = mu * channel_mask
-        
+
         logvar = torch.clamp(self.z_logvar(h), min=config.LOGVAR_CLAMP_MIN, max=config.LOGVAR_CLAMP_MAX)
         
         # Track channel diversity loss during training
@@ -356,6 +356,11 @@ class LabelConditionedDrift(nn.Module):
                 self.drift_std = self.momentum * self.drift_std + (1 - self.momentum) * batch_std
                 self.n_samples += batch_size
         
+        # Apply adaptive clipping during inference only
+        if not self.training:
+            threshold = self.get_adaptive_threshold(num_std=3.0)
+            out = torch.clamp(out, -threshold, threshold)
+
         return out
 
     def get_adaptive_threshold(self, num_std=3.0):
