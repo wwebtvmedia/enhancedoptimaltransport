@@ -55,7 +55,6 @@ class SnapshotManager:
         self.snapshot_dir = DIRS["snaps"]        
 
     def step(self) -> None:
-        """Update snapshot scheduler."""
         nop 
     
     def save_snapshot(self, epoch: int, loss: float) -> Path:
