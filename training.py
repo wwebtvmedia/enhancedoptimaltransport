@@ -455,7 +455,7 @@ class EnhancedLabelTrainer:
             self.phase = phase
         return phase
 
-    def ssim_loss(x, y):
+    def ssim_loss(self,x, y):
         # simple luminance + contrast proxy
         mu_x, mu_y = x.mean([-2,-1], keepdim=True), y.mean([-2,-1], keepdim=True)
         sigma_x = ((x - mu_x)**2).mean([-2,-1], keepdim=True).sqrt()
