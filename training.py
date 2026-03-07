@@ -568,7 +568,7 @@ class EnhancedLabelTrainer:
             }
             
             # Log gradient magnitude every 10 epochs for sharpness monitoring
-            if self.epoch % 10 == 0 and batch_idx == 0 and phase == 1:
+            if self.epoch % 10 == 0 and phase == 1:
                 with torch.no_grad():
                     # Check image sharpness via gradients
                     grad_x = torch.abs(recon[:, :, :, 1:] - recon[:, :, :, :-1]).mean().item()
@@ -776,27 +776,7 @@ class EnhancedLabelTrainer:
             except Exception as e:
                 logger.error(f"Error processing batch {batch_idx}: {e}")
                 continue
-        
-        # Update schedulers
-        if phase == 1:
-            self.scheduler_vae.step()
-            if self.snapshot_vae and self.snapshot_vae.should_save(self.epoch):
-                loss_value = avg_losses.get('total', float('inf'))
-                if loss_value != float('inf'):
-                    self.snapshot_vae.save_snapshot(
-                        epoch=self.epoch + 1,
-                        loss=loss_value
-                    )
-            else:
-                self.scheduler_drift.step()
-                if self.snapshot_drift and self.snapshot_drift.should_save(self.epoch):
-                    loss_value = avg_losses.get('drift', avg_losses.get('total', float('inf')))
-                    if loss_value != float('inf'):
-                        self.snapshot_drift.save_snapshot(
-                            epoch=self.epoch + 1,
-                            loss=loss_value
-                        )
-                
+                        
         # Compute average losses
         if batch_count > 0:
             avg_losses = {}
@@ -822,7 +802,16 @@ class EnhancedLabelTrainer:
         logger.info(f"Epoch {current_epoch}/{EPOCHS} complete:")
         logger.info(f"  Total loss: {avg_losses.get('total', 0):.4f}")
         
+
         if phase == 1:
+            self.scheduler_vae.step()
+            if self.snapshot_vae and self.snapshot_vae.should_save(self.epoch):
+                loss_value = avg_losses.get('total', float('inf'))
+                if loss_value != float('inf'):
+                    self.snapshot_vae.save_snapshot(
+                        epoch=self.epoch + 1,
+                        loss=loss_value
+                    )
             logger.info(f"  Recon loss: {avg_losses.get('recon', 0):.4f}")
             logger.info(f"  KL loss: {avg_losses.get('kl', 0):.6f}")
             logger.info(f"  Diversity loss: {avg_losses.get('diversity', 0):.6f}")
@@ -830,6 +819,14 @@ class EnhancedLabelTrainer:
             if 'snr' in avg_losses:
                 logger.info(f"  SNR: {avg_losses['snr']:.2f}dB")
         else:
+            self.scheduler_drift.step()
+            if self.snapshot_drift and self.snapshot_drift.should_save(self.epoch):
+                loss_value = avg_losses.get('drift', avg_losses.get('total', float('inf')))
+                if loss_value != float('inf'):
+                    self.snapshot_drift.save_snapshot(
+                        epoch=self.epoch + 1,
+                        loss=loss_value
+                    )
             logger.info(f"  Drift loss: {avg_losses.get('drift', 0):.4f}")
         
         return avg_losses
