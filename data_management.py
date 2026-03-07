@@ -52,18 +52,11 @@ class SnapshotManager:
         self.interval = interval
         self.keep = keep
         self.snapshots = []
-        self.snapshot_dir = DIRS["snaps"]
-        
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, 
-            T_0=interval // 2,
-            T_mult=1,
-            eta_min=LR * 0.1
-        )
-    
+        self.snapshot_dir = DIRS["snaps"]        
+
     def step(self) -> None:
         """Update snapshot scheduler."""
-        self.scheduler.step()
+        nop 
     
     def save_snapshot(self, epoch: int, loss: float) -> Path:
         """Save model snapshot."""

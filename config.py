@@ -50,7 +50,7 @@ GRAD_CLIP = 1.0
 # ============================================================================
 # LOSS WEIGHTS
 # ============================================================================
-KL_WEIGHT = 0.00001
+KL_WEIGHT = 0.0005       # Was 0.00001 — biggest single fix
 RECON_WEIGHT = 1.0
 DRIFT_WEIGHT = 0.5
 DIVERSITY_WEIGHT = 0.1
@@ -60,8 +60,8 @@ REVERT_THRESHOLD = 2.5
 # ============================================================================
 # VAE SPECIFIC
 # ============================================================================
-LATENT_SCALE = 0.3
-FREE_BITS = 1.0
+LATENT_SCALE = 0.7       # Was 0.3 — allows richer latent space
+FREE_BITS = 0.5          # Was 1.0 — reduce to let KL signal through
 DIVERSITY_TARGET_STD = 0.1
 DIVERSITY_BALANCE_WEIGHT = 0.2
 KL_ANNEALING_EPOCHS = 30

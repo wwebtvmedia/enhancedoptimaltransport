@@ -19,7 +19,7 @@ from datetime import datetime
 from collections import defaultdict
 from scipy import stats
 from typing import Optional, List, Dict, Union, Tuple, Any
-
+from torchvision.transforms.functional import rgb_to_grayscale
 
 # Optional imports
 try:
@@ -455,6 +455,17 @@ class EnhancedLabelTrainer:
             self.phase = phase
         return phase
 
+    def ssim_loss(x, y):
+        # simple luminance + contrast proxy
+        mu_x, mu_y = x.mean([-2,-1], keepdim=True), y.mean([-2,-1], keepdim=True)
+        sigma_x = ((x - mu_x)**2).mean([-2,-1], keepdim=True).sqrt()
+        sigma_y = ((y - mu_y)**2).mean([-2,-1], keepdim=True).sqrt()
+        sigma_xy = ((x - mu_x)*(y - mu_y)).mean([-2,-1], keepdim=True)
+        C1, C2 = 0.01**2, 0.03**2
+        ssim = (2*mu_x*mu_y + C1)*(2*sigma_xy + C2) / \
+            ((mu_x**2 + mu_y**2 + C1)*(sigma_x**2 + sigma_y**2 + C2))
+        return 1 - ssim.mean()
+
     def compute_loss(self, batch: Dict, phase: int = 1) -> Dict:
         """Compute loss for current batch based on training phase."""
         # Extract images and labels
@@ -500,7 +511,7 @@ class EnhancedLabelTrainer:
             kl_annealing = min(1.0, self.epoch / config.KL_ANNEALING_EPOCHS)
             
             kl_loss = raw_kl * current_kl_weight * kl_annealing
-            recon_loss = raw_mse * RECON_WEIGHT
+            recon_loss = raw_mse * RECON_WEIGHT + 0.3 * self.ssim_loss(recon, images)
             total_loss = recon_loss + kl_loss + diversity_loss * DIVERSITY_WEIGHT
             
             snr = calc_snr(images, recon)
@@ -710,8 +721,18 @@ class EnhancedLabelTrainer:
         # Update schedulers
         if phase == 1:
             self.scheduler_vae.step()
+            if self.snapshot_vae and (self.epoch + 1) % config.SNAPSHOT_INTERVAL == 0:
+                self.snapshot_vae.save_snapshot(
+                    epoch=self.epoch + 1,
+                    loss=avg_losses.get('total', 0.0)
+                )
         else:
             self.scheduler_drift.step()
+            if self.snapshot_drift and (self.epoch + 1) % config.SNAPSHOT_INTERVAL == 0:
+                self.snapshot_drift.save_snapshot(
+                    epoch=self.epoch + 1,
+                    loss=avg_losses.get('drift', 0.0)
+                )
         
         # Compute average losses
         if batch_count > 0:
