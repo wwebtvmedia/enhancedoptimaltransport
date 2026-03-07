@@ -65,6 +65,10 @@ RECON_WEIGHT = config.RECON_WEIGHT
 DRIFT_WEIGHT = config.DRIFT_WEIGHT
 DIVERSITY_WEIGHT = config.DIVERSITY_WEIGHT
 CONSISTENCY_WEIGHT = config.CONSISTENCY_WEIGHT
+SIM_LOST_FACTOR = config.SIM_LOST_FACTOR
+PERSP_LOST_FACTOR = config.PERSP_LOST_FACTOR
+
+
 
 # Feature toggles
 USE_PERCENTILE = config.USE_PERCENTILE
@@ -345,10 +349,18 @@ class EnhancedLabelTrainer:
         )
         
         self.kpi_tracker = KPITracker(window_size=KPI_WINDOW_SIZE)
-        
-        self.snapshot_vae = dm.SnapshotManager(self.vae, self.opt_vae, name="vae") if USE_SNAPSHOTS else None
-        self.snapshot_drift = dm.SnapshotManager(self.drift, self.opt_drift, name="drift") if USE_SNAPSHOTS else None
-        
+          
+        if USE_SNAPSHOTS:
+            self.snapshot_vae = dm.SnapshotManager(self.vae, self.opt_vae, name="vae", 
+                                                interval=config.SNAPSHOT_INTERVAL, 
+                                                keep=config.SNAPSHOT_KEEP)
+            self.snapshot_drift = dm.SnapshotManager(self.drift, self.opt_drift, name="drift",
+                                                interval=config.SNAPSHOT_INTERVAL,
+                                                keep=config.SNAPSHOT_KEEP)
+        else:
+            self.snapshot_vae = None
+            self.snapshot_drift = None
+
         self.epoch = 0
         self.step = 0
         self.phase = 1
@@ -371,6 +383,31 @@ class EnhancedLabelTrainer:
         logger.info(f"  Drift params: {sum(p.numel() for p in self.drift.parameters()):,}")
         if USE_OU_BRIDGE:
             logger.info(f"  Using OU bridge reference (theta={OU_THETA})")
+
+# Add this method to EnhancedLabelTrainer class (around line 340):
+
+    def perceptual_loss(self, recon, target):
+        """Simple perceptual loss using pretrained VGG features"""
+        if not hasattr(self, 'vgg'):
+            try:
+                import torchvision.models as models
+                self.vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features[:16].to(config.DEVICE)
+                for param in self.vgg.parameters():
+                    param.requires_grad = False
+                self.vgg.eval()
+            except:
+                # Fallback if VGG not available
+                return torch.tensor(0.0, device=config.DEVICE)
+        
+        # Normalize to [0,1] for VGG (if in [-1,1] range)
+        recon_norm = (recon + 1) / 2
+        target_norm = (target + 1) / 2
+        
+        # Get features
+        recon_feat = self.vgg(recon_norm)
+        target_feat = self.vgg(target_norm)
+        
+        return F.mse_loss(recon_feat, target_feat)
 
     def _switch_to_phase(self, new_phase: int):
         """Handle transition between training phases."""
@@ -511,7 +548,7 @@ class EnhancedLabelTrainer:
             kl_annealing = min(1.0, self.epoch / config.KL_ANNEALING_EPOCHS)
             
             kl_loss = raw_kl * current_kl_weight * kl_annealing
-            recon_loss = raw_mse * RECON_WEIGHT + 0.3 * self.ssim_loss(recon, images)
+            recon_loss = raw_mse * RECON_WEIGHT + SIM_LOST_FACTOR * self.ssim_loss(recon, images) + PERSP_LOST_FACTOR *elf.perceptual_loss(recon, images) * 0.2
             total_loss = recon_loss + kl_loss + diversity_loss * DIVERSITY_WEIGHT
             
             snr = calc_snr(images, recon)
@@ -529,7 +566,19 @@ class EnhancedLabelTrainer:
                 'min_channel_std': min_channel_std,
                 'max_channel_std': channel_stds.max(),
             }
-        
+            
+            # Log gradient magnitude every 10 epochs for sharpness monitoring
+            if self.epoch % 10 == 0 and batch_idx == 0 and phase == 1:
+                with torch.no_grad():
+                    # Check image sharpness via gradients
+                    grad_x = torch.abs(recon[:, :, :, 1:] - recon[:, :, :, :-1]).mean().item()
+                    grad_y = torch.abs(recon[:, :, 1:, :] - recon[:, :, :-1, :]).mean().item()
+                    logger.info(f"Image gradient magnitude - X: {grad_x:.4f}, Y: {grad_y:.4f}")
+                    
+                    # Check latent statistics
+                    latent_std_channel = mu.std(dim=[0, 2, 3])
+                    logger.info(f"Channel utilization - min: {latent_std_channel.min():.4f}, max: {latent_std_channel.max():.4f}")
+
         else:  # Drift training (phase 2 or 3)
             # Get the epoch when drift training started
             drift_start_epoch = getattr(self, 'phase2_start_epoch', TRAINING_SCHEDULE.get('switch_epoch_1', TRAINING_SCHEDULE.get('switch_epoch', 50)))
@@ -541,7 +590,7 @@ class EnhancedLabelTrainer:
                 mu_global_std = mu.std().item()
 
                 # Temperature annealing using config values
-                temperature = config.TEMPERATURE_END + (config.TEMPERATURE_START - config.TEMPERATURE_END) * (1 - self.epoch / EPOCHS)
+                temperature = config.TEMPERATURE_START + (config.TEMPERATURE_END - config.TEMPERATURE_START) * (self.epoch / EPOCHS)
                 z1 = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * temperature
                 z_global_std = z1.std().item()
             
@@ -640,17 +689,27 @@ class EnhancedLabelTrainer:
                     continue
                 
                 if torch.isnan(loss_dict['total']) or torch.isinf(loss_dict['total']):
-                    logger.error(f" NaN/Inf detected!")
+                    logger.error(f" NaN/Inf detected at batch {batch_idx}!")
+                    
+                    # Try to revert
                     reverted = False
                     if phase == 1 and self.snapshot_vae:
+                        logger.warning("Attempting to revert VAE to last good snapshot...")
                         reverted = self.snapshot_vae.revert()
-                    elif phase == 2 and self.snapshot_drift:
+                        if reverted:
+                            logger.info("VAE reverted successfully. Skipping batch and continuing...")
+                            continue
+                    elif phase >= 2 and self.snapshot_drift:
+                        logger.warning("Attempting to revert Drift to last good snapshot...")
                         reverted = self.snapshot_drift.revert()
-                    if reverted:
-                        continue
-                    else:
+                        if reverted:
+                            logger.info("Drift reverted successfully. Skipping batch and continuing...")
+                            continue
+                    
+                    if not reverted:
+                        logger.error("No snapshot available to revert to! Stopping training...")
                         break
-                
+                                
                 # Debug logging
                 if batch_idx % 50 == 0 and batch_idx > 0:
                     self._debug_training_loop(batch_dict, loss_dict)
@@ -721,19 +780,23 @@ class EnhancedLabelTrainer:
         # Update schedulers
         if phase == 1:
             self.scheduler_vae.step()
-            if self.snapshot_vae and (self.epoch + 1) % config.SNAPSHOT_INTERVAL == 0:
-                self.snapshot_vae.save_snapshot(
-                    epoch=self.epoch + 1,
-                    loss=avg_losses.get('total', 0.0)
-                )
-        else:
-            self.scheduler_drift.step()
-            if self.snapshot_drift and (self.epoch + 1) % config.SNAPSHOT_INTERVAL == 0:
-                self.snapshot_drift.save_snapshot(
-                    epoch=self.epoch + 1,
-                    loss=avg_losses.get('drift', 0.0)
-                )
-        
+            if self.snapshot_vae and self.snapshot_vae.should_save(self.epoch):
+                loss_value = avg_losses.get('total', float('inf'))
+                if loss_value != float('inf'):
+                    self.snapshot_vae.save_snapshot(
+                        epoch=self.epoch + 1,
+                        loss=loss_value
+                    )
+            else:
+                self.scheduler_drift.step()
+                if self.snapshot_drift and self.snapshot_drift.should_save(self.epoch):
+                    loss_value = avg_losses.get('drift', avg_losses.get('total', float('inf')))
+                    if loss_value != float('inf'):
+                        self.snapshot_drift.save_snapshot(
+                            epoch=self.epoch + 1,
+                            loss=loss_value
+                        )
+                
         # Compute average losses
         if batch_count > 0:
             avg_losses = {}
@@ -793,7 +856,7 @@ class EnhancedLabelTrainer:
         return dm.load_for_inference(self, path)
 
     def load_from_snapshot(self, snapshot_path: Path, load_vae: bool = True, 
-                          load_drift: bool = True, phase: Optional[int] = None) -> bool:
+                        load_drift: bool = True, phase: Optional[int] = None) -> bool:
         """Load model from a snapshot file."""
         if not os.path.exists(snapshot_path):
             logger.error(f"Snapshot not found: {snapshot_path}")
@@ -802,22 +865,38 @@ class EnhancedLabelTrainer:
         try:
             snapshot = torch.load(snapshot_path, map_location=config.DEVICE, weights_only=False)
             
-            if load_vae and 'model_state' in snapshot and snapshot.get('model_type') == 'vae':
-                self.vae.load_state_dict(snapshot['model_state'])
-                if 'optimizer_state' in snapshot:
-                    self.opt_vae.load_state_dict(snapshot['optimizer_state'])
-                logger.info(f"Loaded VAE from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+            # Load VAE if requested and available
+            if load_vae:
+                if 'model_state' in snapshot:
+                    self.vae.load_state_dict(snapshot['model_state'])
+                    if 'optimizer_state' in snapshot:
+                        self.opt_vae.load_state_dict(snapshot['optimizer_state'])
+                    logger.info(f"✅ Loaded VAE from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+                elif snapshot.get('model_type') == 'vae' and 'model_state' in snapshot:
+                    self.vae.load_state_dict(snapshot['model_state'])
+                    logger.info(f"✅ Loaded VAE from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+                else:
+                    logger.warning("No VAE state found in snapshot")
             
-            if load_drift and 'drift_state' in snapshot and snapshot.get('model_type') == 'drift':
-                self.drift.load_state_dict(snapshot['drift_state'])
-                if 'opt_drift_state' in snapshot:
-                    self.opt_drift.load_state_dict(snapshot['opt_drift_state'])
-                logger.info(f"Loaded Drift from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+            # Load Drift if requested and available
+            if load_drift:
+                if 'drift_state' in snapshot:
+                    self.drift.load_state_dict(snapshot['drift_state'])
+                    if 'opt_drift_state' in snapshot:
+                        self.opt_drift.load_state_dict(snapshot['opt_drift_state'])
+                    logger.info(f"✅ Loaded Drift from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+                elif snapshot.get('model_type') == 'drift' and 'drift_state' in snapshot:
+                    self.drift.load_state_dict(snapshot['drift_state'])
+                    logger.info(f"✅ Loaded Drift from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+                else:
+                    logger.warning("No Drift state found in snapshot")
             
+            # Set phase if specified
             if phase is not None:
                 self.phase = phase
                 logger.info(f"Set phase to {phase}")
             
+            # Set epoch from snapshot
             if 'epoch' in snapshot:
                 self.epoch = snapshot['epoch']
             
@@ -825,8 +904,10 @@ class EnhancedLabelTrainer:
             
         except Exception as e:
             logger.error(f"Failed to load snapshot: {e}")
+            import traceback
+            traceback.print_exc()
             return False
-
+        
     def generate_samples(self, labels=None, num_samples=8, temperature=None, method='heun',
                         langevin_steps=0, langevin_step_size=None, langevin_score_scale=None):
         """
@@ -854,10 +935,33 @@ class EnhancedLabelTrainer:
         
         with torch.no_grad():
             labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
-            
-            # Match training noise scale (0.8)
-            z = torch.randn(num_samples, LATENT_CHANNELS, LATENT_H, LATENT_W, device=config.DEVICE) * 0.8
-            
+                        
+            try:
+                # Try to get a batch from the loader to estimate latent distribution
+                sample_batch = next(iter(self.loader))
+                if isinstance(sample_batch, dict):
+                    images = sample_batch['image'][:min(16, num_samples)].to(config.DEVICE)
+                    labels = sample_batch['label'][:min(16, num_samples)].to(config.DEVICE)
+                else:
+                    images = sample_batch[0][:min(16, num_samples)].to(config.DEVICE)
+                    labels = sample_batch[1][:min(16, num_samples)].to(config.DEVICE)
+                
+                with torch.no_grad():
+                    mu, logvar = self.vae.encode(images, labels)
+                    z_init = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * 0.3
+                    
+                    # If we need more samples than we have, repeat
+                    if num_samples > z_init.shape[0]:
+                        repeats = (num_samples + z_init.shape[0] - 1) // z_init.shape[0]
+                        z = z_init.repeat(repeats, 1, 1, 1)[:num_samples]
+                    else:
+                        z = z_init[:num_samples]
+            except Exception as e:
+                logger.warning(f"Could not estimate latent distribution, using random noise: {e}")
+                z = torch.randn(num_samples, LATENT_CHANNELS, LATENT_H, LATENT_W, device=config.DEVICE) * 0.5
+
+
+
             logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
             
             steps = DEFAULT_STEPS

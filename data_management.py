@@ -65,6 +65,10 @@ class SnapshotManager:
         """Update snapshot scheduler."""
         self.scheduler.step()
     
+    def should_save(self, epoch: int) -> bool:
+        """Check if we should save a snapshot at this epoch."""
+        return (epoch + 1) % self.interval == 0
+
     def save_snapshot(self, epoch: int, loss: float) -> Path:
         """Save model snapshot."""
         snapshot_path = self.snapshot_dir / f"{self.name}_snapshot_epoch_{epoch:04d}.pt"
@@ -127,9 +131,14 @@ class SnapshotManager:
 # ============================================================
 # CHECKPOINT SAVE/LOAD FUNCTIONS
 # ============================================================
+# Replace the save_checkpoint function:
+
 def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = False) -> Path:
     """Save training checkpoint."""
-
+    
+    # Ensure checkpoint directory exists
+    DIRS["ckpt"].mkdir(parents=True, exist_ok=True)
+    
     checkpoint = {
         'epoch': trainer.epoch,
         'step': trainer.step,
@@ -143,10 +152,14 @@ def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = Fals
         'scheduler_drift_state': trainer.scheduler_drift.state_dict(),
         'best_loss': trainer.best_loss,
         'best_composite_score': trainer.best_composite_score,
-        'kpi_metrics': trainer.kpi_tracker.metrics,
         'training_schedule': config.TRAINING_SCHEDULE
     }
     
+    # Add KPI metrics if they exist
+    if hasattr(trainer, 'kpi_tracker') and hasattr(trainer.kpi_tracker, 'metrics'):
+        checkpoint['kpi_metrics'] = trainer.kpi_tracker.metrics
+    
+    # Save latest checkpoint
     latest_path = DIRS["ckpt"] / "latest.pt"
     torch.save(checkpoint, latest_path)
     logger.info(f"Checkpoint saved to {latest_path}")
@@ -176,6 +189,7 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
     try:
         checkpoint = torch.load(path, map_location=config.DEVICE, weights_only=False)
         
+        # Load model states
         trainer.vae.load_state_dict(checkpoint['vae_state'])
         trainer.drift.load_state_dict(checkpoint['drift_state'])
         trainer.opt_vae.load_state_dict(checkpoint['opt_vae_state'])
@@ -183,45 +197,43 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         trainer.scheduler_vae.load_state_dict(checkpoint['scheduler_vae_state'])
         trainer.scheduler_drift.load_state_dict(checkpoint['scheduler_drift_state'])
         
+        # Load training state
         trainer.epoch = checkpoint['epoch']
         trainer.step = checkpoint['step']
         trainer.phase = checkpoint.get('phase', 1)
         
-        # Restore phase2_start_epoch if it exists, otherwise set a sensible default
-        if 'phase2_start_epoch' in checkpoint and checkpoint['phase2_start_epoch'] is not None:
-            trainer.phase2_start_epoch = checkpoint['phase2_start_epoch']
-        else:
-            # Fallback: if current phase >= 2, assume phase2 started at the epoch stored in config
-            if trainer.phase >= 2:
-                # Use the configured switch epoch (Phase 1 end) from the training schedule
-                trainer.phase2_start_epoch = config.TRAINING_SCHEDULE.get('switch_epoch_1', 
-                                            config.TRAINING_SCHEDULE.get('switch_epoch', 50))
-            else:
-                trainer.phase2_start_epoch = None
-
-
-        # Handle Phase 2 reference model
-        if trainer.phase == 2 and not hasattr(trainer, 'vae_ref'):
+        # Restore phase2_start_epoch if it exists
+        trainer.phase2_start_epoch = checkpoint.get('phase2_start_epoch', None)
+        
+        # Handle Phase 2 reference model if needed
+        if trainer.phase >= 2 and not hasattr(trainer, 'vae_ref'):
             from models import LabelConditionedVAE
             trainer.vae_ref = LabelConditionedVAE().to(config.DEVICE)
             trainer.vae_ref.load_state_dict(trainer.vae.state_dict())
             trainer.vae_ref.eval()
             for param in trainer.vae_ref.parameters():
                 param.requires_grad = False
-            logger.info("Reference anchor created from loaded Phase 2 VAE.")
+            logger.info("Reference anchor created from loaded checkpoint.")
         
+        # Update training schedule if present
         if 'training_schedule' in checkpoint:
             config.TRAINING_SCHEDULE.update(checkpoint['training_schedule'])
         
+        # Load best metrics
         trainer.best_loss = checkpoint.get('best_loss', float('inf'))
         trainer.best_composite_score = checkpoint.get('best_composite_score', float('-inf'))
-        trainer.kpi_tracker.metrics = checkpoint.get('kpi_metrics', {})
+        
+        # Load KPI metrics if they exist
+        if 'kpi_metrics' in checkpoint and hasattr(trainer, 'kpi_tracker'):
+            trainer.kpi_tracker.metrics = checkpoint['kpi_metrics']
         
         logger.info(f"Loaded checkpoint from epoch {trainer.epoch}, step {trainer.step}")
         return True
         
     except Exception as e:
         logger.error(f"Failed to load checkpoint: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
