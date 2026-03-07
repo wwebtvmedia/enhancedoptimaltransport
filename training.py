@@ -548,7 +548,7 @@ class EnhancedLabelTrainer:
             kl_annealing = min(1.0, self.epoch / config.KL_ANNEALING_EPOCHS)
             
             kl_loss = raw_kl * current_kl_weight * kl_annealing
-            recon_loss = raw_mse * RECON_WEIGHT + SIM_LOST_FACTOR * self.ssim_loss(recon, images) + PERSP_LOST_FACTOR *elf.perceptual_loss(recon, images) * 0.2
+            recon_loss = raw_mse * RECON_WEIGHT + SIM_LOST_FACTOR * self.ssim_loss(recon, images) + PERSP_LOST_FACTOR * self.perceptual_loss(recon, images) * 0.2
             total_loss = recon_loss + kl_loss + diversity_loss * DIVERSITY_WEIGHT
             
             snr = calc_snr(images, recon)
