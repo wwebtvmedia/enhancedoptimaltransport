@@ -10,16 +10,6 @@ import numpy as np
 import config
 
 # ============================================================
-# CONFIGURATION
-# ============================================================
-LATENT_CHANNELS = config.LATENT_CHANNELS
-LATENT_H = config.LATENT_H
-LATENT_W = config.LATENT_W
-NUM_CLASSES = config.NUM_CLASSES
-LABEL_EMB_DIM = config.LABEL_EMB_DIM
-USE_PERCENTILE = config.USE_PERCENTILE
-
-# ============================================================
 # PERCENTILE RESCALING
 # ============================================================
 class PercentileRescale(nn.Module):
@@ -60,7 +50,7 @@ class PercentileRescale(nn.Module):
 class LabelConditionedBlock(nn.Module):
     """Residual block with label conditioning via scale-shift modulation."""
     
-    def __init__(self, c_in, c_out, label_dim=LABEL_EMB_DIM, use_spectral_norm=False):
+    def __init__(self, c_in, c_out, label_dim=config.LABEL_EMB_DIM, use_spectral_norm=False):
         super().__init__()
         groups = min(8, c_in)
         self.norm1 = nn.GroupNorm(groups, c_in)
@@ -84,7 +74,7 @@ class LabelConditionedBlock(nn.Module):
         else:
             self.conv2 = nn.Conv2d(c_out, c_out, 3, 1, 1)
         
-        self.rescale = PercentileRescale(c_out) if USE_PERCENTILE else nn.Identity()
+        self.rescale = PercentileRescale(c_out) if config.USE_PERCENTILE else nn.Identity()
         
         if use_spectral_norm and c_in != c_out:
             self.skip = nn.utils.spectral_norm(nn.Conv2d(c_in, c_out, 1))
@@ -116,7 +106,7 @@ class LabelConditionedVAE(nn.Module):
     def __init__(self, free_bits=config.FREE_BITS):
         super().__init__()
         self.free_bits = free_bits
-        self.label_emb = nn.Embedding(NUM_CLASSES, LABEL_EMB_DIM)
+        self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
 
         # Fourier feature channels
         if config.USE_FOURIER_FEATURES:
@@ -135,11 +125,11 @@ class LabelConditionedVAE(nn.Module):
             nn.Conv2d(256, 256, 4, 2, 1),
         ])
         
-        self.z_mean = nn.Conv2d(256, LATENT_CHANNELS, 3, 1, 1)
-        self.z_logvar = nn.Conv2d(256, LATENT_CHANNELS, 3, 1, 1)
+        self.z_mean = nn.Conv2d(256, config.LATENT_CHANNELS, 3, 1, 1)
+        self.z_logvar = nn.Conv2d(256, config.LATENT_CHANNELS, 3, 1, 1)
         
         # Decoder
-        self.dec_in = nn.Conv2d(LATENT_CHANNELS, 256, 3, 1, 1)
+        self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 256, 3, 1, 1)
         self.dec_blocks = nn.ModuleList([
             nn.ConvTranspose2d(256, 128, 4, 2, 1),
             LabelConditionedBlock(128, 128),
@@ -215,7 +205,10 @@ class LabelConditionedVAE(nn.Module):
         # Channel dropout for regularization - using config values
         if self.training and torch.rand(1).item() < config.CHANNEL_DROPOUT_PROB:
             channel_mask = torch.bernoulli(torch.full((mu.shape[0], mu.shape[1], 1, 1), config.CHANNEL_DROPOUT_SURVIVAL, device=mu.device))
-            mu = mu * channel_mask
+            mu = (mu * channel_mask) / config.CHANNEL_DROPOUT_SURVIVAL
+
+
+
 
         logvar = torch.clamp(self.z_logvar(h), min=config.LOGVAR_CLAMP_MIN, max=config.LOGVAR_CLAMP_MAX)
         
@@ -276,9 +269,9 @@ class LabelConditionedDrift(nn.Module):
         )
         
         # Label conditioning
-        self.label_emb = nn.Embedding(NUM_CLASSES, LABEL_EMB_DIM)
+        self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
         self.cond_proj = nn.Sequential(
-            nn.Linear(128 + LABEL_EMB_DIM, 128),
+            nn.Linear(128 + config.LABEL_EMB_DIM, 128),
             nn.SiLU(),
             nn.Linear(128, 128)
         )
@@ -292,7 +285,7 @@ class LabelConditionedDrift(nn.Module):
         )
         
         # U-Net like architecture
-        self.head = nn.utils.spectral_norm(nn.Conv2d(LATENT_CHANNELS, 64, 3, 1, 1))
+        self.head = nn.utils.spectral_norm(nn.Conv2d(config.LATENT_CHANNELS, 64, 3, 1, 1))
         
         self.down1 = LabelConditionedBlock(64, 128, label_dim=128, use_spectral_norm=True)
         self.down2_conv = nn.utils.spectral_norm(nn.Conv2d(128, 256, 4, 2, 1))
@@ -304,7 +297,7 @@ class LabelConditionedDrift(nn.Module):
         self.up2_block = LabelConditionedBlock(128, 128, label_dim=128, use_spectral_norm=True)
         self.up1 = LabelConditionedBlock(128, 64, label_dim=128, use_spectral_norm=True)
         
-        self.tail = nn.utils.spectral_norm(nn.Conv2d(64, LATENT_CHANNELS, 3, 1, 1))
+        self.tail = nn.utils.spectral_norm(nn.Conv2d(64, config.LATENT_CHANNELS, 3, 1, 1))
         
         # Learnable output scaling
         self.output_scale = nn.Parameter(torch.tensor(0.1))

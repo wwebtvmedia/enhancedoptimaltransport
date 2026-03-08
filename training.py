@@ -363,8 +363,10 @@ class EnhancedLabelTrainer:
                 return torch.tensor(0.0, device=config.DEVICE)
         
         # Normalize to [0,1] for VGG (if in [-1,1] range)
-        recon_norm = (recon + 1) / 2
-        target_norm = (target + 1) / 2
+        mean = torch.tensor([0.485, 0.456, 0.406], device=config.DEVICE).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=config.DEVICE).view(1, 3, 1, 1)
+        recon_norm = (recon_norm - mean) / std
+        target_norm = (target_norm - mean) / std
         
         # Get features
         recon_feat = self.vgg(recon_norm)
@@ -372,18 +374,27 @@ class EnhancedLabelTrainer:
         
         return F.mse_loss(recon_feat, target_feat)
 
+
+
     def _switch_to_phase(self, new_phase: int):
         """Handle transition between training phases."""
         if new_phase == 1:
-            # Phase 1: VAE only (already the initial state)
+            # Phase 1: VAE only
             self.vae.train()
             self.drift.eval()
-            # Ensure all VAE params are trainable (they already are)
+            
+            # Ensure all VAE params are trainable
             for param in self.vae.parameters():
                 param.requires_grad = True
-            # Recreate optimizer with full VAE (if needed)
-            self.opt_vae = optim.AdamW(self.vae.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY)
-            self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(self.opt_vae, T_max=config.EPOCHS, eta_min=config.LR*0.01)
+                
+            # Update existing optimizer's LR dynamically
+            new_lr = config.LR
+            for param_group in self.opt_vae.param_groups:
+                param_group['lr'] = new_lr
+                
+            self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
+                self.opt_vae, T_max=config.EPOCHS, eta_min=config.LR * 0.01
+            )
             self.vae_ref = None  # no anchor needed
 
         elif new_phase == 2:
@@ -394,7 +405,7 @@ class EnhancedLabelTrainer:
             for param in self.vae_ref.parameters():
                 param.requires_grad = False
 
-            # Unfreeze encoder parts only
+            # Unfreeze encoder parts only, explicitly zero-out grad for frozen params
             unfrozen_count = 0
             for name, param in self.vae.named_parameters():
                 if any(k in name for k in ['enc_', 'label_emb', 'z_mean', 'z_logvar']):
@@ -402,14 +413,14 @@ class EnhancedLabelTrainer:
                     unfrozen_count += param.numel()
                 else:
                     param.requires_grad = False
+                    param.grad = None  # Ensures optimizer skips this parameter
             config.logger.info(f"Phase 2: Unfrozen {unfrozen_count:,} encoder params. Anchor set.")
 
-            # Recreate optimizer for VAE (only encoder parts)
-            self.opt_vae = optim.AdamW(
-                filter(lambda p: p.requires_grad, self.vae.parameters()),
-                lr=config.LR * config.PHASE2_VAE_LR_FACTOR,
-                weight_decay=config.WEIGHT_DECAY
-            )
+            # Update existing optimizer's LR dynamically
+            new_lr = config.LR * config.PHASE2_VAE_LR_FACTOR
+            for param_group in self.opt_vae.param_groups:
+                param_group['lr'] = new_lr
+                
             self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
                 self.opt_vae, T_max=config.EPOCHS - self.epoch, eta_min=config.LR * 0.005
             )
@@ -418,29 +429,25 @@ class EnhancedLabelTrainer:
 
         elif new_phase == 3:
             # Phase 3: Both trainable – unfreeze decoder as well
-            # Keep the reference anchor (still frozen)
-            # Unfreeze all VAE parameters
             for name, param in self.vae.named_parameters():
                 param.requires_grad = True
             config.logger.info("Phase 3: Unfroze all VAE parameters (encoder + decoder).")
 
-            # Recreate optimizer with full VAE (maybe lower LR)
-            self.opt_vae = optim.AdamW(
-                self.vae.parameters(),
-                lr=config.LR * config.PHASE3_VAE_LR_FACTOR,
-                weight_decay=config.WEIGHT_DECAY
-            )
+            # Update existing optimizer's LR dynamically
+            new_lr = config.LR * config.PHASE3_VAE_LR_FACTOR
+            for param_group in self.opt_vae.param_groups:
+                param_group['lr'] = new_lr
+                
             self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
                 self.opt_vae, T_max=config.EPOCHS - self.epoch, eta_min=config.LR * 0.001
             )
-            # Drift optimizer unchanged (already in train mode)
+            # Drift optimizer unchanged
 
         # Ensure correct train/eval modes
         if new_phase == 1:
             self.vae.train()
             self.drift.eval()
         elif new_phase == 2:
-            self.vae.eval()   # VAE in eval mode? Actually we want encoder to train, but decoder is frozen. It's fine to keep VAE in train mode because only encoder parts are trainable and they will update.
             self.vae.train()   # Let's put VAE in train mode so that BatchNorm etc update.
             self.drift.train()
         elif new_phase == 3:
@@ -456,14 +463,14 @@ class EnhancedLabelTrainer:
         return phase
 
     def ssim_loss(self,x, y):
-        # simple luminance + contrast proxy
+
         mu_x, mu_y = x.mean([-2,-1], keepdim=True), y.mean([-2,-1], keepdim=True)
-        sigma_x = ((x - mu_x)**2).mean([-2,-1], keepdim=True).sqrt()
-        sigma_y = ((y - mu_y)**2).mean([-2,-1], keepdim=True).sqrt()
-        sigma_xy = ((x - mu_x)*(y - mu_y)).mean([-2,-1], keepdim=True)
-        C1, C2 = 0.01**2, 0.03**2
-        ssim = (2*mu_x*mu_y + C1)*(2*sigma_xy + C2) / \
-            ((mu_x**2 + mu_y**2 + C1)*(sigma_x**2 + sigma_y**2 + C2))
+        var_x = ((x - mu_x)**2).mean([-2,-1], keepdim=True)
+        var_y = ((y - mu_y)**2).mean([-2,-1], keepdim=True)
+        cov_xy = ((x - mu_x)*(y - mu_y)).mean([-2,-1], keepdim=True)
+
+        ssim = (2*mu_x*mu_y + C1)*(2*cov_xy + C2) / ((mu_x**2 + mu_y**2 + C1)*(var_x + var_y + C2))
+
         return 1 - ssim.mean()
 
     def compute_loss(self, batch: Dict, phase: int = 1) -> Dict:
