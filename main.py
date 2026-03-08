@@ -162,11 +162,6 @@ def configure_device_specific() -> None:
     dm.LR = config.LR
     dm.DEVICE = config.DEVICE
     
-    training.LR = config.LR
-    training.BATCH_SIZE = config.BATCH_SIZE
-    training.DEVICE = config.DEVICE
-    training.USE_AMP = config.USE_AMP
-    training.DIRS = config.DIRS
 
     logger.info(f"Device: {config.DEVICE}")
     logger.info(f"Batch size: {config.BATCH_SIZE}")
@@ -497,7 +492,8 @@ def main():
                 temperature = float(temp_input) if temp_input else config.INFERENCE_TEMPERATURE
                 
                 method_input = input("Integration method (euler / heun / rk4) [default: heun]: ").strip().lower()
-                method = method_input if method_input in ['euler', 'rk4'] else 'rk4'
+
+                method = method_input if method_input in ['euler', 'heun', 'rk4'] else 'heun'
                 
                 # Langevin refinement options
                 langevin_steps_input = input("Langevin refinement steps [default: 0 (disabled)]: ").strip()

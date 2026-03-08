@@ -365,8 +365,9 @@ class EnhancedLabelTrainer:
                 self.vgg.eval()
                 
                 # ImageNet normalization constants
-                self.vgg_mean = torch.tensor([0.485, 0.456, 0.406], device=config.DEVICE).view(1, 3, 1, 1)
-                self.vgg_std = torch.tensor([0.229, 0.224, 0.225], device=config.DEVICE).view(1, 3, 1, 1)
+                # Ensure mean/std are on the same device as inputs
+                mean = self.vgg_mean.to(recon.device)
+                std = self.vgg_std.to(recon.device)
             except:
                 return torch.tensor(0.0, device=config.DEVICE)
         
@@ -675,7 +676,7 @@ class EnhancedLabelTrainer:
                     continue
                 
                 # Forward pass with AMP if enabled
-                if self.scaler is not None and phase == 2:
+                if self.scaler is not None and phase in (2,3):
                     with torch.cuda.amp.autocast():
                         loss_dict = self.compute_loss(batch_dict, phase=phase)
                 else:
@@ -943,13 +944,13 @@ class EnhancedLabelTrainer:
                 sample_batch = next(iter(self.loader))
                 if isinstance(sample_batch, dict):
                     images = sample_batch['image'][:min(16, num_samples)].to(config.DEVICE)
-                    labels = sample_batch['label'][:min(16, num_samples)].to(config.DEVICE)
+                    bash_labels = sample_batch['label'][:min(16, num_samples)].to(config.DEVICE)
                 else:
                     images = sample_batch[0][:min(16, num_samples)].to(config.DEVICE)
-                    labels = sample_batch[1][:min(16, num_samples)].to(config.DEVICE)
+                    bash_labels = sample_batch[1][:min(16, num_samples)].to(config.DEVICE)
                 
                 with torch.no_grad():
-                    mu, logvar = self.vae.encode(images, labels)
+                    mu, logvar = self.vae.encode(images, bash_labels)
                     z_init = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * 0.3
                     
                     # If we need more samples than we have, repeat
