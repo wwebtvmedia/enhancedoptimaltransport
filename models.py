@@ -126,12 +126,12 @@ class LabelConditionedVAE(nn.Module):
         ])
         
         # Input channels doubled from 256 to 512
-        self.z_mean = nn.Conv2d(512, LATENT_CHANNELS, 3, 1, 1)
-        self.z_logvar = nn.Conv2d(512, LATENT_CHANNELS, 3, 1, 1)
+        self.z_mean = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
+        self.z_logvar = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
         
         # Decoder
         # Input channels doubled from 256 to 512
-        self.dec_in = nn.Conv2d(LATENT_CHANNELS, 512, 3, 1, 1)
+        self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
         self.dec_blocks = nn.ModuleList([
             nn.ConvTranspose2d(512, 256, 4, 2, 1),
             LabelConditionedBlock(256, 256),
