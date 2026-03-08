@@ -493,7 +493,11 @@ class EnhancedLabelTrainer:
         if phase == 1:
             # Phase 1: Train VAE
             recon, mu, logvar = self.vae(images, labels)
-            
+
+            # Periodically diagnose and correct latent collapse
+            if self.debug_counter % self.debug_interval == 0:
+                self.diagnose_latent_collapse(mu, logvar, self.epoch)
+
             # Compute metrics
             latent_std = torch.exp(0.5 * logvar).mean().item()
             channel_stds = mu.std(dim=[0, 2, 3]).detach().cpu().numpy()
@@ -1176,6 +1180,16 @@ def train_model(num_epochs: int = config.EPOCHS, resume_from_snapshot: Optional[
             kpi_update['composite_score'] = comp_score
             trainer.kpi_tracker.update(kpi_update)
             
+            # Log convergence metrics periodically (e.g., every 5 epochs)
+            if (epoch + 1) % 5 == 0:
+                conv_stats = trainer.kpi_tracker.compute_convergence()
+                if 'loss_trend' in conv_stats:
+                    trend_symbol = "\\" if conv_stats['loss_trend'] < 0 else "//"
+                    config.logger.info(
+                        f"Convergence Stats {trend_symbol} | Loss trend: {conv_stats['loss_trend']:.6f} | "
+                        f"Stability Score: {conv_stats.get('convergence_score', 0):.4f}"
+                    )
+
             # Check for new best composite score
             if comp_score > trainer.best_composite_score:
                 trainer.best_composite_score = comp_score
