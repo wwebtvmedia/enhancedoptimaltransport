@@ -101,8 +101,7 @@ class LabelConditionedBlock(nn.Module):
 # LABEL-CONDITIONED VAE
 # ============================================================
 class LabelConditionedVAE(nn.Module):
-    """VAE with label conditioning for latent space encoding."""
-    
+    """VAE with label conditioning for latent space encoding."""    
     def __init__(self, free_bits=config.FREE_BITS):
         super().__init__()
         self.free_bits = free_bits
@@ -114,32 +113,36 @@ class LabelConditionedVAE(nn.Module):
         else:
             self.fourier_channels = 0
 
-        self.enc_in = nn.Conv2d(3 + self.fourier_channels, 32, 3, 1, 1)
+        # Doubled from 32 to 64
+        self.enc_in = nn.Conv2d(3 + self.fourier_channels, 64, 3, 1, 1)
 
         self.enc_blocks = nn.ModuleList([
-            LabelConditionedBlock(32, 64),
-            nn.Conv2d(64, 64, 4, 2, 1),
             LabelConditionedBlock(64, 128),
             nn.Conv2d(128, 128, 4, 2, 1),
             LabelConditionedBlock(128, 256),
             nn.Conv2d(256, 256, 4, 2, 1),
+            LabelConditionedBlock(256, 512),
+            nn.Conv2d(512, 512, 4, 2, 1),
         ])
         
-        self.z_mean = nn.Conv2d(256, config.LATENT_CHANNELS, 3, 1, 1)
-        self.z_logvar = nn.Conv2d(256, config.LATENT_CHANNELS, 3, 1, 1)
+        # Input channels doubled from 256 to 512
+        self.z_mean = nn.Conv2d(512, LATENT_CHANNELS, 3, 1, 1)
+        self.z_logvar = nn.Conv2d(512, LATENT_CHANNELS, 3, 1, 1)
         
         # Decoder
-        self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 256, 3, 1, 1)
+        # Input channels doubled from 256 to 512
+        self.dec_in = nn.Conv2d(LATENT_CHANNELS, 512, 3, 1, 1)
         self.dec_blocks = nn.ModuleList([
+            nn.ConvTranspose2d(512, 256, 4, 2, 1),
+            LabelConditionedBlock(256, 256),
             nn.ConvTranspose2d(256, 128, 4, 2, 1),
             LabelConditionedBlock(128, 128),
             nn.ConvTranspose2d(128, 64, 4, 2, 1),
             LabelConditionedBlock(64, 64),
-            nn.ConvTranspose2d(64, 32, 4, 2, 1),
-            LabelConditionedBlock(32, 32),
         ])
         
-        self.dec_out = nn.Conv2d(32, 3, 3, 1, 1)
+        # Input channels doubled from 32 to 64
+        self.dec_out = nn.Conv2d(64, 3, 3, 1, 1)
         self.diversity_loss = None
 
     def _get_fourier_features(self, x):
