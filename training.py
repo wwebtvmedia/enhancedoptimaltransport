@@ -350,7 +350,7 @@ class EnhancedLabelTrainer:
             return latent_std, mu_std, channel_stds
 
     def perceptual_loss(self, recon, target):
-        """Simple perceptual loss using pretrained VGG features"""
+        """Simple perceptual loss using pretrained VGG features with correct ImageNet normalization"""
         if not hasattr(self, 'vgg'):
             try:
                 import torchvision.models as models
@@ -358,22 +358,26 @@ class EnhancedLabelTrainer:
                 for param in self.vgg.parameters():
                     param.requires_grad = False
                 self.vgg.eval()
+                
+                # ImageNet normalization constants
+                self.register_buffer("vgg_mean", torch.tensor([0.485, 0.456, 0.406], device=config.DEVICE).view(1, 3, 1, 1))
+                self.register_buffer("vgg_std", torch.tensor([0.229, 0.224, 0.225], device=config.DEVICE).view(1, 3, 1, 1))
             except:
-                # Fallback if VGG not available
                 return torch.tensor(0.0, device=config.DEVICE)
         
-        # Normalize to [0,1] for VGG (if in [-1,1] range)
-        mean = torch.tensor([0.485, 0.456, 0.406], device=config.DEVICE).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=config.DEVICE).view(1, 3, 1, 1)
-        recon_norm = (recon_norm - mean) / std
-        target_norm = (target_norm - mean) / std
+        # 1. Map from [-1, 1] to [0, 1]
+        recon_01 = (recon + 1) / 2
+        target_01 = (target + 1) / 2
         
-        # Get features
+        # 2. Apply ImageNet normalization
+        recon_norm = (recon_01 - self.vgg_mean) / self.vgg_std
+        target_norm = (target_01 - self.vgg_mean) / self.vgg_std
+        
+        # 3. Get features
         recon_feat = self.vgg(recon_norm)
         target_feat = self.vgg(target_norm)
         
         return F.mse_loss(recon_feat, target_feat)
-
 
 
     def _switch_to_phase(self, new_phase: int):
@@ -463,6 +467,9 @@ class EnhancedLabelTrainer:
         return phase
 
     def ssim_loss(self,x, y):
+
+        C1 = (0.01 * 1.0)**2 
+        C2 = (0.03 * 1.0)**2
 
         mu_x, mu_y = x.mean([-2,-1], keepdim=True), y.mean([-2,-1], keepdim=True)
         var_x = ((x - mu_x)**2).mean([-2,-1], keepdim=True)
