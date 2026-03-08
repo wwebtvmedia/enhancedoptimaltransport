@@ -176,10 +176,18 @@ class LabelConditionedVAE(nn.Module):
     def _channel_diversity_loss(self, mu):
         """Compute diversity loss to encourage all channels to be used."""
         channel_stds = mu.std(dim=[0, 2, 3])
-        min_std = torch.tensor(config.DIVERSITY_TARGET_STD, device=mu.device, dtype=mu.dtype)
-        diversity_loss = torch.mean(F.relu(min_std - channel_stds))
-        balance_loss = channel_stds.std() * config.DIVERSITY_BALANCE_WEIGHT
-        return diversity_loss + balance_loss
+        
+        # More aggressive diversity loss
+        target_std = config.DIVERSITY_TARGET_STD
+        
+        # Penalize channels that are too low OR too high (prevents some channels dominating)
+        low_penalty = torch.mean(F.relu(target_std - channel_stds))
+        high_penalty = torch.mean(F.relu(channel_stds - 2.0)) * 0.5  # Cap at 2.0
+        
+        # Balance loss - encourage all channels to have similar std
+        balance_loss = channel_stds.std() * config.DIVERSITY_BALANCE_WEIGHT * 2
+        
+        return low_penalty + high_penalty + balance_loss
 
     def encode(self, x, labels):
         """Encode images to latent distribution parameters."""

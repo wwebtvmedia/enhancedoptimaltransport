@@ -384,7 +384,31 @@ class EnhancedLabelTrainer:
         if USE_OU_BRIDGE:
             logger.info(f"  Using OU bridge reference (theta={OU_THETA})")
 
-# Add this method to EnhancedLabelTrainer class (around line 340):
+    def diagnose_latent_collapse(self, mu, logvar, epoch):
+        """Diagnose and fix latent space collapse issues."""
+        with torch.no_grad():
+            # Calculate statistics
+            latent_std = torch.exp(0.5 * logvar).mean().item()
+            mu_std = mu.std().item()
+            channel_means = mu.mean(dim=[0, 2, 3])
+            channel_stds = mu.std(dim=[0, 2, 3])
+            
+            # Check for collapse
+            if epoch > 10 and latent_std < 0.3:
+                logger.warning(f"⚠️ Latent collapse detected! std={latent_std:.3f}")
+                
+                # Option 1: Increase KL weight temporarily
+                global KL_WEIGHT
+                old_kl = KL_WEIGHT
+                KL_WEIGHT = min(0.05, KL_WEIGHT * 2)  # Double but cap at 0.05
+                logger.info(f"  Temporarily increasing KL weight: {old_kl} -> {KL_WEIGHT}")
+                
+                # Option 2: Add noise to encourage exploration
+                if hasattr(self, 'vae') and hasattr(self.vae, 'z_logvar'):
+                    # Add small noise to mu during training
+                    self.vae.mu_noise_scale = 0.05  # Will need to add this attribute
+                
+            return latent_std, mu_std, channel_stds
 
     def perceptual_loss(self, recon, target):
         """Simple perceptual loss using pretrained VGG features"""
@@ -545,9 +569,20 @@ class EnhancedLabelTrainer:
                 current_kl_weight = KL_WEIGHT
             
             diversity_loss = self.vae.diversity_loss if self.vae.diversity_loss is not None else torch.tensor(0.0, device=config.DEVICE)
+
             kl_annealing = min(1.0, self.epoch / config.KL_ANNEALING_EPOCHS)
-            
-            kl_loss = raw_kl * current_kl_weight * kl_annealing
+            # Add a minimum KL floor to prevent collapse
+            min_kl_per_channel = 0.1  # bits per channel
+            kl_per_channel = raw_kl / (LATENT_CHANNELS * LATENT_H * LATENT_W)
+            if kl_per_channel < min_kl_per_channel and self.epoch > 5:
+                # Boost KL if it's too low
+                kl_multiplier = 2.0
+                logger.debug(f"  KL too low ({kl_per_channel:.3f} < {min_kl_per_channel}), boosting")
+            else:
+                kl_multiplier = 1.0
+                
+            kl_loss = raw_kl * current_kl_weight * kl_annealing * kl_multiplier
+
             recon_loss = raw_mse * RECON_WEIGHT + SIM_LOST_FACTOR * self.ssim_loss(recon, images) + PERSP_LOST_FACTOR * self.perceptual_loss(recon, images) * 0.2
             total_loss = recon_loss + kl_loss + diversity_loss * DIVERSITY_WEIGHT
             
@@ -713,7 +748,15 @@ class EnhancedLabelTrainer:
                 # Debug logging
                 if batch_idx % 50 == 0 and batch_idx > 0:
                     self._debug_training_loop(batch_dict, loss_dict)
-                
+
+                if batch_idx % 100 == 0 and phase == 1:
+                    # Check for collapse across batches
+                    if len(latent_std_values) > 50:
+                        avg_std = np.mean(latent_std_values[-50:])
+                        if avg_std < 0.4 and self.epoch > 10:
+                            logger.warning(f" Sustained low latent std: {avg_std:.3f}")
+                            logger.warning("  Consider increasing KL_WEIGHT or reducing LATENT_SCALE")
+
                 # Backward pass
                 if phase == 1:
                     self.opt_vae.zero_grad()
@@ -757,7 +800,7 @@ class EnhancedLabelTrainer:
                             losses[key] += value
                         elif isinstance(value, torch.Tensor):
                             losses[key] += value.item()
-                
+
                 self.step += 1
                 self.debug_counter += 1
                 batch_count += 1
