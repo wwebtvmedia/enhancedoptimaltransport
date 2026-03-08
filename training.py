@@ -325,8 +325,8 @@ class EnhancedLabelTrainer:
             config.logger.info(f"  Using OU bridge reference (theta={config.OU_THETA})")
 
         # ImageNet Mean and Std (for 0-1 normalized images)
-        self.register_buffer('vgg_mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
-        self.register_buffer('vgg_std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+        self.vgg_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.vgg_std =torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
 
     def diagnose_latent_collapse(self, mu, logvar, epoch):
@@ -365,8 +365,8 @@ class EnhancedLabelTrainer:
                 self.vgg.eval()
                 
                 # ImageNet normalization constants
-                self.register_buffer("vgg_mean", torch.tensor([0.485, 0.456, 0.406], device=config.DEVICE).view(1, 3, 1, 1))
-                self.register_buffer("vgg_std", torch.tensor([0.229, 0.224, 0.225], device=config.DEVICE).view(1, 3, 1, 1))
+                self.vgg_mean = torch.tensor([0.485, 0.456, 0.406], device=config.DEVICE).view(1, 3, 1, 1)
+                self.vgg_std = torch.tensor([0.229, 0.224, 0.225], device=config.DEVICE).view(1, 3, 1, 1)
             except:
                 return torch.tensor(0.0, device=config.DEVICE)
         
