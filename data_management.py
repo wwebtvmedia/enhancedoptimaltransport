@@ -16,23 +16,6 @@ from typing import Optional, List, Dict, Union, Tuple
 import config
 
 # ============================================================
-# USE CENTRALIZED CONFIGURATION
-# ============================================================
-IMG_SIZE = config.IMG_SIZE
-LATENT_CHANNELS = config.LATENT_CHANNELS
-LATENT_H = config.LATENT_H
-LATENT_W = config.LATENT_W
-BATCH_SIZE = config.BATCH_SIZE
-LR = config.LR
-EPOCHS = config.EPOCHS
-SNAPSHOT_INTERVAL = config.SNAPSHOT_INTERVAL
-SNAPSHOT_KEEP = config.SNAPSHOT_KEEP
-NUM_CLASSES = config.NUM_CLASSES
-LABEL_EMB_DIM = config.LABEL_EMB_DIM
-DIRS = config.DIRS
-logger = config.logger
-
-# ============================================================
 # CREATE ALL NECESSARY DIRECTORIES
 # ============================================================
 for d in config.DIRS.values():
@@ -45,25 +28,19 @@ for d in config.DIRS.values():
 class SnapshotManager:
     """Manage model snapshots for snapshot ensemble learning."""
     
-    def __init__(self, model, optimizer, name="model", interval=SNAPSHOT_INTERVAL, keep=SNAPSHOT_KEEP):
+    def __init__(self, model, optimizer, name="model", interval=config.SNAPSHOT_INTERVAL, keep=config.SNAPSHOT_KEEP):
         self.model = model
         self.optimizer = optimizer
         self.name = name
         self.interval = interval
         self.keep = keep
         self.snapshots = []
-        self.snapshot_dir = DIRS["snaps"]
-        
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, 
-            T_0=interval // 2,
-            T_mult=1,
-            eta_min=LR * 0.1
-        )
+        self.snapshot_dir = config.DIRS["snaps"]
+
     
     def step(self) -> None:
         """Update snapshot scheduler."""
-        self.scheduler.step()
+        return
     
     def should_save(self, epoch: int) -> bool:
         """Check if we should save a snapshot at this epoch."""
@@ -96,13 +73,13 @@ class SnapshotManager:
             if os.path.exists(old_snapshot):
                 os.remove(old_snapshot)
         
-        logger.info(f"Saved {self.name} snapshot at epoch {epoch}")
+        config.logger.info(f"Saved {self.name} snapshot at epoch {epoch}")
         return snapshot_path
 
     def revert(self) -> bool:
         """Emergency revert to last good snapshot."""
         if not self.snapshots:
-            logger.error(f"❌ No snapshots available for {self.name} to revert to!")
+            config.logger.error(f"❌ No snapshots available for {self.name} to revert to!")
             return False
         
         latest_snapshot = self.snapshots[-1]
@@ -118,14 +95,14 @@ class SnapshotManager:
                 if 'optimizer_state' in snapshot:
                     self.optimizer.load_state_dict(snapshot['optimizer_state'])
             else:
-                logger.error(f" Invalid snapshot format for {self.name}")
+                config.logger.error(f" Invalid snapshot format for {self.name}")
                 return False
             
-            logger.info(f" Emergency revert successful for {self.name} to epoch {snapshot.get('epoch', 'unknown')}")
+            config.logger.info(f" Emergency revert successful for {self.name} to epoch {snapshot.get('epoch', 'unknown')}")
             return True
             
         except Exception as e:
-            logger.error(f" Emergency revert failed: {e}")
+            config.logger.error(f" Emergency revert failed: {e}")
             return False
 
 # ============================================================
@@ -137,7 +114,7 @@ def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = Fals
     """Save training checkpoint."""
     
     # Ensure checkpoint directory exists
-    DIRS["ckpt"].mkdir(parents=True, exist_ok=True)
+    config.DIRS["ckpt"].mkdir(parents=True, exist_ok=True)
     
     checkpoint = {
         'epoch': trainer.epoch,
@@ -160,30 +137,30 @@ def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = Fals
         checkpoint['kpi_metrics'] = trainer.kpi_tracker.metrics
     
     # Save latest checkpoint
-    latest_path = DIRS["ckpt"] / "latest.pt"
+    latest_path = config.DIRS["ckpt"] / "latest.pt"
     torch.save(checkpoint, latest_path)
-    logger.info(f"Checkpoint saved to {latest_path}")
+    config.logger.info(f"Checkpoint saved to {latest_path}")
     
     if is_best:
-        best_path = DIRS["ckpt"] / "best.pt"
+        best_path = config.DIRS["ckpt"] / "best.pt"
         torch.save(checkpoint, best_path)
-        logger.info(f"New best model saved (loss: {trainer.best_loss:.4f})")
+        config.logger.info(f"New best model saved (loss: {trainer.best_loss:.4f})")
     
     if is_best_overall:
-        overall_best_path = DIRS["best"] / f"best_overall_epoch_{trainer.epoch+1:04d}.pt"
+        overall_best_path = config.DIRS["best"] / f"best_overall_epoch_{trainer.epoch+1:04d}.pt"
         overall_best_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(checkpoint, overall_best_path)
-        logger.info(f"New overall best model saved (composite score: {trainer.best_composite_score:.4f})")
+        config.logger.info(f"New overall best model saved (composite score: {trainer.best_composite_score:.4f})")
     
     return latest_path
 
 def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
     """Load training checkpoint into trainer."""
     if path is None:
-        path = DIRS["ckpt"] / "latest.pt"
+        path = config.DIRS["ckpt"] / "latest.pt"
     
     if not os.path.exists(path):
-        logger.warning(f"No checkpoint found at {path}")
+        config.logger.warning(f"No checkpoint found at {path}")
         return False
     
     try:
@@ -213,7 +190,7 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
             trainer.vae_ref.eval()
             for param in trainer.vae_ref.parameters():
                 param.requires_grad = False
-            logger.info("Reference anchor created from loaded checkpoint.")
+            config.logger.info("Reference anchor created from loaded checkpoint.")
         
         # Update training schedule if present
         if 'training_schedule' in checkpoint:
@@ -227,11 +204,11 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         if 'kpi_metrics' in checkpoint and hasattr(trainer, 'kpi_tracker'):
             trainer.kpi_tracker.metrics = checkpoint['kpi_metrics']
         
-        logger.info(f"Loaded checkpoint from epoch {trainer.epoch}, step {trainer.step}")
+        config.logger.info(f"Loaded checkpoint from epoch {trainer.epoch}, step {trainer.step}")
         return True
         
     except Exception as e:
-        logger.error(f"Failed to load checkpoint: {e}")
+        config.logger.error(f"Failed to load checkpoint: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -239,10 +216,10 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
 def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
     """Load only model weights for inference (ignore optimizer states)."""
     if path is None:
-        path = DIRS["ckpt"] / "latest.pt"
+        path = config.DIRS["ckpt"] / "latest.pt"
     
     if not os.path.exists(path):
-        logger.error(f"No checkpoint found at {path}")
+        config.logger.error(f"No checkpoint found at {path}")
         return False
     
     try:
@@ -256,11 +233,11 @@ def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
         trainer.vae.eval()
         trainer.drift.eval()
         
-        logger.info(f"✓ Successfully loaded model from epoch {trainer.epoch}")
+        config.logger.info(f"✓ Successfully loaded model from epoch {trainer.epoch}")
         return True
         
     except Exception as e:
-        logger.error(f"Failed to load checkpoint: {e}")
+        config.logger.error(f"Failed to load checkpoint: {e}")
         return False
 
 # ============================================================
@@ -300,10 +277,10 @@ def save_individual_images(
         images: Tensor of shape (B, C, H, W) in [0, 1] range
         labels: List of integer labels
         epoch: Current epoch (for filename)
-        base_dir: Directory to save (default: DIRS["samples"])
+        base_dir: Directory to save (default: config.DIRS["samples"])
     """
     if base_dir is None:
-        base_dir = DIRS["samples"]
+        base_dir = config.DIRS["samples"]
     for idx, img in enumerate(images):
         individual_path = base_dir / f"gen_{idx}_label{labels[idx]}_epoch{epoch+1}.png"
         vutils.save_image(img, individual_path)
@@ -317,7 +294,7 @@ def save_raw_tensors(
 ) -> Path:
     """Save raw latent and image tensors for debugging."""
     if base_dir is None:
-        base_dir = DIRS["samples"]
+        base_dir = config.DIRS["samples"]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = base_dir / f"raw_epoch{epoch+1}_{timestamp}.pt"
     torch.save({
@@ -375,7 +352,7 @@ class LabeledImageDataset(Dataset):
 def get_dataloader_config() -> Dict:
     """Get dataloader configuration optimized for current device."""
     config_dict = {
-        'batch_size': BATCH_SIZE,
+        'batch_size': config.BATCH_SIZE,
         'shuffle': True,
         'drop_last': True,
     }
@@ -409,7 +386,7 @@ def get_dataloader_config() -> Dict:
 def load_data() -> DataLoader:
     """Load dataset with device-optimized settings."""
     transform = T.Compose([
-        T.Resize((IMG_SIZE, IMG_SIZE)),
+        T.Resize((config.IMG_SIZE, config.IMG_SIZE)),
         T.RandomHorizontalFlip(),
         T.ToTensor(),
         T.Normalize((0.5,)*3, (0.5,)*3)
@@ -419,22 +396,22 @@ def load_data() -> DataLoader:
     
     local_path = Path("./data/images")
     if local_path.exists():
-        logger.info("Loading local images...")
+        config.logger.info("Loading local images...")
         try:
             local_ds = datasets.ImageFolder(str(local_path), transform=transform)
             datasets_list.append(LabeledImageDataset(local_ds))
-            logger.info(f"Loaded {len(local_ds)} local images with {len(local_ds.classes)} classes")
+            config.logger.info(f"Loaded {len(local_ds)} local images with {len(local_ds.classes)} classes")
         except Exception as e:
-            logger.warning(f"Failed to load local images: {e}")
+            config.logger.warning(f"Failed to load local images: {e}")
     
-    logger.info("Loading CIFAR-10...")
+    config.logger.info("Loading CIFAR-10...")
     try:
         cifar_ds = datasets.CIFAR10(root="./data", train=True, download=True, transform=transform)
         labeled_cifar = LabeledImageDataset(cifar_ds)
         datasets_list.append(labeled_cifar)
-        logger.info(f"Loaded {len(cifar_ds)} CIFAR-10 images")
+        config.logger.info(f"Loaded {len(cifar_ds)} CIFAR-10 images")
     except Exception as e:
-        logger.error(f"Failed to load CIFAR-10: {e}")
+        config.logger.error(f"Failed to load CIFAR-10: {e}")
         if not datasets_list:
             raise RuntimeError("No datasets could be loaded!")
     
@@ -443,7 +420,7 @@ def load_data() -> DataLoader:
     else:
         combined_ds = datasets_list[0]
     
-    logger.info(f"Total dataset size: {len(combined_ds)} images")
+    config.logger.info(f"Total dataset size: {len(combined_ds)} images")
     
     dataloader_config = get_dataloader_config()
     
