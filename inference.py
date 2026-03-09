@@ -28,9 +28,9 @@ def run_inference(labels: Optional[List[int]] = None,
         langevin_step_size: Step size for Langevin dynamics. If None, prompts user.
         langevin_score_scale: Scaling factor for the approximate score. If None, prompts user.
     """
-    checkpoint_path = dm.DIRS["ckpt"] / "latest.pt"
+    checkpoint_path = config.DIRS["ckpt"] / "latest.pt"
     if not checkpoint_path.exists():
-        training.logger.error("No trained model found! Train a model first.")
+        config.logger.error("No trained model found! Train a model first.")
         return
     
     # Create dummy loader for trainer initialization
@@ -40,12 +40,12 @@ def run_inference(labels: Optional[List[int]] = None,
     trainer = training.EnhancedLabelTrainer(dummy_loader)
     
     if not trainer.load_for_inference():
-        training.logger.error("Failed to load checkpoint")
+        config.logger.error("Failed to load checkpoint")
         return
     
-    training.logger.info("\n" + "="*50)
-    training.logger.info("LABEL-CONDITIONED INFERENCE")
-    training.logger.info("="*50)
+    config.logger.info("\n" + "="*50)
+    config.logger.info("LABEL-CONDITIONED INFERENCE")
+    config.logger.info("="*50)
     
     # Interactive input if parameters not provided
     if labels is None:
@@ -109,7 +109,7 @@ def run_inference(labels: Optional[List[int]] = None,
     
     print(f"\n Generated {len(all_labels)} samples")
     print(f" Saved to: {grid_path}")
-    print(f" Individual images in: {dm.DIRS['samples']}")
+    print(f" Individual images in: {config.DIRS['samples']}")
     
     # Print summary
     print("\n Sample Summary:")

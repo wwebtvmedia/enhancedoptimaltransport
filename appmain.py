@@ -55,10 +55,67 @@ import data_management as dm
 import models
 import inference
 
+# Initialize device before anything else
+def initialize_device():
+    """Initialize device and update config constants."""
+    import torch
+    import os
+    
+    # Device detection (copied from main.py)
+    if torch.cuda.is_available():
+        config.DEVICE = torch.device("cuda")
+        config.logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        try:
+            test_tensor = torch.tensor([1.0], device='mps')
+            config.DEVICE = torch.device("mps")
+            config.logger.info("Using Apple Silicon MPS device")
+        except Exception as e:
+            config.logger.warning(f"MPS available but failed to initialize: {e}")
+            config.DEVICE = torch.device("cpu")
+    else:
+        try:
+            import torch_directml
+            if hasattr(torch_directml, 'is_available') and torch_directml.is_available():
+                config.DEVICE = torch_directml.device()
+                config.logger.info(f"Using DirectML device: {torch_directml.device_name(config.DEVICE)}")
+            else:
+                config.DEVICE = torch.device("cpu")
+        except ImportError:
+            config.DEVICE = torch.device("cpu")
+            config.logger.info("Using CPU device (no GPU acceleration available)")
+    
+    # Configure device-specific settings
+    if config.DEVICE.type == 'cpu':
+        config.BATCH_SIZE = 32
+        config.LR = 1e-4
+        config.USE_AMP = False
+    elif config.DEVICE.type == 'mps':
+        config.BATCH_SIZE = 48
+        config.LR = 1.5e-4
+        config.USE_AMP = False
+        os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+    elif config.DEVICE.type == 'directml':
+        config.BATCH_SIZE = 48
+        config.LR = 2e-4
+        config.USE_AMP = False
+    else:  # CUDA
+        config.BATCH_SIZE = 64
+        config.LR = 2e-4
+        config.USE_AMP = True
+    
+    config.DTYPE = torch.float32
+    config.logger.info(f"Device initialized: {config.DEVICE}")
+    config.logger.info(f"Batch size: {config.BATCH_SIZE}")
+    config.logger.info(f"Learning rate: {config.LR}")
+
+# Call initialization
+initialize_device()
+
 # ============================================================
 # Custom logging handler that sends messages to a queue
 # ============================================================
-class QueueHandler(logging.Handler):
+class QueueHandler(config.logging.Handler):
     def __init__(self, log_queue):
         super().__init__()
         self.log_queue = log_queue
