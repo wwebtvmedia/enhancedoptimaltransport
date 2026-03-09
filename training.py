@@ -370,14 +370,18 @@ class EnhancedLabelTrainer:
                 std = self.vgg_std.to(recon.device)
             except:
                 return torch.tensor(0.0, device=config.DEVICE)
-        
+    
+         # Move mean/std to the device of the input (handles CPU/GPU automatically)
+        mean = self.vgg_mean.to(recon.device)
+        std = self.vgg_std.to(recon.device)
+
         # 1. Map from [-1, 1] to [0, 1]
         recon_01 = (recon + 1) / 2
         target_01 = (target + 1) / 2
         
         # 2. Apply ImageNet normalization
-        recon_norm = (recon_01 - self.vgg_mean) / self.vgg_std
-        target_norm = (target_01 - self.vgg_mean) / self.vgg_std
+        recon_norm = (recon_01 - mean) / std
+        target_norm = (target_01 - mean) / std
         
         # 3. Get features
         recon_feat = self.vgg(recon_norm)
