@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Schrödinger Bridge Image Generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            text-align: center;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        .controls {
+            margin: 20px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 15px;
+            align-items: center;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        label {
+            font-weight: bold;
+        }
+        input, select, button {
+            padding: 8px 12px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        #status {
+            margin: 10px 0;
+            color: #666;
+        }
+        canvas {
+            border: 2px solid #333;
+            border-radius: 5px;
+            margin-top: 20px;
+            max-width: 100%;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.webgl.min.js"></script>
+</head>
+<body>
+    <h1>Label‑Conditioned Image Generation</h1>
+    <p>Using ONNX Runtime Web (WebGL backend)</p>
+
+    <div class="controls">
+        <div class="control-group">
+            <label for="labelSelect">Class:</label>
+            <select id="labelSelect">
+                <option value="0">0: airplane</option>
+                <option value="1">1: automobile</option>
+                <option value="2">2: bird</option>
+                <option value="3">3: cat</option>
+                <option value="4">4: deer</option>
+                <option value="5">5: dog</option>
+                <option value="6">6: frog</option>
+                <option value="7">7: horse</option>
+                <option value="8">8: ship</option>
+                <option value="9">9: truck</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="methodSelect">Method:</label>
+            <select id="methodSelect">
+                <option value="euler">Euler</option>
+                <option value="heun" selected>Heun</option>
+                <option value="rk4">RK4</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="stepsSlider">Steps:</label>
+            <input type="range" id="stepsSlider" min="10" max="100" value="50" step="1">
+            <span id="stepsValue">50</span>
+        </div>
+
+        <button id="generateBtn" disabled>Generate</button>
+    </div>
+
+    <div id="status">Loading models...</div>
+    <canvas id="outputCanvas" width="256" height="256"></canvas>
+
+    <script>
+        (async () => {
+            // ---------- Configuration ----------
+            const LATENT_SHAPE = [1, 4, 8, 8];      // [batch, channels, height, width]
+            const IMG_SIZE = 64;                     // output image size (64x64)
+
+            // DOM elements
+            const statusEl = document.getElementById('status');
+            const canvas = document.getElementById('outputCanvas');
+            const ctx = canvas.getContext('2d');
+            const generateBtn = document.getElementById('generateBtn');
+            const labelSelect = document.getElementById('labelSelect');
+            const methodSelect = document.getElementById('methodSelect');
+            const stepsSlider = document.getElementById('stepsSlider');
+            const stepsValue = document.getElementById('stepsValue');
+
+            stepsSlider.addEventListener('input', () => {
+                stepsValue.textContent = stepsSlider.value;
+            });
+
+            // ---------- Helper: normal random numbers (Box‑Muller) ----------
+            function normalRandom(mean = 0, std = 1) {
+                let u = 0, v = 0;
+                while (u === 0) u = Math.random();
+                while (v === 0) v = Math.random();
+                const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+                return mean + std * z;
+            }
+
+            // ---------- Helper: create tensor from flat array ----------
+            function createTensor(data, dims) {
+                return new ort.Tensor('float32', new Float32Array(data), dims);
+            }
+
+            // ---------- Helper: clone tensor (create a new tensor with same data) ----------
+            function cloneTensor(tensor) {
+                return createTensor(Array.from(tensor.data), tensor.dims);
+            }
+
+            // ---------- Load ONNX models ----------
+            let driftSession, vaeSession;
+            try {
+                statusEl.textContent = 'Loading drift model...';
+                driftSession = await ort.InferenceSession.create('./drift.onnx', {
+                    executionProviders: ['webgl'],
+                    graphOptimizationLevel: 'all'
+                });
+
+                statusEl.textContent = 'Loading VAE model...';
+                vaeSession = await ort.InferenceSession.create('./vae.onnx', {
+                    executionProviders: ['webgl'],
+                    graphOptimizationLevel: 'all'
+                });
+
+                statusEl.textContent = 'Models loaded. Ready to generate!';
+                generateBtn.disabled = false;
+            } catch (err) {
+                statusEl.textContent = 'Error loading models: ' + err.message;
+                console.error(err);
+                return;
+            }
+
+            // ---------- Helper: run drift model ----------
+            async function runDrift(z, t, labelTensor) {
+                const tTensor = createTensor([t], [1, 1]);
+                const feeds = { z, t: tTensor, label: labelTensor };
+                const results = await driftSession.run(feeds);
+                return results.drift;   // shape same as z
+            }
+
+            // ---------- Main generation function ----------
+            generateBtn.addEventListener('click', async () => {
+                generateBtn.disabled = true;
+                statusEl.textContent = 'Generating...';
+
+                try {
+                    const label = parseInt(labelSelect.value, 10);
+                    const steps = parseInt(stepsSlider.value, 10);
+                    const method = methodSelect.value;
+                    const dt = 1.0 / steps;
+
+                    const labelTensor = createTensor([label], [1]);
+
+                    // ----- 1. Initial latent z0 (random normal) -----
+                    const latentSize = LATENT_SHAPE[1] * LATENT_SHAPE[2] * LATENT_SHAPE[3];
+                    const z0Data = new Float32Array(latentSize);
+                    for (let i = 0; i < latentSize; i++) {
+                        z0Data[i] = normalRandom(0, 0.5);   // std 0.5 as a reasonable default
+                    }
+                    let z = createTensor(z0Data, LATENT_SHAPE);
+
+                    // ----- 2. ODE integration (method‑dependent) -----
+                    if (method === 'euler') {
+                        // Euler loop
+                        for (let i = 0; i < steps; i++) {
+                            const t = i * dt;
+                            const drift = await runDrift(z, t, labelTensor);
+
+                            // Euler update: z = z + drift * dt
+                            const zData = z.data;
+                            const driftData = drift.data;
+                            const newZData = new Float32Array(zData.length);
+                            for (let j = 0; j < zData.length; j++) {
+                                newZData[j] = zData[j] + driftData[j] * dt;
+                            }
+                            z = createTensor(newZData, LATENT_SHAPE);
+                        }
+                    }
+                    else if (method === 'heun') {
+                        // Heun's method (2nd order)
+                        for (let i = 0; i < steps; i++) {
+                            const t = i * dt;
+                            
+                            // k1 = drift(z, t)
+                            const k1 = await runDrift(z, t, labelTensor);
+                            
+                            // Compute intermediate state for k2: z_temp = z + dt * k1
+                            const zData = z.data;
+                            const k1Data = k1.data;
+                            const zTempData = new Float32Array(zData.length);
+                            for (let j = 0; j < zData.length; j++) {
+                                zTempData[j] = zData[j] + dt * k1Data[j];
+                            }
+                            const zTemp = createTensor(zTempData, LATENT_SHAPE);
+                            
+                            // k2 = drift(z + dt*k1, t+dt)
+                            const k2 = await runDrift(zTemp, t + dt, labelTensor);
+                            
+                            // Heun update: z = z + dt/2 * (k1 + k2)
+                            const k2Data = k2.data;
+                            const newZData = new Float32Array(zData.length);
+                            for (let j = 0; j < zData.length; j++) {
+                                newZData[j] = zData[j] + (dt / 2) * (k1Data[j] + k2Data[j]);
+                            }
+                            z = createTensor(newZData, LATENT_SHAPE);
+                        }
+                    }
+                    else if (method === 'rk4') {
+                        // Runge‑Kutta 4th order
+                        for (let i = 0; i < steps; i++) {
+                            const t = i * dt;
+                            
+                            // k1 = drift(z, t)
+                            const k1 = await runDrift(z, t, labelTensor);
+                            
+                            // z_temp1 = z + 0.5*dt * k1
+                            const zData = z.data;
+                            const k1Data = k1.data;
+                            const zTemp1Data = new Float32Array(zData.length);
+                            for (let j = 0; j < zData.length; j++) {
+                                zTemp1Data[j] = zData[j] + 0.5 * dt * k1Data[j];
+                            }
+                            const zTemp1 = createTensor(zTemp1Data, LATENT_SHAPE);
+                            
+                            // k2 = drift(z + 0.5*dt*k1, t + 0.5*dt)
+                            const k2 = await runDrift(zTemp1, t + 0.5 * dt, labelTensor);
+                            
+                            // z_temp2 = z + 0.5*dt * k2
+                            const k2Data = k2.data;
+                            const zTemp2Data = new Float32Array(zData.length);
+                            for (let j = 0; j < zData.length; j++) {
+                                zTemp2Data[j] = zData[j] + 0.5 * dt * k2Data[j];
+                            }
+                            const zTemp2 = createTensor(zTemp2Data, LATENT_SHAPE);
+                            
+                            // k3 = drift(z + 0.5*dt*k2, t + 0.5*dt)
+                            const k3 = await runDrift(zTemp2, t + 0.5 * dt, labelTensor);
+                            
+                            // z_temp3 = z + dt * k3
+                            const k3Data = k3.data;
+                            const zTemp3Data = new Float32Array(zData.length);
+                            for (let j = 0; j < zData.length; j++) {
+                                zTemp3Data[j] = zData[j] + dt * k3Data[j];
+                            }
+                            const zTemp3 = createTensor(zTemp3Data, LATENT_SHAPE);
+                            
+                            // k4 = drift(z + dt*k3, t+dt)
+                            const k4 = await runDrift(zTemp3, t + dt, labelTensor);
+                            
+                            // RK4 update: z = z + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+                            const k4Data = k4.data;
+                            const newZData = new Float32Array(zData.length);
+                            for (let j = 0; j < zData.length; j++) {
+                                newZData[j] = zData[j] + (dt / 6) * (k1Data[j] + 2*k2Data[j] + 2*k3Data[j] + k4Data[j]);
+                            }
+                            z = createTensor(newZData, LATENT_SHAPE);
+                        }
+                    }
+
+                    // ----- 3. Decode final latent with VAE -----
+                    const decodeFeeds = { z, label: labelTensor };
+                    const decodeResults = await vaeSession.run(decodeFeeds);
+                    const imgTensor = decodeResults.reconstruction;   // shape [1,3,64,64], values in [-1,1]
+
+                    // ----- 4. Convert tensor to canvas image -----
+                    const imgData = imgTensor.data;   // float32 array in CHW order
+                    const width = IMG_SIZE;
+                    const height = IMG_SIZE;
+
+                    const canvasData = ctx.createImageData(width, height);
+                    const pixels = canvasData.data;
+
+                    for (let y = 0; y < height; y++) {
+                        for (let x = 0; x < width; x++) {
+                            const pixelIdx = (y * width + x) * 4;
+                            const chIdx = y * width + x;
+
+                            const r = imgData[0 * height * width + chIdx];
+                            const g = imgData[1 * height * width + chIdx];
+                            const b = imgData[2 * height * width + chIdx];
+
+                            pixels[pixelIdx + 0] = Math.min(255, Math.max(0, Math.round((r + 1) / 2 * 255)));
+                            pixels[pixelIdx + 1] = Math.min(255, Math.max(0, Math.round((g + 1) / 2 * 255)));
+                            pixels[pixelIdx + 2] = Math.min(255, Math.max(0, Math.round((b + 1) / 2 * 255)));
+                            pixels[pixelIdx + 3] = 255;
+                        }
+                    }
+
+                    ctx.putImageData(canvasData, 0, 0);
+                    statusEl.textContent = 'Done!';
+                } catch (err) {
+                    statusEl.textContent = 'Generation error: ' + err.message;
+                    console.error(err);
+                } finally {
+                    generateBtn.disabled = false;
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

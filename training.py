@@ -1116,7 +1116,7 @@ class EnhancedLabelTrainer:
                     'label': {0: 'batch_size'},
                     'reconstruction': {0: 'batch_size'}
                 },
-                opset_version=11
+                opset_version=14
             )
             config.logger.info(f"VAE exported to {vae_path}")
             
