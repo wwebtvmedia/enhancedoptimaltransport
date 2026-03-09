@@ -106,6 +106,7 @@ class LabelConditionedVAE(nn.Module):
         super().__init__()
         self.free_bits = free_bits
         self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
+        self.current_epoch = 0  # For adaptive diversity loss scheduling
 
         # Fourier feature channels
         if config.USE_FOURIER_FEATURES:
@@ -167,18 +168,38 @@ class LabelConditionedVAE(nn.Module):
         return torch.cat(feats, dim=1)   # (B, 4*len(FOURIER_FREQS), H, W)
 
     def _channel_diversity_loss(self, mu):
-        """Compute diversity loss to encourage all channels to be used."""
+        """Compute diversity loss to encourage all channels to be used.
+        
+        Uses configurable parameters from config that can be
+        updated dynamically during training.
+        """
         channel_stds = mu.std(dim=[0, 2, 3])
         
-        # More aggressive diversity loss
-        target_std = config.DIVERSITY_TARGET_STD
+        # Calculate adaptive target if enabled
+        if config.DIVERSITY_ADAPTIVE and hasattr(self, 'current_epoch'):
+            progress = min(1.0, self.current_epoch / config.DIVERSITY_ADAPT_EPOCHS)
+            target_std = config.DIVERSITY_TARGET_START + progress * (config.DIVERSITY_TARGET_END - config.DIVERSITY_TARGET_START)
+        else:
+            target_std = config.DIVERSITY_TARGET_STD
         
-        # Penalize channels that are too low OR too high (prevents some channels dominating)
-        low_penalty = torch.mean(F.relu(target_std - channel_stds))
-        high_penalty = torch.mean(F.relu(channel_stds - 2.0)) * 0.5  # Cap at 2.0
+        # Penalize channels that are too low
+        low_penalty = torch.mean(F.relu(target_std - channel_stds)) * config.DIVERSITY_LOW_PENALTY
+        
+        # Penalize channels that are too high
+        high_penalty = torch.mean(F.relu(channel_stds - config.DIVERSITY_MAX_STD)) * config.DIVERSITY_HIGH_PENALTY
         
         # Balance loss - encourage all channels to have similar std
-        balance_loss = channel_stds.std() * config.DIVERSITY_BALANCE_WEIGHT * 2
+        balance_loss = channel_stds.std() * config.DIVERSITY_BALANCE_WEIGHT
+        
+        # Store stats for monitoring
+        if self.training:
+            self.diversity_stats = {
+                'channel_stds': channel_stds.detach().cpu(),
+                'target_std': target_std,
+                'low_penalty': low_penalty.item(),
+                'high_penalty': high_penalty.item() if isinstance(high_penalty, torch.Tensor) else 0,
+                'balance_loss': balance_loss.item()
+            }
         
         return low_penalty + high_penalty + balance_loss
 

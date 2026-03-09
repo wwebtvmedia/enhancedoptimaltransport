@@ -1,5 +1,5 @@
 # ============================================================================
-# CONFIGURATION CONSTANTS – ALL SETTINGS IN ONE PLACE
+# CONFIGURATION CONSTANTS - ALL SETTINGS IN ONE PLACE
 # ============================================================================
 
 import os
@@ -62,10 +62,17 @@ PERSP_LOST_FACTOR = 0.2
 # ============================================================================
 # VAE SPECIFIC
 # ============================================================================
-LATENT_SCALE = 1.8       # Was 0.3 — allows richer latent space
-FREE_BITS = 0.5          # Was 1.0 — reduce to let KL signal through
-DIVERSITY_TARGET_STD = 0.3
-DIVERSITY_BALANCE_WEIGHT = 0.2
+LATENT_SCALE = 1.0
+FREE_BITS = 1.0
+DIVERSITY_TARGET_STD = 0.8                    # Target std for channels
+DIVERSITY_MAX_STD = 2.0                       # Maximum allowed channel std
+DIVERSITY_LOW_PENALTY = 2.0                    # Multiplier for too-low channels
+DIVERSITY_HIGH_PENALTY = 0.5                   # Multiplier for too-high channels
+DIVERSITY_BALANCE_WEIGHT = 0.4                 # Weight for channel balance loss
+DIVERSITY_ADAPTIVE = True                      # Whether to adapt target during training
+DIVERSITY_TARGET_START = 0.3                   # Initial target if adaptive
+DIVERSITY_TARGET_END = 1.0                      # Final target if adaptive
+DIVERSITY_ADAPT_EPOCHS = 50                     # Over how many epochs to adapt
 KL_ANNEALING_EPOCHS = 30
 LOGVAR_CLAMP_MIN = -4
 LOGVAR_CLAMP_MAX = 4

@@ -476,19 +476,62 @@ class EnhancedLabelTrainer:
             self.phase = phase
         return phase
 
-    def ssim_loss(self,x, y):
-
-        C1 = (0.01 * 1.0)**2 
-        C2 = (0.03 * 1.0)**2
-
-        mu_x, mu_y = x.mean([-2,-1], keepdim=True), y.mean([-2,-1], keepdim=True)
-        var_x = ((x - mu_x)**2).mean([-2,-1], keepdim=True)
-        var_y = ((y - mu_y)**2).mean([-2,-1], keepdim=True)
-        cov_xy = ((x - mu_x)*(y - mu_y)).mean([-2,-1], keepdim=True)
-
-        ssim = (2*mu_x*mu_y + C1)*(2*cov_xy + C2) / ((mu_x**2 + mu_y**2 + C1)*(var_x + var_y + C2))
-
-        return 1 - ssim.mean()
+    def ssim_loss(self, x, y):
+        """
+        Compute SSIM loss between two image batches.
+        Input: x, y in range [-1, 1] (as produced by tanh).
+        Returns: 1 - mean SSIM over batch.
+        """
+        # Map from [-1,1] to [0,1]
+        x = (x + 1) / 2
+        y = (y + 1) / 2
+        
+        # Constants from the SSIM paper
+        C1 = 0.01 ** 2
+        C2 = 0.03 ** 2
+        
+        # Gaussian window parameters
+        window_size = 11
+        sigma = 1.5
+        
+        # Create 2D Gaussian window
+        gauss = torch.arange(window_size, dtype=torch.float32, device=x.device)
+        gauss = torch.exp(-(gauss - window_size//2)**2 / (2 * sigma**2))
+        gauss = gauss / gauss.sum()
+        
+        # 2D window = outer product of 1D Gaussian
+        window = gauss[:, None] * gauss[None, :]
+        window = window[None, None, :, :]   # shape: (1, 1, H, W)
+        window = window.expand(x.size(1), -1, -1, -1)  # repeat for each channel
+        
+        # Pad to keep spatial size
+        pad = window_size // 2
+        
+        # Compute means, variances, covariances
+        mu_x = F.conv2d(x, window, padding=pad, groups=x.size(1))
+        mu_y = F.conv2d(y, window, padding=pad, groups=x.size(1))
+        
+        mu_x_sq = mu_x.pow(2)
+        mu_y_sq = mu_y.pow(2)
+        mu_xy = mu_x * mu_y
+        
+        sigma_x_sq = F.conv2d(x * x, window, padding=pad, groups=x.size(1)) - mu_x_sq
+        sigma_y_sq = F.conv2d(y * y, window, padding=pad, groups=x.size(1)) - mu_y_sq
+        sigma_xy = F.conv2d(x * y, window, padding=pad, groups=x.size(1)) - mu_xy
+        
+        # Numerical stability
+        sigma_x_sq = torch.clamp(sigma_x_sq, min=0)
+        sigma_y_sq = torch.clamp(sigma_y_sq, min=0)
+        
+        # SSIM map per channel
+        ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / \
+                ((mu_x_sq + mu_y_sq + C1) * (sigma_x_sq + sigma_y_sq + C2))
+        
+        # Average over spatial dimensions and channels -> per-image SSIM
+        ssim_per_image = ssim_map.mean(dim=[1, 2, 3])
+        
+        # Return 1 - mean SSIM over batch (loss)
+        return 1 - ssim_per_image.mean()
 
     def compute_loss(self, batch: Dict, phase: int = 1) -> Dict:
         """Compute loss for current batch based on training phase."""
@@ -554,7 +597,6 @@ class EnhancedLabelTrainer:
             total_loss = recon_loss + kl_loss + diversity_loss * config.DIVERSITY_WEIGHT
             
             snr = calc_snr(images, recon)
-            self.debug_counter += 1
             
             loss_dict = {
                 'total': total_loss,
@@ -586,15 +628,15 @@ class EnhancedLabelTrainer:
             drift_start_epoch = getattr(self, 'phase2_start_epoch', config.TRAINING_SCHEDULE.get('switch_epoch_1', config.TRAINING_SCHEDULE.get('switch_epoch', 50)))
             with torch.no_grad():
                 mu_ref, _ = self.vae_ref.encode(images, labels)   # always use frozen anchor
-                mu, logvar = self.vae.encode(images, labels)
-                std_from_logvar = torch.exp(0.5 * logvar).mean().item()
-                consistency_loss = F.mse_loss(mu, mu_ref)
-                mu_global_std = mu.std().item()
+            mu, logvar = self.vae.encode(images, labels)
+            std_from_logvar = torch.exp(0.5 * logvar).mean().item()
+            consistency_loss = F.mse_loss(mu, mu_ref)
+            mu_global_std = mu.std().item()
 
-                # Temperature annealing using config values
-                temperature = config.TEMPERATURE_START + (config.TEMPERATURE_END - config.TEMPERATURE_START) * (self.epoch / config.EPOCHS)
-                z1 = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * temperature
-                z_global_std = z1.std().item()
+            # Temperature annealing using config values
+            temperature = config.TEMPERATURE_START + (config.TEMPERATURE_END - config.TEMPERATURE_START) * (self.epoch / config.EPOCHS)
+            z1 = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * temperature
+            z_global_std = z1.std().item()
             
             # Sample time with beta distribution after sufficient training
             if self.epoch > config.TRAINING_SCHEDULE['switch_epoch'] + config.EPOCHS // 6:  # After 1/6 of drift training
@@ -653,6 +695,9 @@ class EnhancedLabelTrainer:
         mode = "VAE" if phase == 1 else "Drift"
         self.debug_counter = 0
         
+        # Update epoch counter in VAE for adaptive diversity loss
+        self.vae.current_epoch = current_epoch 
+
         # Set train/eval modes
         if phase == 1:
             self.vae.train()
@@ -731,9 +776,6 @@ class EnhancedLabelTrainer:
                     torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
                     self.opt_vae.step()
                     
-                    if self.snapshot_vae:
-                        self.snapshot_vae.step()
-                    
                     if 'snr' in loss_dict:
                         snr_values.append(loss_dict['snr'])
                     if 'latent_std' in loss_dict:
@@ -754,9 +796,6 @@ class EnhancedLabelTrainer:
                         loss_dict['total'].backward()
                         torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR)
                         self.opt_drift.step()
-                    
-                    if self.snapshot_drift:
-                        self.snapshot_drift.step()
                 
                 # Accumulate losses
                 for key, value in loss_dict.items():
@@ -812,7 +851,6 @@ class EnhancedLabelTrainer:
         config.logger.info(f"Epoch {current_epoch}/{config.EPOCHS} complete:")
         config.logger.info(f"  Total loss: {avg_losses.get('total', 0):.4f}")
         
-
         if phase == 1:
             self.scheduler_vae.step()
             if self.snapshot_vae and self.snapshot_vae.should_save(self.epoch):
@@ -898,6 +936,14 @@ class EnhancedLabelTrainer:
                 else:
                     config.logger.warning("No Drift state found in snapshot")
             
+            if phase >= 2 and not hasattr(self, 'vae_ref'):
+                self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
+                self.vae_ref.load_state_dict(self.vae.state_dict())
+                self.vae_ref.eval()
+                for param in self.vae_ref.parameters():
+                    param.requires_grad = False
+                config.logger.info("Reference anchor created from loaded snapshot.")
+                
             # Set phase if specified
             if phase is not None:
                 self.phase = phase
