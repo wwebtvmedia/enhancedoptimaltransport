@@ -6,6 +6,7 @@ Replaces the original console main.py. Provides:
 - Interactive configuration of all training hyperparameters.
 - Real‑time log display and convergence plots during training.
 - Loading of existing log files for post‑training analysis.
+- Direct editing of config.py (with syntax‑preserving text editor).
 - Multiple pygal charts (loss, SNR, latent stats, etc.) in a tabbed window.
 """
 
@@ -16,6 +17,7 @@ import json
 import queue
 import threading
 import time
+import importlib
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -95,6 +97,8 @@ class SchrödingerBridgeGUI:
         menubar = tk.Menu(self.root)
         filemenu = tk.Menu(menubar, tearoff=0)
         filemenu.add_command(label="Load log file...", command=self.load_log_file)
+        filemenu.add_command(label="Edit config.py", command=self.edit_config_file)
+        filemenu.add_command(label="Reload config from file", command=self.reload_config_from_file)
         filemenu.add_separator()
         filemenu.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=filemenu)
@@ -209,8 +213,9 @@ class SchrödingerBridgeGUI:
         btn_frame = ttk.Frame(scrollable_frame)
         btn_frame.grid(row=row, column=0, columnspan=2, pady=10)
         ttk.Button(btn_frame, text="Apply to config", command=self.apply_config).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Save config to file", command=self.save_config).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Load config from file", command=self.load_config).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Save config to JSON", command=self.save_config_json).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Load config from JSON", command=self.load_config_json).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Load from config.py", command=self.load_from_config_py).pack(side=tk.LEFT, padx=5)
 
     def apply_config(self):
         """Update the global config module with values from the GUI."""
@@ -245,7 +250,7 @@ class SchrödingerBridgeGUI:
         config.LATENT_W = config.IMG_SIZE // 8
         config.LATENT_DIM = config.LATENT_CHANNELS * config.LATENT_H * config.LATENT_W
 
-    def save_config(self):
+    def save_config_json(self):
         filename = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
         if not filename:
             return
@@ -266,7 +271,7 @@ class SchrödingerBridgeGUI:
             json.dump(cfg_dict, f, indent=2, default=str)
         self.status_var.set(f"Config saved to {filename}")
 
-    def load_config(self):
+    def load_config_json(self):
         filename = filedialog.askopenfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
         if not filename:
             return
@@ -278,6 +283,81 @@ class SchrödingerBridgeGUI:
             # Also update config module immediately
             setattr(config, param, val)
         self.status_var.set(f"Config loaded from {filename}")
+
+    def load_from_config_py(self):
+        """Reload the config module from disk and update GUI variables."""
+        import importlib
+        importlib.reload(config)
+        # Update all GUI fields
+        for param, var in self.config_vars.items():
+            if hasattr(config, param):
+                val = getattr(config, param)
+                if isinstance(val, bool):
+                    var.set(val)
+                else:
+                    var.set(str(val))
+        self.status_var.set("Config reloaded from config.py")
+
+    # ------------------------------------------------------------------
+    # Direct config.py editor
+    # ------------------------------------------------------------------
+    def edit_config_file(self):
+        """Open a new window to edit config.py directly."""
+        config_path = Path(__file__).parent / "config.py"
+        if not config_path.exists():
+            messagebox.showerror("Error", f"config.py not found at {config_path}")
+            return
+
+        editor = tk.Toplevel(self.root)
+        editor.title("Edit config.py")
+        editor.geometry("800x600")
+
+        # Text area with scrollbar
+        text_frame = ttk.Frame(editor)
+        text_frame.pack(fill='both', expand=True, padx=5, pady=5)
+
+        text_area = scrolledtext.ScrolledText(text_frame, wrap='none', font=('Courier', 10))
+        text_area.pack(fill='both', expand=True)
+
+        # Load file content
+        with open(config_path, 'r') as f:
+            content = f.read()
+        text_area.insert('1.0', content)
+
+        # Button frame
+        btn_frame = ttk.Frame(editor)
+        btn_frame.pack(fill='x', padx=5, pady=5)
+
+        def save_changes():
+            new_content = text_area.get('1.0', 'end-1c')
+            try:
+                with open(config_path, 'w') as f:
+                    f.write(new_content)
+                # Ask if user wants to reload config module
+                if messagebox.askyesno("Reload", "Config file saved. Reload config module now?"):
+                    self.reload_config_from_file()
+                editor.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save: {e}")
+
+        ttk.Button(btn_frame, text="Save", command=save_changes).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=editor.destroy).pack(side=tk.LEFT, padx=5)
+
+    def reload_config_from_file(self):
+        """Reload config module from disk and update GUI."""
+        try:
+            importlib.reload(config)
+            # Update GUI fields
+            for param, var in self.config_vars.items():
+                if hasattr(config, param):
+                    val = getattr(config, param)
+                    if isinstance(val, bool):
+                        var.set(val)
+                    else:
+                        var.set(str(val))
+            self.status_var.set("Config reloaded from config.py")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to reload config: {e}")
 
     # ------------------------------------------------------------------
     # Training control tab
@@ -347,9 +427,6 @@ class SchrödingerBridgeGUI:
         qh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         config.logger.addHandler(qh)
 
-        # Override EPOCHS if needed? We'll just run train_model with whatever is in config
-        # But train_model runs for config.EPOCHS; we might want to allow early stop.
-        # We'll create a custom loop that respects stop flag.
         try:
             loader = dm.load_data()
             trainer = training.EnhancedLabelTrainer(loader)
