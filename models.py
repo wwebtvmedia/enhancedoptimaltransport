@@ -347,10 +347,21 @@ class LabelConditionedDrift(nn.Module):
         
         # Time-adaptive scaling
         time_weight = self.time_weight_net(t)
-        t_val = t.squeeze()
-        time_indices = (t_val * 3).long().clamp(0, 3)
-        time_scale = self.time_scales[time_indices].view(-1, 1, 1, 1)
-        
+       
+        # t shape: (batch, 1)
+        t_scaled = t * 3.0                     # (batch, 1) in [0, 3]
+        idx_floor = torch.floor(t_scaled).long()          # 0,1,2
+        idx_ceil = (idx_floor + 1).clamp(max=3)           # 1,2,3
+        frac = (t_scaled - idx_floor.float())             # fractional part in [0,1)
+
+        # Gather scales (time_scales is a 1‑D tensor of length 4)
+        scale_floor = self.time_scales[idx_floor.view(-1)]   # (batch,)
+        scale_ceil  = self.time_scales[idx_ceil.view(-1)]    # (batch,)
+
+        # Linear blend
+        blended = scale_floor * (1 - frac.view(-1)) + scale_ceil * frac.view(-1)
+        time_scale = blended.view(-1, 1, 1, 1)                # (batch, 1, 1, 1)
+                
         # Gentle clamping instead of tanh
         z = torch.clamp(z, -10, 10)
         
