@@ -293,11 +293,10 @@ def interactive_snapshot_loader(trainer) -> Optional[Tuple[Path, bool, bool, Opt
     return snap_path, load_vae, load_drift, phase
 
 def configure_training_schedule_interactive():
-    global TRAINING_SCHEDULE
     print("\n" + "="*70)
     print(" TRAINING SCHEDULE CONFIGURATION")
     print("="*70)
-    print(f"\nCurrent mode: {TRAINING_SCHEDULE['mode']}")
+    print(f"\nCurrent mode: {config.TRAINING_SCHEDULE['mode']}")
     print("\nAvailable modes:")
     print("  1. auto          - Switch at specified epoch")
     print("  2. manual        - Force a specific phase (1,2,3) regardless of epoch")
