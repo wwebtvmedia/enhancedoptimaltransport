@@ -164,29 +164,27 @@ class LabelConditionedVAE(nn.Module):
         self.z_mean = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
         self.z_logvar = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
         
-        # Decoder
-        # Input channels doubled from 256 to 512
+        # Decoder - Starting from Latent (8x8)
         self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
-        
+
         self.dec_blocks = nn.ModuleList([
             # Stage 1: 8x8 -> 16x16
-            # In: 512 | Conv out: 1024 | PixelShuffle out: 256
             nn.Sequential(nn.Conv2d(512, 1024, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()), 
             LabelConditionedBlock(256, 256),
             
             # Stage 2: 16x16 -> 32x32
-            # In: 256 | Conv out: 512 | PixelShuffle out: 128
             nn.Sequential(nn.Conv2d(256, 512, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()),  
             LabelConditionedBlock(128, 128),
             
-            # Stage 3: 32x32 -> 64x64 (Added to fix resolution mismatch)
-            # In: 128 | Conv out: 256 | PixelShuffle out: 64
+            # Stage 3: 32x32 -> 64x64
             nn.Sequential(nn.Conv2d(128, 256, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()),
-            LabelConditionedBlock(64, 64),
+            LabelConditionedBlock(64, 64), # Ensure no more upsampling happens here
         ])
-        
-        # Input channels doubled from 32 to 64
+
+        # Final Output (Maintains 64x64)
         self.dec_out = nn.Conv2d(64, 3, 3, 1, 1)
+
+
         self.diversity_loss = None
 
     def _get_fourier_features(self, x):
