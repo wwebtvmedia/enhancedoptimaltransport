@@ -361,6 +361,7 @@ def get_dataloader_config() -> Dict:
         config_dict.update({
             'num_workers': 4 if os.cpu_count() > 4 else 2,
             'pin_memory': True,
+            'persistent_workers': True,
         })
     elif config.DEVICE.type == 'mps':
         config_dict.update({

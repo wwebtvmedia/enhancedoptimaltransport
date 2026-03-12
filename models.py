@@ -9,6 +9,38 @@ import torch.nn.functional as F
 import numpy as np
 import config
 
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+    def forward(self, x):
+        out = F.silu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        return F.silu(out)
+
+class SelfAttention(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.mha = nn.MultiheadAttention(in_channels, num_heads=4, batch_first=True)
+        self.ln = nn.LayerNorm(in_channels)
+    def forward(self, x):
+        b, c, h, w = x.shape
+        res = x.view(b, c, -1).permute(0, 2, 1)
+        attn_out, _ = self.mha(res, res, res)
+        out = self.ln(res + attn_out)
+        return out.permute(0, 2, 1).view(b, c, h, w)
+
 # ============================================================
 # PERCENTILE RESCALING
 # ============================================================
@@ -107,6 +139,7 @@ class LabelConditionedVAE(nn.Module):
         self.free_bits = free_bits
         self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
         self.current_epoch = 0  # For adaptive diversity loss scheduling
+        self.mu_noise_scale = config.MU_NOISE_SCALE # For adaptive collapse recovery    
 
         # Fourier feature channels
         if config.USE_FOURIER_FEATURES:
@@ -117,13 +150,14 @@ class LabelConditionedVAE(nn.Module):
         # Doubled from 32 to 64
         self.enc_in = nn.Conv2d(3 + self.fourier_channels, 64, 3, 1, 1)
 
+        # Patched with Residual and Attention upgrades
         self.enc_blocks = nn.ModuleList([
-            LabelConditionedBlock(64, 128),
-            nn.Conv2d(128, 128, 4, 2, 1),
-            LabelConditionedBlock(128, 256),
-            nn.Conv2d(256, 256, 4, 2, 1),
+            ResidualBlock(64, 128, stride=2),           # 16x16
+            LabelConditionedBlock(128, 128),
+            ResidualBlock(128, 256, stride=2),          # 8x8
+            SelfAttention(256),
             LabelConditionedBlock(256, 512),
-            nn.Conv2d(512, 512, 4, 2, 1),
+            nn.Conv2d(512, 512, 3, 1, 1),               # Maintain spatial resolution
         ])
         
         # Input channels doubled from 256 to 512
@@ -133,12 +167,21 @@ class LabelConditionedVAE(nn.Module):
         # Decoder
         # Input channels doubled from 256 to 512
         self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
+        
         self.dec_blocks = nn.ModuleList([
-            nn.ConvTranspose2d(512, 256, 4, 2, 1),
+            # Stage 1: 8x8 -> 16x16
+            # In: 512 | Conv out: 1024 | PixelShuffle out: 256
+            nn.Sequential(nn.Conv2d(512, 1024, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()), 
             LabelConditionedBlock(256, 256),
-            nn.ConvTranspose2d(256, 128, 4, 2, 1),
+            
+            # Stage 2: 16x16 -> 32x32
+            # In: 256 | Conv out: 512 | PixelShuffle out: 128
+            nn.Sequential(nn.Conv2d(256, 512, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()),  
             LabelConditionedBlock(128, 128),
-            nn.ConvTranspose2d(128, 64, 4, 2, 1),
+            
+            # Stage 3: 32x32 -> 64x64 (Added to fix resolution mismatch)
+            # In: 128 | Conv out: 256 | PixelShuffle out: 64
+            nn.Sequential(nn.Conv2d(128, 256, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()),
             LabelConditionedBlock(64, 64),
         ])
         
@@ -224,16 +267,13 @@ class LabelConditionedVAE(nn.Module):
         
         # Add small noise during training for stability
         if self.training:
-            mu = mu + torch.randn_like(mu) * config.MU_NOISE_SCALE
+            mu = mu + torch.randn_like(mu) * config.mu_noise_scale
         
         # Channel dropout for regularization - using config values
         if self.training and torch.rand(1).item() < config.CHANNEL_DROPOUT_PROB:
             channel_mask = torch.bernoulli(torch.full((mu.shape[0], mu.shape[1], 1, 1), config.CHANNEL_DROPOUT_SURVIVAL, device=mu.device))
             mu = (mu * channel_mask) / config.CHANNEL_DROPOUT_SURVIVAL
-
-
-
-
+            
         logvar = torch.clamp(self.z_logvar(h), min=config.LOGVAR_CLAMP_MIN, max=config.LOGVAR_CLAMP_MAX)
         
         # Track channel diversity loss during training

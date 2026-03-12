@@ -325,8 +325,20 @@ class EnhancedLabelTrainer:
             config.logger.info(f"  Using OU bridge reference (theta={config.OU_THETA})")
 
         # ImageNet Mean and Std (for 0-1 normalized images)
-        self.vgg_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-        self.vgg_std =torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        # ImageNet Mean and Std (for 0-1 normalized images) - Moved to device once
+        self.vgg_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(config.DEVICE)
+        self.vgg_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(config.DEVICE)
+
+        # Pre-compute SSIM Gaussian Window
+        window_size = 11
+        sigma = 1.5
+        gauss = torch.arange(window_size, dtype=torch.float32, device=config.DEVICE)
+        gauss = torch.exp(-(gauss - window_size//2)**2 / (2 * sigma**2))
+        gauss = gauss / gauss.sum()
+        window = gauss[:, None] * gauss[None, :]
+        window = window[None, None, :, :]
+        # Cache it for the 3 channels
+        self.ssim_window = window.expand(3, -1, -1, -1).contiguous()
 
 
     def diagnose_latent_collapse(self, mu, logvar, epoch):
@@ -371,9 +383,9 @@ class EnhancedLabelTrainer:
             except:
                 return torch.tensor(0.0, device=config.DEVICE)
     
-         # Move mean/std to the device of the input (handles CPU/GPU automatically)
-        mean = self.vgg_mean.to(recon.device)
-        std = self.vgg_std.to(recon.device)
+        # Using pre-allocated device tensors
+        mean = self.vgg_mean
+        std = self.vgg_std
 
         # 1. Map from [-1, 1] to [0, 1]
         recon_01 = (recon + 1) / 2
@@ -438,6 +450,8 @@ class EnhancedLabelTrainer:
             self.scheduler_vae = optim.lr_scheduler.CosineAnnealingLR(
                 self.opt_vae, T_max=config.EPOCHS - self.epoch, eta_min=config.LR * 0.005
             )
+            # Clear optimizer state to flush momentum from phase 1 for frozen parameters
+            self.opt_vae.state.clear()
             # Store the epoch when Phase 2 started
             self.phase2_start_epoch = self.epoch
 
@@ -492,17 +506,9 @@ class EnhancedLabelTrainer:
         
         # Gaussian window parameters
         window_size = 11
-        sigma = 1.5
         
-        # Create 2D Gaussian window
-        gauss = torch.arange(window_size, dtype=torch.float32, device=x.device)
-        gauss = torch.exp(-(gauss - window_size//2)**2 / (2 * sigma**2))
-        gauss = gauss / gauss.sum()
-        
-        # 2D window = outer product of 1D Gaussian
-        window = gauss[:, None] * gauss[None, :]
-        window = window[None, None, :, :]   # shape: (1, 1, H, W)
-        window = window.expand(x.size(1), -1, -1, -1)  # repeat for each channel
+        # Use pre-computed window
+        window = self.ssim_window
         
         # Pad to keep spatial size
         pad = window_size // 2
@@ -1061,19 +1067,43 @@ class EnhancedLabelTrainer:
                     config.logger.error(f"NaN detected at step {i}!")
                     break
             
-            # ----- Langevin refinement (optional) -----
+            # ----- Refined Langevin Refinement -----
             if langevin_steps > 0:
-                config.logger.info(f"Starting {langevin_steps} Langevin refinement steps...")
+                config.logger.info(f"Starting {langevin_steps} Refined Langevin steps...")
                 t_one = torch.full((num_samples, 1), 1.0, device=config.DEVICE)
+                
+                # Adaptive step size: start strong, end gentle
+                base_lr = langevin_step_size
+                
                 for step in range(langevin_steps):
-                    noise = torch.randn_like(z) * np.sqrt(2 * langevin_step_size)
-                    # Use drift at t=1 as an approximate score direction
-                    drift_at_end = self.drift(z, t_one, labels_tensor)
-                    z = z + 0.5 * langevin_step_size * langevin_score_scale * drift_at_end + noise
-                    z = torch.clamp(z, -10, 10)
-                    config.logger.info(f"Langevin step {step+1}: z std = {z.std():.4f}")
-            
-            config.logger.info(f"Final z - mean: {z.mean():.3f}, std: {z.std():.3f}")
+                    # 1. Compute Score Proxy 
+                    # Using drift at t=1 is theoretically the 'terminal' velocity
+                    # We add a small guidance factor to emphasize structural adherence
+                    with torch.enable_grad():
+                        z.requires_grad_(True)
+                        # Optional: If you had a discriminator or classifier, 
+                        # you would add that gradient here.
+                        drift_at_end = self.drift(z, t_one, labels_tensor)
+                    
+                    # 2. Add Annealed Noise
+                    # We decay the noise scale as we converge to the manifold
+                    step_ratio = step / langevin_steps
+                    current_noise_scale = np.sqrt(2 * base_lr) * (1 - 0.5 * step_ratio)
+                    noise = torch.randn_like(z) * current_noise_scale
+                    
+                    # 3. Stochastic Gradient Update (MALA style)
+                    # We treat the drift as the gradient of the log-probability
+                    z = z.detach() + 0.5 * base_lr * langevin_score_scale * drift_at_end + noise
+                    
+                    # 4. Gentle Manifold Constraint
+                    # Prevents latents from escaping the range expected by the VAE decoder
+                    z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
+                    
+                    if (step + 1) % 5 == 0:
+                        config.logger.info(f" Langevin Step {step+1}: z_std={z.std():.4f}")
+
+                z = z.detach() # Final cleanup
+            config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
             
             # Decode
             images = self.vae.decode(z, labels_tensor)
@@ -1141,57 +1171,63 @@ class EnhancedLabelTrainer:
             if hasattr(module, '_set_export_mode'):
                 module._set_export_mode(mode)
         
-        try:
-            # --- Set export mode for VAE and Drift ---
-            self.vae.apply(lambda m: set_export_mode(m, True))
-            self.drift.apply(lambda m: set_export_mode(m, True))
-            
-            # Export VAE
-            dummy_img = torch.randn(1, 3, config.IMG_SIZE, config.IMG_SIZE, device=config.DEVICE)
-            dummy_label = torch.tensor([0], device=config.DEVICE)
-            
-            vae_path = config.DIRS["onnx"] / "vae.onnx"
-            torch.onnx.export(
-                self.vae,
-                (dummy_img, dummy_label),
-                vae_path,
-                input_names=['image', 'label'],
-                output_names=['reconstruction', 'mu', 'logvar'],
-                dynamic_axes={
-                    'image': {0: 'batch_size'},
-                    'label': {0: 'batch_size'},
-                    'reconstruction': {0: 'batch_size'}
-                },
-                opset_version=14
-            )
-            config.logger.info(f"VAE exported to {vae_path}")
-            
-            # Export Drift
-            dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
-            dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
-            
-            drift_path = config.DIRS["onnx"] / "drift.onnx"
-            torch.onnx.export(
-                self.drift,
-                (dummy_z, dummy_t, dummy_label),
-                drift_path,
-                input_names=['z', 't', 'label'],
-                output_names=['drift'],
-                dynamic_axes={
-                    'z': {0: 'batch_size'},
-                    'label': {0: 'batch_size'},
-                    'drift': {0: 'batch_size'}
-                },
-                opset_version=11
-            )
-            config.logger.info(f"Drift exported to {drift_path}")
-            
-            # --- Reset export mode (optional) ---
-            self.vae.apply(lambda m: set_export_mode(m, False))
-            self.drift.apply(lambda m: set_export_mode(m, False))
-            
-        except Exception as e:
-            config.logger.error(f"ONNX export failed: {e}")
+
+            try:
+                # --- Set export mode for VAE and Drift ---
+                self.vae.apply(lambda m: set_export_mode(m, True))
+                self.drift.apply(lambda m: set_export_mode(m, True))
+                
+                # Export VAE
+                dummy_img = torch.randn(1, 3, config.IMG_SIZE, config.IMG_SIZE, device=config.DEVICE)
+                dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
+                
+                vae_path = config.DIRS["onnx"] / "vae.onnx"
+                torch.onnx.export(
+                    self.vae,
+                    (dummy_img, dummy_label),
+                    vae_path,
+                    input_names=['image', 'label'],
+                    # Naming 'reconstruction' matches the key expected in onnx_generate_image.html
+                    output_names=['reconstruction', 'mu', 'logvar'],
+                    dynamic_axes={
+                        'image': {0: 'batch_size'},
+                        'label': {0: 'batch_size'},
+                        'reconstruction': {0: 'batch_size'},
+                        'mu': {0: 'batch_size'},
+                        'logvar': {0: 'batch_size'}
+                    },
+                    opset_version=14
+                )
+                config.logger.info(f"VAE exported to {vae_path}")
+                
+                # Export Drift
+                dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
+                dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
+                
+                drift_path = config.DIRS["onnx"] / "drift.onnx"
+                torch.onnx.export(
+                    self.drift,
+                    (dummy_z, dummy_t, dummy_label),
+                    drift_path,
+                    input_names=['z', 't', 'label'],
+                    output_names=['drift'],
+                    dynamic_axes={
+                        'z': {0: 'batch_size'},
+                        't': {0: 'batch_size'}, # Enabled dynamic batch for time tensor
+                        'label': {0: 'batch_size'},
+                        'drift': {0: 'batch_size'}
+                    },
+                    opset_version=11 # Opset 11 is highly compatible with WebGL backends
+                )
+                config.logger.info(f"Drift exported to {drift_path}")
+                
+                # --- Reset export mode ---
+                self.vae.apply(lambda m: set_export_mode(m, False))
+                self.drift.apply(lambda m: set_export_mode(m, False))
+                
+            except Exception as e:
+                config.logger.error(f"ONNX export failed: {e}")
+
 
 # ============================================================
 # TRAINING FUNCTION
