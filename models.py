@@ -166,24 +166,26 @@ class LabelConditionedVAE(nn.Module):
         
         # Decoder - Starting from Latent (8x8)
         self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
-
+        
         self.dec_blocks = nn.ModuleList([
             # Stage 1: 8x8 -> 16x16
+            # Input 512 -> Conv 1024 -> Shuffle 256
             nn.Sequential(nn.Conv2d(512, 1024, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()), 
             LabelConditionedBlock(256, 256),
             
             # Stage 2: 16x16 -> 32x32
+            # Input 256 -> Conv 512 -> Shuffle 128
             nn.Sequential(nn.Conv2d(256, 512, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()),  
             LabelConditionedBlock(128, 128),
             
             # Stage 3: 32x32 -> 64x64
+            # Input 128 -> Conv 256 -> Shuffle 64
             nn.Sequential(nn.Conv2d(128, 256, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()),
-            LabelConditionedBlock(64, 64), # Ensure no more upsampling happens here
+            LabelConditionedBlock(64, 64), # Ensure internal skip is (64+64)
         ])
-
+        
         # Final Output (Maintains 64x64)
         self.dec_out = nn.Conv2d(64, 3, 3, 1, 1)
-
 
         self.diversity_loss = None
 
