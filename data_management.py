@@ -233,7 +233,7 @@ def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
         trainer.vae.eval()
         trainer.drift.eval()
         
-        config.logger.info(f"✓ Successfully loaded model from epoch {trainer.epoch}")
+        config.logger.info(f" Successfully loaded model from epoch {trainer.epoch}")
         return True
         
     except Exception as e:
