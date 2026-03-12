@@ -267,7 +267,7 @@ class LabelConditionedVAE(nn.Module):
         
         # Add small noise during training for stability
         if self.training:
-            mu = mu + torch.randn_like(mu) * config.mu_noise_scale
+            mu = mu + torch.randn_like(mu) * self.mu_noise_scale
         
         # Channel dropout for regularization - using config values
         if self.training and torch.rand(1).item() < config.CHANNEL_DROPOUT_PROB:
