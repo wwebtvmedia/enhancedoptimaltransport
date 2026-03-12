@@ -157,7 +157,7 @@ class LabelConditionedVAE(nn.Module):
             ResidualBlock(128, 256, stride=2),          # 8x8
             SelfAttention(256),
             LabelConditionedBlock(256, 512),
-            nn.Conv2d(512, 512, 3, 1, 1),               # Maintain spatial resolution
+            nn.Conv2d(512, 512, 4, 2, 1),               # Maintain spatial resolution
         ])
         
         # Input channels doubled from 256 to 512
