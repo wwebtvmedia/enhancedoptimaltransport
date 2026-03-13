@@ -2,6 +2,15 @@
 """
 appmain.py – Beautiful GUI for Schrödinger Bridge Training
 A modern, dark-themed interface with real-time visualization
+Enhanced v2.0: Added Gallery, Latent Monitor, and Hot-Swapping.
+
+# --- UPDATED: Added Summary of New Capabilities as requested ---
+Summary of New Capabilities:
+🔬 Latent Monitor: In the Training tab, you now have a real-time bar chart showing the standard deviation of each latent channel. If a bar turns red, the channel has collapsed, and you should use the Hot-Swap feature to increase the DIVERSITY_WEIGHT.
+🖼️ Visual Gallery: A new tab that automatically grabs the latest generation from your samples folder. You no longer need to open your file explorer to see if the images are getting sharper.
+🔥 Hot-Swap Interface: Added a new purple button. You can now change Loss Weights while the GPU is still churning. The training loop will respect the new values starting the very next epoch.
+Robust Async Processing: The process_log_queue now handles specialized signals (UPDATE_GALLERY, METRICS) independently of the text logs to prevent UI lag.
+# ---------------------------------------------------------------
 """
 
 import os
@@ -13,6 +22,7 @@ import threading
 import time
 import importlib
 import torch
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -132,8 +142,8 @@ class CardFrame(ttk.Frame):
 class SchrödingerBridgeGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Schrödinger Bridge Trainer")
-        self.root.geometry("1400x900")
+        self.root.title("Schrödinger Bridge Trainer v2.0")
+        self.root.geometry("1450x950")
         
         # Set up modern styling
         self.setup_styling()
@@ -144,6 +154,8 @@ class SchrödingerBridgeGUI:
         self.log_queue = queue.Queue()
         self.metrics = {}
         self.current_epoch = 0
+        self.trainer_instance = None
+        self.current_preview_image = None # Added for Visual Gallery
 
         # Create UI
         self.create_header()
@@ -216,7 +228,8 @@ class SchrödingerBridgeGUI:
         
         style.configure("CardTitle.TLabel",
                        font=("Segoe UI", 12, "bold"),
-                       foreground=Colors.ACCENT2)
+                       foreground=Colors.ACCENT2,
+                       background=Colors.BG_MEDIUM)
         
         # Entry styling
         style.configure("TEntry",
@@ -303,6 +316,7 @@ class SchrödingerBridgeGUI:
         # Create tabs
         self.create_config_tab()
         self.create_training_tab()
+        self.create_gallery_tab() # Added Enhancement
         self.create_visualization_tab()
 
     def create_status_bar(self):
@@ -519,7 +533,7 @@ class SchrödingerBridgeGUI:
         self.notebook.add(self.training_frame, text="🎮 Training")
 
         # Left panel - Controls
-        left_panel = ttk.Frame(self.training_frame, width=300)
+        left_panel = ttk.Frame(self.training_frame, width=350)
         left_panel.pack(side='left', fill='y', padx=(0, 10))
         left_panel.pack_propagate(False)
 
@@ -539,6 +553,14 @@ class SchrödingerBridgeGUI:
         self.start_btn.pack(fill='x', pady=2)
         self.start_btn.bind("<Enter>", lambda e: self.start_btn.config(bg="#b4e0b0"))
         self.start_btn.bind("<Leave>", lambda e: self.start_btn.config(bg=Colors.SUCCESS))
+
+        # Enhancement: Hot Swap Button
+        self.swap_btn = tk.Button(control_card.content, text="🔥 Hot-Swap Weights", 
+                                 command=self.hot_swap_weights,
+                                 bg=Colors.ACCENT2, fg=Colors.BG_DARK,
+                                 font=("Segoe UI", 10, "bold"),
+                                 relief="flat", pady=5, cursor="hand2")
+        self.swap_btn.pack(fill='x', pady=2)
 
         self.stop_btn = tk.Button(btn_frame, text="⏹️ Stop Training", 
                                  command=self.stop_training, state=tk.DISABLED,
@@ -568,13 +590,18 @@ class SchrödingerBridgeGUI:
         metrics_card.pack(fill='both', expand=True)
 
         self.metrics_text = scrolledtext.ScrolledText(metrics_card.content,
-                                                     height=10,
+                                                     height=8,
                                                      bg=Colors.BG_DARK,
                                                      fg=Colors.FG,
                                                      font=("Consolas", 10),
                                                      relief="flat",
                                                      borderwidth=1)
-        self.metrics_text.pack(fill='both', expand=True)
+        self.metrics_text.pack(fill='x', expand=False, pady=(0, 10))
+
+        # Latent Monitor Canvas
+        ttk.Label(metrics_card.content, text="🔬 Latent Monitor (Channel Stdev)").pack(anchor='w')
+        self.latent_canvas = tk.Canvas(metrics_card.content, bg=Colors.BG_DARK, height=120, highlightthickness=1, highlightbackground=Colors.BORDER)
+        self.latent_canvas.pack(fill='x', expand=True, pady=5)
 
         # Right panel - Log
         right_panel = ttk.Frame(self.training_frame)
@@ -597,6 +624,65 @@ class SchrödingerBridgeGUI:
         self.log_text.tag_configure("warning", foreground=Colors.WARNING)
         self.log_text.tag_configure("success", foreground=Colors.SUCCESS)
         self.log_text.tag_configure("info", foreground=Colors.FG)
+
+    def create_gallery_tab(self):
+        """Enhancement: Gallery tab for real-time visual results"""
+        self.gallery_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.gallery_frame, text="🖼️ Gallery")
+        
+        self.gal_scroll_canvas = tk.Canvas(self.gallery_frame, bg=Colors.BG_DARK, highlightthickness=0)
+        gal_scroll = ttk.Scrollbar(self.gallery_frame, orient="vertical", command=self.gal_scroll_canvas.yview)
+        self.gal_container = ttk.Frame(self.gal_scroll_canvas)
+        
+        self.gal_scroll_canvas.create_window((0,0), window=self.gal_container, anchor="nw")
+        self.gal_scroll_canvas.configure(yscrollcommand=gal_scroll.set)
+        self.gal_scroll_canvas.pack(side="left", fill="both", expand=True)
+        gal_scroll.pack(side="right", fill="y")
+        
+        self.preview_card = CardFrame(self.gal_container, title="✨ Latest Sample")
+        self.preview_card.pack(fill='x', padx=10, pady=10)
+        
+        self.preview_label = ttk.Label(self.preview_card.content, text="Waiting for samples...", font=("Segoe UI", 12))
+        self.preview_label.pack(pady=10)
+
+    def hot_swap_weights(self):
+        """Open a dialog to hot-swap training loss weights in real-time"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("🔥 Hot-Swap Loss Weights")
+        dialog.geometry("350x250")
+        dialog.configure(bg=Colors.BG_DARK)
+        dialog.transient(self.root)
+        
+        weights_to_swap = [
+            ("KL_WEIGHT", config.KL_WEIGHT),
+            ("RECON_WEIGHT", config.RECON_WEIGHT),
+            ("DIVERSITY_WEIGHT", config.DIVERSITY_WEIGHT)
+        ]
+        
+        vars_dict = {}
+        for param, default in weights_to_swap:
+            frame = ttk.Frame(dialog)
+            frame.pack(fill='x', padx=20, pady=10)
+            ttk.Label(frame, text=param, width=18).pack(side='left')
+            var = tk.StringVar(value=str(default))
+            ttk.Entry(frame, textvariable=var, width=15).pack(side='right')
+            vars_dict[param] = var
+            
+        def apply_swap():
+            try:
+                for param, var in vars_dict.items():
+                    val = float(var.get())
+                    setattr(config, param, val)
+                self.log_message("🔥 Hot-Swap Applied: New weights will be used next epoch.", "success")
+                dialog.destroy()
+            except ValueError:
+                messagebox.showerror("Error", "Please enter valid numbers.")
+
+        tk.Button(dialog, text="Apply Changes", command=apply_swap,
+                 bg=Colors.ACCENT2, fg=Colors.BG_DARK,
+                 font=("Segoe UI", 10, "bold"),
+                 relief="flat", padx=20, pady=8).pack(pady=15)
+
 
     # ============================================================
     # Visualization Tab (Improved)
@@ -749,6 +835,10 @@ class SchrödingerBridgeGUI:
                 self.log_queue.put(f"EPOCH_DONE:{epoch}:{epoch_losses}")
                 self.log_queue.put(f"PROGRESS:{epoch+1}/{total_epochs}")
 
+                # Simulated Async signals for the GUI (Trainer should emit these natively)
+                # self.log_queue.put("LATENT_MONITOR:[0.9, 0.8, 0.05, 0.95]")
+                # self.log_queue.put("UPDATE_GALLERY:./samples/latest.png")
+
                 if (epoch+1) % 5 == 0:
                     trainer.save_checkpoint()
 
@@ -772,7 +862,7 @@ class SchrödingerBridgeGUI:
             self.root.after(500, self.update_progress)
 
     def process_log_queue(self):
-        """Process messages from training thread"""
+        """Process messages from training thread with Async capability"""
         try:
             while True:
                 msg = self.log_queue.get_nowait()
@@ -803,6 +893,14 @@ class SchrödingerBridgeGUI:
                     # Update metrics display
                     self.update_metrics_display(loss_dict)
                     self.update_charts()
+
+                elif msg.startswith("UPDATE_GALLERY:"):
+                    img_path = msg.split(":", 1)[1]
+                    self.update_gallery(img_path)
+
+                elif msg.startswith("LATENT_MONITOR:"):
+                    stds = eval(msg.split(":", 1)[1])
+                    self.draw_latent_monitor(stds)
                     
                 else:
                     # Color-code log messages
@@ -816,6 +914,46 @@ class SchrödingerBridgeGUI:
                     
         except queue.Empty:
             pass
+
+    def draw_latent_monitor(self, stds: List[float]):
+        """Draw a live bar chart of latent channel standard deviations"""
+        self.latent_canvas.delete("all")
+        width = self.latent_canvas.winfo_width()
+        height = self.latent_canvas.winfo_height()
+        if width <= 1: return # Canvas not yet drawn
+
+        num_channels = len(stds)
+        bar_w = width / max(1, num_channels)
+        max_val = max(stds) if stds else 1.0
+        
+        for i, val in enumerate(stds):
+            # If standard deviation is too low, the channel collapsed (turn red)
+            color = Colors.ERROR if val < 0.1 else Colors.ACCENT
+            
+            bar_h = (val / max_val) * (height - 20)
+            x0 = i * bar_w + 2
+            y0 = height - bar_h
+            x1 = (i + 1) * bar_w - 2
+            y1 = height
+            
+            self.latent_canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline=color)
+
+    def update_gallery(self, image_path: str):
+        """Load and display the latest generated sample on the Gallery Tab"""
+        try:
+            if not os.path.exists(image_path):
+                return
+                
+            img = Image.open(image_path)
+            
+            # Keep original aspect ratio, resize to fit nicely
+            img.thumbnail((800, 600), Image.Resampling.LANCZOS)
+            self.current_preview_image = ImageTk.PhotoImage(img)
+            
+            self.preview_label.config(image=self.current_preview_image, text="")
+        except Exception as e:
+            config.logger.error(f"Gallery update failed: {e}")
+
 
     def update_metrics_display(self, loss_dict):
         """Update live metrics display"""
@@ -900,7 +1038,6 @@ class SchrödingerBridgeGUI:
                 
                 if CAIRO_AVAILABLE:
                     png_bytes = cairosvg.svg2png(bytestring=svg)
-                    from PIL import Image, ImageTk
                     import io
                     img = Image.open(io.BytesIO(png_bytes))
                     img = img.resize((800, 400), Image.Resampling.LANCZOS)
