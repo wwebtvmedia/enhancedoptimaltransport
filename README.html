@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Label‑Conditioned Schrödinger Bridge</title>
+    <!-- MathJax for LaTeX rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #fafafa;
+        }
+        h1, h2, h3 {
+            color: #2c3e50;
+            border-bottom: 1px solid #e0e0e0;
+            padding-bottom: 0.3em;
+        }
+        h1 {
+            font-size: 2.2em;
+        }
+        code, pre {
+            background: #f5f5f5;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.95em;
+        }
+        pre {
+            padding: 10px;
+            overflow-x: auto;
+            border: 1px solid #ddd;
+        }
+        .math-block {
+            overflow-x: auto;
+            margin: 1.5em 0;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 1em 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .note {
+            background-color: #e7f3fe;
+            border-left: 6px solid #2196F3;
+            padding: 10px;
+            margin: 15px 0;
+        }
+        .warning {
+            background-color: #fff3cd;
+            border-left: 6px solid #ffc107;
+            padding: 10px;
+            margin: 15px 0;
+        }
+        hr {
+            border: 0;
+            border-top: 1px solid #ddd;
+            margin: 2em 0;
+        }
+        ul, ol {
+            padding-left: 1.5em;
+        }
+        a {
+            color: #1e88e5;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .toc {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px 20px;
+            margin: 20px 0;
+        }
+        .toc h2 {
+            margin-top: 0;
+            border-bottom: none;
+        }
+        .toc ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .toc ul ul {
+            padding-left: 20px;
+        }
+        .toc li {
+            margin: 5px 0;
+        }
+        .toc a {
+            color: #2c3e50;
+        }
+        .toc a:hover {
+            color: #1e88e5;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Enhanced Label‑Conditioned Schrödinger Bridge<br>with Ornstein‑Uhlenbeck Reference (mvOU‑SBP)</h1>
+
+<p>This project implements a generative model based on the <strong>Schrödinger Bridge</strong> problem. It learns a stochastic process that transports a simple prior (standard Gaussian) to a complex data distribution over a fixed time interval, while being explicitly conditioned on class labels. The model combines a <strong>conditional Variational Autoencoder (VAE)</strong> for latent representation with a <strong>drift network</strong> that learns the bridge dynamics. An optional <strong>Ornstein‑Uhlenbeck (OU) reference process</strong> provides a theoretically grounded prior for the bridge (mvOU‑SBP).</p>
+
+<div class="toc">
+    <h2>Table of Contents</h2>
+    <ul>
+        <li><a href="#math-foundations">1. Mathematical Foundations</a>
+            <ul>
+                <li><a href="#sbp">1.1 Schrödinger Bridge Problem</a></li>
+                <li><a href="#latent">1.2 Latent Space Representation</a></li>
+                <li><a href="#ou">1.3 Ornstein‑Uhlenbeck Reference Bridge</a></li>
+                <li><a href="#drift-loss">1.4 Drift Network and Losses</a></li>
+            </ul>
+        </li>
+        <li><a href="#architectures">2. Model Architectures & Tensor Shapes</a>
+            <ul>
+                <li><a href="#vae-arch">2.1 LabelConditionedVAE</a></li>
+                <li><a href="#drift-arch">2.2 LabelConditionedDrift</a></li>
+                <li><a href="#percentile">2.3 PercentileRescale</a></li>
+            </ul>
+        </li>
+        <li><a href="#training-phases">3. Training Phases and Loss Functions</a>
+            <ul>
+                <li><a href="#phase1">3.1 Phase 1 – VAE Training</a></li>
+                <li><a href="#phase2">3.2 Phase 2 – Drift Training</a></li>
+                <li><a href="#phase3">3.3 Phase 3 – Joint Fine‑Tuning</a></li>
+            </ul>
+        </li>
+        <li><a href="#schedule">4. Training Schedule</a></li>
+        <li><a href="#inference">5. Inference (Image Generation)</a>
+            <ul>
+                <li><a href="#ode">5.1 ODE Integration</a></li>
+                <li><a href="#langevin">5.2 Langevin Refinement</a></li>
+            </ul>
+        </li>
+        <li><a href="#features">6. Key Features</a></li>
+        <li><a href="#usage">7. Installation and Usage</a></li>
+        <li><a href="#references">8. References</a></li>
+    </ul>
+</div>
+
+<hr>
+
+<h2 id="math-foundations">1. Mathematical Foundations</h2>
+
+<h3 id="sbp">1.1 Schrödinger Bridge Problem</h3>
+<p>The <strong>Schrödinger Bridge</strong> seeks the most probable evolution between two probability distributions over a fixed time interval \([0,1]\). Given a <strong>reference process</strong> (e.g., Wiener or Ornstein‑Uhlenbeck), we look for a process whose marginal distributions at \(t=0\) and \(t=1\) match given target distributions, while minimizing the Kullback–Leibler divergence to the reference.</p>
+<p>In generative modelling we set:</p>
+<ul>
+    <li>\(t=0\): Prior distribution \(P_0 = \mathcal{N}(0, I)\) in latent space.</li>
+    <li>\(t=1\): Data distribution \(P_1 = q_\phi(z|x,y)\) (the latent codes of real images, conditioned on label \(y\)).</li>
+</ul>
+<p>The solution yields a <strong>stochastic differential equation (SDE)</strong> of the form</p>
+\[
+dz_t = f(z_t, t, y)\,dt + g(t)\,dw_t,
+\]
+<p>where \(f\) is the drift we aim to learn, \(g\) is the (fixed) diffusion coefficient, and \(w_t\) is a Wiener process.<br>In this implementation we work with the <strong>probability flow ODE</strong> (the deterministic counterpart), which shares the same marginal distributions:</p>
+\[
+\frac{dz_t}{dt} = f(z_t, t, y).
+\]
+<p>We learn \(f\) via a neural network (the drift network) and integrate the ODE from \(t=0\) to \(t=1\) to transform noise into a latent code that decodes to an image.</p>
+
+<h3 id="latent">1.2 Latent Space Representation</h3>
+<p>Images \(\mathbf{x} \in \mathbb{R}^{3\times 64\times 64}\) are mapped to a latent space \(\mathbf{z} \in \mathbb{R}^{4\times 8\times 8}\) using a <strong>conditional VAE</strong>:</p>
+<ul>
+    <li><strong>Encoder</strong> \(q_\phi(\mathbf{z}|\mathbf{x},y)\) outputs mean \(\boldsymbol{\mu}_\phi(\mathbf{x},y)\) and log‑variance \(\log\boldsymbol{\sigma}^2_\phi(\mathbf{x},y)\), both of shape \((4,8,8)\).</li>
+    <li><strong>Decoder</strong> \(p_\theta(\mathbf{x}|\mathbf{z},y)\) reconstructs the image.</li>
+</ul>
+<p>The VAE is trained with the <strong>Evidence Lower Bound (ELBO)</strong>:</p>
+\[
+\log p(\mathbf{x}|y) \ge \mathbb{E}_{q_\phi}\big[\log p_\theta(\mathbf{x}|\mathbf{z},y)\big] \;-\; \beta\; \mathrm{KL}\big(q_\phi(\mathbf{z}|\mathbf{x},y)\;\|\; p(\mathbf{z})\big),
+\]
+<p>where \(p(\mathbf{z}) = \mathcal{N}(0,I)\) is the prior.<br>Because the latent is spatial, the KL divergence is summed over all \(C\times H\times W\) dimensions:</p>
+\[
+\mathrm{KL} = -\frac{1}{2}\sum_{c,h,w}\Big(1 + \log\sigma_{c,h,w}^2 - \mu_{c,h,w}^2 - \sigma_{c,h,w}^2\Big).
+\]
+<p>To prevent latent collapse, we use a <strong>free bits</strong> trick: after computing the per‑sample KL, we clamp it to a minimum value <code>FREE_BITS</code> per sample.<br>We also add a <strong>diversity loss</strong> (see <a href="#phase1">Phase 1</a>) that encourages all latent channels to be active.</p>
+
+<h3 id="ou">1.3 Ornstein‑Uhlenbeck Reference Bridge</h3>
+<p>Instead of the simple linear interpolation \(z_t = (1-t)z_0 + t z_1\), we can use the <strong>exact Ornstein‑Uhlenbeck bridge</strong>. The OU process is defined by the SDE</p>
+\[
+dz_t = -\theta z_t\,dt + \sigma\,dw_t,
+\]
+<p>with stationary distribution \(\mathcal{N}\!\left(0, \frac{\sigma^2}{2\theta}\right)\).<br>Given two endpoints \(z_0\) (at \(t=0\)) and \(z_1\) (at \(t=1\)), the bridge at time \(t\) is Gaussian with</p>
+\[
+\begin{aligned}
+\mathbb{E}[z_t|z_0,z_1] &= \frac{\sinh(\theta(1-t))}{\sinh\theta}\,z_0 \;+\; \frac{\sinh(\theta t)}{\sinh\theta}\,z_1, \\
+\mathrm{Var}[z_t|z_0,z_1] &= \frac{\sigma^2}{2\theta}\;
+\frac{\sinh(\theta t)\,\sinh(\theta(1-t))}{\sinh\theta}.
+\end{aligned}
+\]
+<p>In the code, these formulas are implemented in <code>OUReference.bridge_sample</code> using exponential forms for numerical stability.<br>If <code>USE_OU_BRIDGE = False</code>, the simple linear interpolation is used.</p>
+
+<h3 id="drift-loss">1.4 Drift Network and Losses</h3>
+<p>The drift network \(f_\psi(z_t, t, y)\) learns the velocity that drives the probability flow.<br>The <strong>target</strong> is \(z_1 - z_0\) (for linear interpolation) or, with the OU bridge, the residual from the OU mean.</p>
+<p>The drift loss is a <strong>time‑weighted Huber loss</strong>:</p>
+\[
+\mathcal{L}_{\text{drift}} = \mathbb{E}_{t,z_0,z_1}\!\left[
+\Big\|\, w(t)\big( \underbrace{(z_1 - z_0) - \mu_{\text{OU}}(t)}_{\text{target}} - f_\psi(z_t,t,y) \big) \Big\|_{\text{Huber}}
+\right],
+\]
+<p>where \(w(t) = 1 + \alpha\, t\) (with \(\alpha = \texttt{TIME\_WEIGHT\_FACTOR}\)) gives higher weight to later times, and the Huber loss uses \(\delta = 1\).</p>
+<p>Additionally, a <strong>consistency loss</strong> keeps the current encoder close to a frozen reference encoder (from Phase 1) to stabilise training:</p>
+\[
+\mathcal{L}_{\text{consistency}} = \mathrm{MSE}(\boldsymbol{\mu}_\phi, \boldsymbol{\mu}_{\text{ref}}).
+\]
+
+<hr>
+
+<h2 id="architectures">2. Model Architectures & Tensor Shapes</h2>
+
+<h3 id="vae-arch">2.1 LabelConditionedVAE</h3>
+<table>
+    <thead>
+        <tr><th>Component</th><th>Input Shape</th><th>Operation</th><th>Output Shape</th></tr>
+    </thead>
+    <tbody>
+        <tr><td colspan="4"><strong>Encoder</strong></td></tr>
+        <tr><td>Input image</td><td>\((B,3,64,64)\)</td><td>–</td><td>–</td></tr>
+        <tr><td>Fourier features</td><td>\((B,3,64,64)\)</td><td>optional: <code>_get_fourier_features</code></td><td>\((B,4F,64,64)\)</td></tr>
+        <tr><td><code>enc_in</code></td><td>\((B,3+4F,64,64)\)</td><td>Conv2d(3+4F → 64, 3×3)</td><td>\((B,64,64,64)\)</td></tr>
+        <tr><td>Block 1</td><td>\((B,64,64,64)\)</td><td><code>ResidualBlock(64,128,stride=2)</code></td><td>\((B,128,32,32)\)</td></tr>
+        <tr><td>Block 2</td><td>\((B,128,32,32)\)</td><td><code>LabelConditionedBlock(128,128)</code></td><td>\((B,128,32,32)\)</td></tr>
+        <tr><td>Block 3</td><td>\((B,128,32,32)\)</td><td><code>ResidualBlock(128,256,stride=2)</code></td><td>\((B,256,16,16)\)</td></tr>
+        <tr><td>Block 4</td><td>\((B,256,16,16)\)</td><td><code>SelfAttention(256)</code></td><td>\((B,256,16,16)\)</td></tr>
+        <tr><td>Block 5</td><td>\((B,256,16,16)\)</td><td><code>LabelConditionedBlock(256,512)</code></td><td>\((B,512,16,16)\)</td></tr>
+        <tr><td>Block 6</td><td>\((B,512,16,16)\)</td><td>Conv2d(512,512,4×4,stride=2,padding=1)</td><td>\((B,512,8,8)\)</td></tr>
+        <tr><td><code>z_mean</code></td><td>\((B,512,8,8)\)</td><td>Conv2d(512 → 4,3×3)</td><td>\((B,4,8,8)\)</td></tr>
+        <tr><td><code>z_logvar</code></td><td>\((B,512,8,8)\)</td><td>Conv2d(512 → 4,3×3)</td><td>\((B,4,8,8)\)</td></tr>
+        <tr><td colspan="4"><strong>Decoder</strong></td></tr>
+        <tr><td><code>dec_in</code></td><td>\((B,4,8,8)\)</td><td>Conv2d(4 → 512,3×3)</td><td>\((B,512,8,8)\)</td></tr>
+        <tr><td>Up‑block 1</td><td>\((B,512,8,8)\)</td><td>Conv2d(512 → 1024,3×3) + PixelShuffle(2)</td><td>\((B,256,16,16)\)</td></tr>
+        <tr><td>Block</td><td>\((B,256,16,16)\)</td><td><code>LabelConditionedBlock(256,256)</code></td><td>\((B,256,16,16)\)</td></tr>
+        <tr><td>Up‑block 2</td><td>\((B,256,16,16)\)</td><td>Conv2d(256 → 512,3×3) + PixelShuffle(2)</td><td>\((B,128,32,32)\)</td></tr>
+        <tr><td>Block</td><td>\((B,128,32,32)\)</td><td><code>LabelConditionedBlock(128,128)</code></td><td>\((B,128,32,32)\)</td></tr>
+        <tr><td>Up‑block 3</td><td>\((B,128,32,32)\)</td><td>Conv2d(128 → 256,3×3) + PixelShuffle(2)</td><td>\((B,64,64,64)\)</td></tr>
+        <tr><td>Block</td><td>\((B,64,64,64)\)</td><td><code>LabelConditionedBlock(64,64)</code></td><td>\((B,64,64,64)\)</td></tr>
+        <tr><td><code>dec_out</code></td><td>\((B,64,64,64)\)</td><td>Conv2d(64 → 3,3×3) + tanh</td><td>\((B,3,64,64)\)</td></tr>
+    </tbody>
+</table>
+<p><strong>Notes:</strong> \(F = \texttt{len(FOURIER\_FREQS)}\) (default 5 ⇒ 4F = 20 channels). <code>LabelConditionedBlock</code> injects the label embedding via scale‑shift modulation. <code>ResidualBlock</code> and <code>SelfAttention</code> are standard.</p>
+
+<h3 id="drift-arch">2.2 LabelConditionedDrift</h3>
+<table>
+    <thead>
+        <tr><th>Component</th><th>Input Shape</th><th>Operation</th><th>Output Shape</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><strong>Inputs</strong></td><td colspan="3"></td></tr>
+        <tr><td>Latent \(z\)</td><td>\((B,4,8,8)\)</td><td>–</td><td>–</td></tr>
+        <tr><td>Time \(t\)</td><td>\((B,1)\)</td><td>–</td><td>–</td></tr>
+        <tr><td>Label \(y\)</td><td>\((B,)\)</td><td>–</td><td>–</td></tr>
+        <tr><td><strong>Time MLP</strong></td><td>\((B,1)\)</td><td>Linear(1→128) → SiLU → Linear(128→128)</td><td>\((B,128)\)</td></tr>
+        <tr><td><strong>Label embed</strong></td><td>\((B,)\)</td><td><code>nn.Embedding(NUM_CLASSES,128)</code></td><td>\((B,128)\)</td></tr>
+        <tr><td><strong>Cond proj</strong></td><td>\((B,256)\)</td><td>Concat(t_emb,label_emb) → Linear(256→128) → SiLU → Linear(128→128)</td><td>\((B,128)\)</td></tr>
+        <tr><td colspan="4"><strong>U‑Net</strong></td></tr>
+        <tr><td><code>head</code></td><td>\((B,4,8,8)\)</td><td>Conv2d(4→64,3×3) (spectral norm)</td><td>\((B,64,8,8)\)</td></tr>
+        <tr><td><code>down1</code></td><td>\((B,64,8,8)\)</td><td><code>LabelConditionedBlock(64→128)</code></td><td>\((B,128,8,8)\)</td></tr>
+        <tr><td><code>down2_conv</code></td><td>\((B,128,8,8)\)</td><td>Conv2d(128→256,4×4,stride=2) (spec norm)</td><td>\((B,256,4,4)\)</td></tr>
+        <tr><td><code>down2_block</code></td><td>\((B,256,4,4)\)</td><td><code>LabelConditionedBlock(256→256)</code></td><td>\((B,256,4,4)\)</td></tr>
+        <tr><td><code>mid</code></td><td>\((B,256,4,4)\)</td><td><code>LabelConditionedBlock(256→256)</code></td><td>\((B,256,4,4)\)</td></tr>
+        <tr><td><code>up2_conv</code></td><td>\((B,256,4,4)\)</td><td>ConvTranspose2d(256→128,4×4,stride=2)</td><td>\((B,128,8,8)\)</td></tr>
+        <tr><td><code>up2_block</code></td><td>\((B,128,8,8)\)</td><td><code>LabelConditionedBlock(128→128)</code></td><td>\((B,128,8,8)\)</td></tr>
+        <tr><td><code>up1</code></td><td>\((B,128,8,8)\)</td><td><code>LabelConditionedBlock(128→64)</code> + skip from <code>down1</code> (addition)</td><td>\((B,64,8,8)\)</td></tr>
+        <tr><td><code>tail</code></td><td>\((B,64,8,8)\)</td><td>Conv2d(64→4,3×3) (spec norm)</td><td>\((B,4,8,8)\)</td></tr>
+        <tr><td><strong>Output scaling</strong></td><td>\((B,4,8,8)\)</td><td><code>tanh</code> → multiply by <code>output_scale</code> and time‑dependent factor</td><td>\((B,4,8,8)\)</td></tr>
+    </tbody>
+</table>
+
+<h3 id="percentile">2.3 PercentileRescale</h3>
+<p>This adaptive layer normalises activations channel‑wise to \([-1,1]\) based on running estimates of the 1st and 99th percentiles. During training, it updates the percentiles via exponential moving average. During inference or export, it uses the stored percentiles to scale:</p>
+\[
+\text{out} = \tanh\!\left(0.9\,\frac{x - \text{low}}{\text{high} - \text{low}}\right).
+\]
+<p>The factor 0.9 provides a safety margin.</p>
+
+<hr>
+
+<h2 id="training-phases">3. Training Phases and Loss Functions</h2>
+<p>Training is split into up to <strong>three phases</strong> (configurable). All losses are computed per batch and then averaged.</p>
+
+<h3 id="phase1">3.1 Phase 1 – VAE Training</h3>
+<p>Only the VAE (encoder + decoder) is trained. The drift network is frozen.</p>
+<p><strong>Loss components:</strong></p>
+<ol>
+    <li><strong>Reconstruction loss</strong> – a weighted sum of
+        <ul>
+            <li><strong>MSE</strong> (raw pixel error)</li>
+            <li><strong>SSIM loss</strong> \(= 1 - \text{SSIM}(\text{recon}, \text{target})\) (implemented with a Gaussian window)</li>
+            <li><strong>Perceptual loss</strong> – L2 distance on features from a frozen VGG‑16 (first 16 layers) after mapping images to \([0,1]\) and applying ImageNet normalisation.</li>
+        </ul>
+        \[
+        \mathcal{L}_{\text{recon}} = \lambda_{\text{MSE}}\,\mathrm{MSE} \;+\; \lambda_{\text{SSIM}}\,(1-\mathrm{SSIM}) \;+\; \lambda_{\text{perc}}\,\mathrm{MSE}_{\text{VGG}}.
+        \]
+        Default weights: \(\lambda_{\text{MSE}}=2.5\), \(\lambda_{\text{SSIM}}=0.3\), \(\lambda_{\text{perc}}=0.2\times 0.2 = 0.04\) (the perceptual loss is further scaled by 0.2 internally).
+    </li>
+    <li><strong>KL divergence</strong> – summed over spatial dimensions and free‑bits clipped:
+        \[
+        \mathcal{L}_{\text{KL}} = \beta \; \frac{1}{B}\sum_{b=1}^B \max\!\left(\mathrm{KL}_b,\; \texttt{FREE\_BITS}\right),
+        \]
+        where \(\beta = \texttt{KL\_WEIGHT}\) (default \(10^{-4}\)) and \(\mathrm{KL}_b\) is computed per sample.<br>An annealing factor (<code>kl_annealing</code>) linearly increases \(\beta\) over <code>KL_ANNEALING_EPOCHS</code>.
+    </li>
+    <li><strong>Diversity loss</strong> – encourages all latent channels to be used and prevents collapse.<br>
+        For each batch we compute the channel‑wise standard deviation of \(\mu\): \(\sigma_c = \mathrm{std}_{B\times H\times W}(\mu[:,c,:,:])\). Then
+        \[
+        \mathcal{L}_{\text{diversity}} = \gamma_{\text{low}}\,\mathbb{E}\!\left[\mathrm{ReLU}(\tau - \sigma_c)\right]
+        \;+\; \gamma_{\text{high}}\,\mathbb{E}\!\left[\mathrm{ReLU}(\sigma_c - \sigma_{\max})\right]
+        \;+\; \gamma_{\text{balance}}\,\mathrm{std}(\sigma_c),
+        \]
+        with \(\tau = \texttt{DIVERSITY\_TARGET\_STD}\) (adaptively annealed from <code>_START</code> to <code>_END</code>), \(\sigma_{\max} = \texttt{DIVERSITY\_MAX\_STD}\), and the \(\gamma\)s are taken from <code>DIVERSITY_LOW_PENALTY</code>, <code>DIVERSITY_HIGH_PENALTY</code>, <code>DIVERSITY_BALANCE_WEIGHT</code>.<br>
+        The term encourages channels to have similar, non‑zero, and not‑too‑large activity.
+    </li>
+</ol>
+<p><strong>Total Phase 1 loss:</strong></p>
+\[
+\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{recon}} + \mathcal{L}_{\text{KL}} + \texttt{DIVERSITY\_WEIGHT}\,\mathcal{L}_{\text{diversity}}.
+\]
+
+<h3 id="phase2">3.2 Phase 2 – Drift Training</h3>
+<p>Now the drift network is trained while the <strong>decoder is frozen</strong> and the encoder is <strong>fine‑tuned</strong> (with a reduced learning rate). A frozen copy of the Phase 1 encoder (<code>vae_ref</code>) serves as an anchor for the consistency loss.</p>
+<p><strong>Loss components:</strong></p>
+<ol>
+    <li><strong>Drift loss</strong> – time‑weighted Huber loss between the predicted drift \(f_\psi(z_t,t,y)\) and the target \(z_1 - z_0\) (or the OU‑adjusted target).<br>
+        Let \(w(t) = 1 + \alpha t\) (\(\alpha = \texttt{TIME\_WEIGHT\_FACTOR}\)). Then
+        \[
+        \mathcal{L}_{\text{drift}} = \mathbb{E}\!\left[\,\mathrm{Huber}\!\left( w(t)\,(z_1 - z_0 - f_\psi(z_t,t,y)) ,\; \delta=1\right) \right] \cdot \texttt{DRIFT\_WEIGHT}.
+        \]
+        To avoid overfitting, the target is slightly noised with scale <code>DRIFT_TARGET_NOISE_SCALE * (1‑t)</code>.
+    </li>
+    <li><strong>Consistency loss</strong> – keeps the current encoder close to the reference:
+        \[
+        \mathcal{L}_{\text{consistency}} = \mathrm{MSE}(\boldsymbol{\mu}_\phi, \boldsymbol{\mu}_{\text{ref}}).
+        \]
+        Its weight decays linearly from 1 to 0.1 over the remaining epochs of Phase 2:
+        \[
+        \lambda_{\text{consistency}} = \texttt{CONSISTENCY\_WEIGHT} \times \max\!\left(0.1,\; 1 - \frac{\text{epoch} - \text{phase2\_start}}{\text{EPOCHS} - \text{phase2\_start}}\right).
+        \]
+    </li>
+</ol>
+<p><strong>Total Phase 2 loss:</strong></p>
+\[
+\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{drift}} + \lambda_{\text{consistency}}\,\mathcal{L}_{\text{consistency}}.
+\]
+
+<h3 id="phase3">3.3 Phase 3 – Joint Fine‑Tuning</h3>
+<p>Both encoder and decoder are unfrozen. The loss is the same as in Phase 2, but the learning rate for the VAE is further reduced (factor <code>PHASE3_VAE_LR_FACTOR</code>). The consistency loss still applies, with the same decay schedule.</p>
+
+<hr>
+
+<h2 id="schedule">4. Training Schedule</h2>
+<p>The schedule is controlled by the global dictionary <code>config.TRAINING_SCHEDULE</code>. Several modes are available:</p>
+<ul>
+    <li><strong>auto</strong> – switch from Phase 1 to Phase 2 at a fixed epoch (<code>switch_epoch</code>, default 50).</li>
+    <li><strong>three_phase</strong> – Phase 1 until <code>switch_epoch_1</code>, Phase 2 until <code>switch_epoch_2</code>, then Phase 3.</li>
+    <li><strong>manual</strong> – force a specific phase (1,2,3) regardless of epoch.</li>
+    <li><strong>custom</strong> – map epoch numbers to phases via a dictionary.</li>
+    <li><strong>alternate</strong> – alternate between Phase 1 and Phase 2 every <code>alternate_freq</code> epochs.</li>
+    <li><strong>vae_only</strong> / <strong>drift_only</strong> – always stay in Phase 1 or Phase 2.</li>
+</ul>
+<p>The current phase is determined at the beginning of each epoch by <code>set_training_phase(epoch)</code>. When a phase change occurs, the optimizer states are reconfigured (learning rates, frozen parameters) and a reference encoder is created for Phase 2.</p>
+
+<hr>
+
+<h2 id="inference">5. Inference (Image Generation)</h2>
+<p>To generate an image conditioned on a label \(y\), we:</p>
+<ol>
+    <li>Draw an initial latent \(z_0 \sim \mathcal{N}(0, \sigma_0^2 I)\) (by default \(\sigma_0 = 0.5\), or estimated from a real batch).</li>
+    <li>Solve the ODE \(\frac{dz}{dt} = f_\psi(z,t,y)\) from \(t=0\) to \(t=1\) using a numerical integrator.</li>
+    <li>Decode \(z_1\) with the VAE decoder to obtain the image.</li>
+</ol>
+
+<h3 id="ode">5.1 ODE Integration</h3>
+<p>Three methods are implemented (configurable via <code>method</code>):</p>
+<ul>
+    <li><strong>Euler</strong>: \(z_{t+\Delta t} = z_t + f(z_t,t,y)\,\Delta t\).</li>
+    <li><strong>Heun</strong> (2nd order):<br>
+        \(k_1 = f(z_t,t,y)\),<br>
+        \(k_2 = f(z_t + \Delta t\,k_1, t+\Delta t, y)\),<br>
+        \(z_{t+\Delta t} = z_t + \frac{\Delta t}{2}(k_1 + k_2)\).</li>
+    <li><strong>RK4</strong> (4th order): standard Runge‑Kutta.</li>
+</ul>
+<p>Time step \(\Delta t = 1 / \texttt{DEFAULT\_STEPS}\) (default 50). The latent is clamped to \([-10,10]\) after each step for stability.</p>
+
+<h3 id="langevin">5.2 Langevin Refinement</h3>
+<p>After ODE integration, an optional <strong>Langevin MCMC</strong> step can be applied to refine the latent (heuristic, not strictly derived from the SB). The drift at \(t=1\) is treated as a proxy for the score. For \(L\) steps:</p>
+\[
+z \leftarrow z + \frac{\eta}{2}\, s\, f_\psi(z,1,y) + \sqrt{\eta}\,\epsilon,\qquad \epsilon\sim\mathcal{N}(0,I),
+\]
+<p>where \(\eta\) is <code>langevin_step_size</code>, \(s\) is <code>langevin_score_scale</code>, and the noise scale is annealed: \(\sqrt{\eta} \leftarrow \sqrt{\eta}\,(1-0.5\frac{\text{step}}{L})\). The latent is clamped to \([-2\sigma_{\max}, 2\sigma_{\max}]\) to stay within a reasonable range.</p>
+
+<hr>
+
+<h2 id="features">6. Key Features</h2>
+<ul>
+    <li><strong>Label conditioning</strong> via embedding and scale‑shift modulation in every block.</li>
+    <li><strong>Percentile rescaling</strong> – adaptive normalisation based on running percentiles, improving stability.</li>
+    <li><strong>KPI tracking</strong> – real‑time monitoring of loss, SNR, latent statistics, with convergence detection and early stopping.</li>
+    <li><strong>Snapshot ensemble</strong> – automatic saving of model snapshots every <code>SNAPSHOT_INTERVAL</code> epochs; emergency revert on NaN/Inf.</li>
+    <li><strong>Composite score</strong> – multi‑metric score for model selection (SNR, KL, diversity, drift error) – best overall model saved separately.</li>
+    <li><strong>Ornstein‑Uhlenbeck bridge</strong> – exact OU bridge sampling for theoretically grounded training.</li>
+    <li><strong>Multi‑device support</strong> – CUDA, MPS (Apple Silicon), DirectML, CPU.</li>
+</ul>
+
+<hr>
+
+<h2 id="usage">7. Installation and Usage</h2>
+<p>See the original <code>README.md</code> for detailed installation steps (Python virtual environment, dependencies, etc.). The main entry point is <code>main.py</code> which provides an interactive menu for training, inference, and snapshot management.</p>
+
+<hr>
+
+<h2 id="references">8. References</h2>
+<ul>
+    <li>Léonard, C. (2014). <em>A survey of the Schrödinger problem and some of its connections with optimal transport.</em></li>
+    <li>De Bortoli, V., et al. (2021). <em>Diffusion Schrödinger Bridge Matching.</em> NeurIPS.</li>
+    <li>Song, Y., et al. (2021). <em>Score‑Based Generative Modeling through Stochastic Differential Equations.</em> ICLR.</li>
+    <li>Chen, T., et al. (2022). <em>Optimal Transport and Schrödinger Bridges.</em> arXiv.</li>
+</ul>
+
+<hr>
+<p style="text-align:center; color:#666;">This README was automatically generated from the codebase and includes all mathematical details, tensor shapes, and algorithmic explanations.</p>
+
+</body>
+</html>
