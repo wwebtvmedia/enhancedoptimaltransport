@@ -35,7 +35,7 @@ def run_inference(labels: Optional[List[int]] = None,
     
     # Create dummy loader for trainer initialization
     from torch.utils.data import DataLoader, TensorDataset
-    dummy_dataset = TensorDataset(torch.randn(1, 3, 64, 64))
+    dummy_dataset = TensorDataset(torch.randn(1, 3, config.IMG_SIZE, config.IMG_SIZE))
     dummy_loader = DataLoader(dummy_dataset, batch_size=1)
     trainer = training.EnhancedLabelTrainer(dummy_loader)
     
@@ -49,9 +49,9 @@ def run_inference(labels: Optional[List[int]] = None,
     
     # Interactive input if parameters not provided
     if labels is None:
-        print("\nAvailable labels: 0-9 for CIFAR-10 classes")
-        print("(0: airplane, 1: automobile, 2: bird, 3: cat, 4: deer,")
-        print(" 5: dog, 6: frog, 7: horse, 8: ship, 9: truck)")
+        print("\nAvailable labels: 0-9 for STL-10 classes")
+        print("(0: airplane, 1: bird, 2: car, 3: cat, 4: deer,")
+        print(" 5: dog, 6: horse, 7: monkey, 8: ship, 9: truck)")
         label_input = input("\nEnter labels (comma-separated, e.g., 0,1,2,3) [default: 0,1,2,3]: ").strip()
         if label_input:
             labels = [int(x.strip()) for x in label_input.split(',')]
@@ -113,8 +113,8 @@ def run_inference(labels: Optional[List[int]] = None,
     
     # Print summary
     print("\n Sample Summary:")
-    class_names = ["airplane", "automobile", "bird", "cat", "deer", 
-                  "dog", "frog", "horse", "ship", "truck"]
+    class_names = ["airplane", "bird", "car", "cat", "deer", 
+                  "dog", "horse", "monkey", "ship", "truck"]
     for label in sorted(set(labels)):
         count = labels.count(label) * samples_per_label
         name = class_names[label] if label < 10 else f"class_{label}"

@@ -376,12 +376,14 @@ class LabelConditionedDrift(nn.Module):
     def forward(self, z, t, labels):
         """Forward pass - predict drift at time t."""
         # Time embedding
+        if t.dim() == 1:
+            t = t.unsqueeze(-1)
         t_emb = self.time_mlp(t)
-        
+
         # Label embedding
         label_emb = self.label_emb(labels)
-        
-        # Combined conditioning
+
+        # Combine embeddings
         cond = torch.cat([t_emb, label_emb], dim=-1)
         cond = self.cond_proj(cond)
         

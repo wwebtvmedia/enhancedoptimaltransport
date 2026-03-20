@@ -405,14 +405,20 @@ def load_data() -> DataLoader:
         except Exception as e:
             config.logger.warning(f"Failed to load local images: {e}")
     
-    config.logger.info("Loading CIFAR-10...")
+    config.logger.info("Loading STL-10 (96x96 native)...")
     try:
-        cifar_ds = datasets.CIFAR10(root="./data", train=True, download=True, transform=transform)
-        labeled_cifar = LabeledImageDataset(cifar_ds)
-        datasets_list.append(labeled_cifar)
-        config.logger.info(f"Loaded {len(cifar_ds)} CIFAR-10 images")
+        # STL-10 has 10 classes and is 96x96 natively, avoiding upsampling blur.
+        stl10_ds = datasets.STL10(root="./data", split='train', download=True, transform=transform)
+        
+        # Override the generic classes to match STL-10 actual classes if not automatically set
+        if not hasattr(stl10_ds, 'classes'):
+            stl10_ds.classes = ['airplane', 'bird', 'car', 'cat', 'deer', 'dog', 'horse', 'monkey', 'ship', 'truck']
+            
+        labeled_stl10 = LabeledImageDataset(stl10_ds)
+        datasets_list.append(labeled_stl10)
+        config.logger.info(f"Loaded {len(stl10_ds)} STL-10 images")
     except Exception as e:
-        config.logger.error(f"Failed to load CIFAR-10: {e}")
+        config.logger.error(f"Failed to load STL-10: {e}")
         if not datasets_list:
             raise RuntimeError("No datasets could be loaded!")
     

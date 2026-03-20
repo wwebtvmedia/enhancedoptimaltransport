@@ -1248,7 +1248,7 @@ class SchrödingerBridgeGUI:
         """Generate samples from latest checkpoint"""
         try:
             from torch.utils.data import DataLoader, TensorDataset
-            dummy = DataLoader(TensorDataset(torch.randn(1,3,64,64)), batch_size=1)
+            dummy = DataLoader(TensorDataset(torch.randn(1,3,config.IMG_SIZE,config.IMG_SIZE)), batch_size=1)
             trainer = training.EnhancedLabelTrainer(dummy)
             
             if trainer.load_for_inference():
@@ -1292,7 +1292,7 @@ class SchrödingerBridgeGUI:
         """Export models to ONNX"""
         try:
             from torch.utils.data import DataLoader, TensorDataset
-            dummy = DataLoader(TensorDataset(torch.randn(1,3,64,64)), batch_size=1)
+            dummy = DataLoader(TensorDataset(torch.randn(1,3,config.IMG_SIZE,config.IMG_SIZE)), batch_size=1)
             trainer = training.EnhancedLabelTrainer(dummy)
             
             if trainer.load_for_inference():

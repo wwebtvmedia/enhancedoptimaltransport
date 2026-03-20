@@ -449,7 +449,7 @@ def main():
         
         # Create dummy loader for trainer initialization
         from torch.utils.data import DataLoader, TensorDataset
-        dummy_dataset = TensorDataset(torch.randn(1, 3, 64, 64))
+        dummy_dataset = TensorDataset(torch.randn(1, 3, config.IMG_SIZE, config.IMG_SIZE))
         dummy_loader = DataLoader(dummy_dataset, batch_size=1)
         
         if choice == '1':

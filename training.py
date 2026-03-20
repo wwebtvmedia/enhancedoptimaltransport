@@ -1221,7 +1221,34 @@ class EnhancedLabelTrainer:
                     opset_version=11 # Opset 11 is highly compatible with WebGL backends
                 )
                 config.logger.info(f"Drift exported to {drift_path}")
-                
+
+                # --- Auto-configure the HTML file to match the current dimensions ---
+                html_path = config.BASE_DIR / "onnx_generate_image.html"
+                if html_path.exists():
+                    try:
+                        with open(html_path, 'r', encoding='utf-8') as f:
+                            html_content = f.read()
+
+                        import re
+                        # Replace LATENT_SHAPE array
+                        html_content = re.sub(
+                            r'const LATENT_SHAPE = \[1, \d+, \d+, \d+\];',
+                            f'const LATENT_SHAPE = [1, {config.LATENT_CHANNELS}, {config.LATENT_H}, {config.LATENT_W}];',
+                            html_content
+                        )
+                        # Replace IMG_SIZE constant
+                        html_content = re.sub(
+                            r'const IMG_SIZE = \d+;',
+                            f'const IMG_SIZE = {config.IMG_SIZE};',
+                            html_content
+                        )
+
+                        with open(html_path, 'w', encoding='utf-8') as f:
+                            f.write(html_content)
+                        config.logger.info(f"Updated {html_path.name} with new dimensions (IMG_SIZE={config.IMG_SIZE}).")
+                    except Exception as e:
+                        config.logger.warning(f"Could not auto-update HTML file dimensions: {e}")
+
                 # --- Reset export mode ---
                 self.vae.apply(lambda m: set_export_mode(m, False))
                 self.drift.apply(lambda m: set_export_mode(m, False))
