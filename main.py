@@ -132,12 +132,12 @@ def check_device_compatibility() -> bool:
 
 def configure_device_specific() -> None:
     """Adjust global constants based on detected device."""
-    if config.DEVICE.type == 'cpu':
+    if config.DEVICE.type == 'cuda':
         config.BATCH_SIZE = 32
         config.LR = 1e-4
         config.USE_AMP = False
     elif config.DEVICE.type == 'mps':
-        config.BATCH_SIZE = 48
+        config.BATCH_SIZE = 12
         config.LR = 1.5e-4
         config.USE_AMP = False
         # Set MPS-specific environment variables
@@ -148,14 +148,14 @@ def configure_device_specific() -> None:
                 torch.mps.set_per_process_memory_fraction(0.5)
         except:
             pass
-    elif config.DEVICE.type == 'directml':
-        config.BATCH_SIZE = 48
-        config.LR = 2e-4
+    elif config.DEVICE.type == 'directml' or config.DEVICE.type == 'privateuseone':
+        config.BATCH_SIZE = 32
+        config.LR = 1e-4
         config.USE_AMP = False
-    else:  # CUDA
-        config.BATCH_SIZE = 64
-        config.LR = 2e-4
-        config.USE_AMP = True  # Enable AMP for CUDA
+    else:  # cpu
+        config.BATCH_SIZE = 16
+        config.LR = 5e-5
+        config.USE_AMP = False
     
     # Update module-level constants
     dm.BATCH_SIZE = config.BATCH_SIZE

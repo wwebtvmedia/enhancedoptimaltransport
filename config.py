@@ -169,7 +169,7 @@ TRAINING_SCHEDULE = {
 # ============================================================================
 DEVICE = None
 DTYPE = torch.float32
-BATCH_SIZE = 64  # Will be adjusted per device
+BATCH_SIZE = 32  # Will be adjusted per device
 AMP_AVAILABLE = False
 
 # ============================================================================

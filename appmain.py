@@ -369,13 +369,16 @@ class SchrödingerBridgeGUI:
             
             # Configure device-specific settings
             if config.DEVICE.type == 'cpu':
-                config.BATCH_SIZE = 32
+                config.BATCH_SIZE = 16
                 config.LR = 1e-4
             elif config.DEVICE.type == 'mps':
-                config.BATCH_SIZE = 48
+                config.BATCH_SIZE = 12
                 config.LR = 1.5e-4
+            elif config.DEVICE.type == 'privateuseone': # DirectML / AMD
+                config.BATCH_SIZE = 32
+                config.LR = 2e-4
             else:  # CUDA
-                config.BATCH_SIZE = 64
+                config.BATCH_SIZE = 32
                 config.LR = 2e-4
             
             config.DTYPE = torch.float32
