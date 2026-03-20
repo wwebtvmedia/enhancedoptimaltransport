@@ -174,9 +174,9 @@ dz_t = f(z_t, t, y)\,dt + g(t)\,dw_t,
 <p>We learn \(f\) via a neural network (the drift network) and integrate the ODE from \(t=0\) to \(t=1\) to transform noise into a latent code that decodes to an image.</p>
 
 <h3 id="latent">1.2 Latent Space Representation</h3>
-<p>Images \(\mathbf{x} \in \mathbb{R}^{3\times 64\times 64}\) are mapped to a latent space \(\mathbf{z} \in \mathbb{R}^{4\times 8\times 8}\) using a <strong>conditional VAE</strong>:</p>
+<p>Images \(\mathbf{x} \in \mathbb{R}^{3\times 96\times 96}\) are mapped to a latent space \(\mathbf{z} \in \mathbb{R}^{4\times 12\times 12}\) using a <strong>conditional VAE</strong>:</p>
 <ul>
-    <li><strong>Encoder</strong> \(q_\phi(\mathbf{z}|\mathbf{x},y)\) outputs mean \(\boldsymbol{\mu}_\phi(\mathbf{x},y)\) and log‑variance \(\log\boldsymbol{\sigma}^2_\phi(\mathbf{x},y)\), both of shape \((4,8,8)\).</li>
+    <li><strong>Encoder</strong> \(q_\phi(\mathbf{z}|\mathbf{x},y)\) outputs mean \(\boldsymbol{\mu}_\phi(\mathbf{x},y)\) and logâ€‘variance \(\log\boldsymbol{\sigma}^2_\phi(\mathbf{x},y)\), both of shape \((4,12,12)\).</li>
     <li><strong>Decoder</strong> \(p_\theta(\mathbf{x}|\mathbf{z},y)\) reconstructs the image.</li>
 </ul>
 <p>The VAE is trained with the <strong>Evidence Lower Bound (ELBO)</strong>:</p>
