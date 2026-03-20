@@ -56,8 +56,8 @@ DRIFT_WEIGHT = 0.5
 DIVERSITY_WEIGHT = 0.3
 CONSISTENCY_WEIGHT = 0.5
 REVERT_THRESHOLD = 2.5
-SIM_LOST_FACTOR = 0.3
-PERSP_LOST_FACTOR = 0.2
+SIM_LOST_FACTOR = 1.0
+PERSP_LOST_FACTOR = 1.0
 
 # ============================================================================
 # VAE SPECIFIC

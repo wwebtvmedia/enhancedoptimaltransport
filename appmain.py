@@ -656,7 +656,9 @@ class SchrödingerBridgeGUI:
         weights_to_swap = [
             ("KL_WEIGHT", config.KL_WEIGHT),
             ("RECON_WEIGHT", config.RECON_WEIGHT),
-            ("DIVERSITY_WEIGHT", config.DIVERSITY_WEIGHT)
+            ("DIVERSITY_WEIGHT", config.DIVERSITY_WEIGHT),
+            ("SIM_LOST_FACTOR", config.SIM_LOST_FACTOR),
+            ("PERSP_LOST_FACTOR", config.PERSP_LOST_FACTOR)
         ]
         
         vars_dict = {}

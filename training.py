@@ -574,7 +574,8 @@ class EnhancedLabelTrainer:
                 config.logger.info(f"Channel stds: {channel_stds}")
             
             # Adaptive KL weight based on channel usage
-            raw_mse = F.mse_loss(recon, images)
+            raw_l1 = F.l1_loss(recon, images)
+            raw_mse = F.mse_loss(recon, images) # Keep for SNR and logging
             raw_kl = kl_divergence_spatial(mu, logvar)
             
             if latent_std < 0.3:
@@ -599,7 +600,7 @@ class EnhancedLabelTrainer:
                 
             kl_loss = raw_kl * current_kl_weight * kl_annealing * kl_multiplier
 
-            recon_loss = raw_mse * config.RECON_WEIGHT + config.SIM_LOST_FACTOR * self.ssim_loss(recon, images) + config.PERSP_LOST_FACTOR * self.perceptual_loss(recon, images) * 0.2
+            recon_loss = raw_l1 * config.RECON_WEIGHT + config.SIM_LOST_FACTOR * self.ssim_loss(recon, images) + config.PERSP_LOST_FACTOR * self.perceptual_loss(recon, images)
             total_loss = recon_loss + kl_loss + diversity_loss * config.DIVERSITY_WEIGHT
             
             snr = calc_snr(images, recon)

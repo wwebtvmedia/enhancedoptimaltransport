@@ -169,18 +169,16 @@ class LabelConditionedVAE(nn.Module):
         
         self.dec_blocks = nn.ModuleList([
             # Stage 1: 8x8 -> 16x16
-            # Input 512 -> Conv 1024 -> Shuffle 256
-            nn.Sequential(nn.Conv2d(512, 1024, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()), 
+            nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(512, 256, 3, 1, 1), nn.SiLU()), 
             LabelConditionedBlock(256, 256),
             
             # Stage 2: 16x16 -> 32x32
-            # Input 256 -> Conv 512 -> Shuffle 128
-            nn.Sequential(nn.Conv2d(256, 512, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()),  
+            nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(256, 128, 3, 1, 1), nn.SiLU()),  
             LabelConditionedBlock(128, 128),
+            SelfAttention(128),
             
             # Stage 3: 32x32 -> 64x64
-            # Input 128 -> Conv 256 -> Shuffle 64
-            nn.Sequential(nn.Conv2d(128, 256, 3, 1, 1), nn.PixelShuffle(2), nn.SiLU()),
+            nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(128, 64, 3, 1, 1), nn.SiLU()),
             LabelConditionedBlock(64, 64), # Ensure internal skip is (64+64)
         ])
         
@@ -355,7 +353,9 @@ class LabelConditionedDrift(nn.Module):
         self.down2_conv = nn.utils.spectral_norm(nn.Conv2d(128, 256, 4, 2, 1))
         self.down2_block = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
         
-        self.mid = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
+        self.mid1 = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
+        self.mid_attn = SelfAttention(256)
+        self.mid2 = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
         
         self.up2_conv = nn.ConvTranspose2d(256, 128, 4, 2, 1)
         self.up2_block = LabelConditionedBlock(128, 128, label_dim=128, use_spectral_norm=True)
@@ -410,14 +410,16 @@ class LabelConditionedDrift(nn.Module):
         d1 = self.down1(h, cond)
         d2 = self.down2_conv(d1)
         d2 = self.down2_block(d2, cond)
-        m = self.mid(d2, cond)
+        m = self.mid1(d2, cond)
+        m = self.mid_attn(m)
+        m = self.mid2(m, cond)
         u2 = self.up2_conv(m)
         u2 = self.up2_block(u2, cond)
         u1 = self.up1(u2 + d1, cond)
         out = self.tail(u1)
         
-        # Scale output
-        out = torch.tanh(out) * self.output_scale * (1.0 + time_weight.view(-1, 1, 1, 1))
+        # Scale output (removed tanh to prevent capping drift values)
+        out = out * self.output_scale * (1.0 + time_weight.view(-1, 1, 1, 1))
         out = out * (1.0 + time_scale)
         
         # Update running statistics for adaptive clipping (only in training)
