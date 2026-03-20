@@ -99,7 +99,7 @@ dz_t = f(z_t, t) dt + g(t) dw_t
 where f is the drift we aim to learn, and g is the diffusion coefficient (fixed).
 
 2. Latent Space Representation
-Images x in R^(3x64x64) are mapped to a latent space z in R^(4x8x8) via a conditional VAE:
+Images x in R^(3x96x96) are mapped to a latent space z in R^(4x12x12) via a conditional VAE:
 
 Encoder q_phi(z|x,y) outputs mean mu_phi(x,y) and log-variance logvar_phi(x,y).
 
@@ -172,7 +172,7 @@ Phase 2 (epochs 50-199): Train drift network, fine-tune encoder (decoder frozen)
 The schedule can be customized via the configuration menu (auto, manual, custom, alternate).
 
 Key Features
-Label Conditioning: Full support for class labels (up to 6000 classes) via embedding and scale-shift modulation in every block.
+Label Conditioning: Full support for class labels (10 classes for STL-10) via embedding and scale-shift modulation in every block.
 
 Percentile Rescaling: Adaptive normalization that rescales activations based on running percentiles, improving stability.
 
@@ -222,15 +222,15 @@ Logs are written to enhanced_label_sb/logs/ and also printed to console.
 Model Architecture
 LabelConditionedVAE:
 
-Encoder: 3x64x64 -> 32x64x64 -> 64x32x32 -> 128x16x16 -> 256x8x8 -> mu/logvar (4x8x8)
+Encoder: 3x96x96 -> 64x96x96 -> 128x48x48 -> 256x24x24 -> 512x12x12 -> mu/logvar (4x12x12)
 
-Decoder: 4x8x8 -> 256x8x8 -> 128x16x16 -> 64x32x32 -> 32x64x64 -> 3x64x64
+Decoder: 4x12x12 -> 512x12x12 -> 256x24x24 -> 128x48x48 -> 64x96x96 -> 3x96x96
 
 Label conditioning via embedding + scale-shift in each block.
 
 LabelConditionedDrift:
 
-Takes latent z (4x8x8), time t, label y.
+Takes latent z (4x12x12), time t, label y.
 
 Time and label embeddings combined, processed through U-Net-like architecture with spectral normalization.
 
