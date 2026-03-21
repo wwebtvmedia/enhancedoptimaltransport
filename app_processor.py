@@ -24,15 +24,28 @@ class TrainingProcessor:
 
     def initialize_hardware(self) -> str:
         """Determines best available hardware and updates context."""
+        import torch
+        
         if torch.cuda.is_available():
             self.ctx.config.DEVICE = torch.device("cuda")
             info = f"🎮 CUDA: {torch.cuda.get_device_name(0)}"
+        elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+            self.ctx.config.DEVICE = torch.device("xpu")
+            info = f"🔵 Intel Arc: {torch.xpu.get_device_name(0)}"
         elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             self.ctx.config.DEVICE = torch.device("mps")
             info = "🍎 Apple Silicon (MPS)"
         else:
-            self.ctx.config.DEVICE = torch.device("cpu")
-            info = "💻 CPU (Slow)"
+            try:
+                import torch_directml
+                if torch_directml.is_available():
+                    self.ctx.config.DEVICE = torch_directml.device()
+                    info = "🎮 DirectML (AMD/Intel)"
+                else:
+                    raise ImportError
+            except ImportError:
+                self.ctx.config.DEVICE = torch.device("cpu")
+                info = "💻 CPU (Slow)"
         
         self.ctx.device_info = info
         return info

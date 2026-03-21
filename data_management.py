@@ -356,7 +356,7 @@ def get_dataloader_config() -> Dict:
             'num_workers': 0,
             'pin_memory': False,
         })
-    elif config.DEVICE.type == 'directml':
+    elif config.DEVICE.type in ['xpu', 'directml', 'privateuseone']:
         config_dict.update({
             'num_workers': 2,
             'pin_memory': True,

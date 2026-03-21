@@ -344,46 +344,71 @@ class SchrödingerBridgeGUI:
         canvas.create_oval(2, 2, 14, 14, fill=color, outline=Colors.BORDER, width=1)
 
     def initialize_device(self):
-        """Initialize device and update config"""
+        """Initialize device, detect Intel Arc (XPU) or DirectML, and update config"""
         try:
             import torch
             
-            # Device detection
+            # 1. Device detection logic
             if torch.cuda.is_available():
                 config.DEVICE = torch.device("cuda")
                 device_name = torch.cuda.get_device_name(0)
-                self.device_var.set(f"🎮 CUDA: {device_name[:30]}...")
+                self.device_var.set(f"🎮 CUDA: {device_name[:25]}...")
                 self.draw_indicator(self.indicator_gpu, Colors.SUCCESS)
+                config.AMP_AVAILABLE = True # CUDA supports AMP
+                
+            # NEW: Intel Arc support via Intel Extension for PyTorch (IPEX)
+            elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+                config.DEVICE = torch.device("xpu")
+                device_name = torch.xpu.get_device_name(0)
+                self.device_var.set(f"🔵 Intel Arc: {device_name[:25]}...")
+                self.draw_indicator(self.indicator_gpu, Colors.SUCCESS)
+                config.AMP_AVAILABLE = True # IPEX supports AMP
+                
             elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                 config.DEVICE = torch.device("mps")
                 self.device_var.set("🍎 Apple Silicon (MPS)")
                 self.draw_indicator(self.indicator_gpu, Colors.SUCCESS)
+                config.AMP_AVAILABLE = False
+                
             else:
-                config.DEVICE = torch.device("cpu")
-                self.device_var.set("💻 CPU (No GPU)")
-                self.draw_indicator(self.indicator_gpu, Colors.WARNING)
+                # NEW: DirectML support for AMD/Intel/Arc on Windows
+                try:
+                    import torch_directml
+                    if torch_directml.is_available():
+                        config.DEVICE = torch_directml.device()
+                        self.device_var.set("🎮 DirectML (AMD/Intel)")
+                        self.draw_indicator(self.indicator_gpu, Colors.SUCCESS)
+                        config.AMP_AVAILABLE = False
+                    else:
+                        raise ImportError
+                except ImportError:
+                    # Fallback to CPU
+                    config.DEVICE = torch.device("cpu")
+                    self.device_var.set("💻 CPU (No GPU Acceleration)")
+                    self.draw_indicator(self.indicator_gpu, Colors.WARNING)
+                    config.AMP_AVAILABLE = False
             
-            # Configure device-specific settings
-            if config.DEVICE.type == 'cpu':
-                config.BATCH_SIZE = 16
-                config.LR = 1e-4
-            elif config.DEVICE.type == 'mps':
-                config.BATCH_SIZE = 12
-                config.LR = 1.5e-4
-            elif config.DEVICE.type == 'privateuseone': # DirectML / AMD
-                config.BATCH_SIZE = 32
-                config.LR = 2e-4
-            else:  # CUDA
-                config.BATCH_SIZE = 32
-                config.LR = 2e-4
+            # 2. Configure device-specific hyperparameters
+            device_configs = {
+                'cpu':  {'batch': 16, 'lr': 1e-4},
+                'mps':  {'batch': 12, 'lr': 1.5e-4},
+                'xpu':  {'batch': 32, 'lr': 2e-4}, # Intel Arc
+                'privateuseone': {'batch': 32, 'lr': 2e-4}, # DirectML
+                'cuda': {'batch': 32, 'lr': 2e-4}
+            }
+            
+            # Fallback to default (CUDA-like) if device type not found
+            settings = device_configs.get(config.DEVICE.type, device_configs['cuda'])
+            config.BATCH_SIZE = settings['batch']
+            config.LR = settings['lr']
             
             config.DTYPE = torch.float32
-            config.logger.info(f"Device initialized: {config.DEVICE}")
+            config.logger.info(f"Hardware Initialized: {config.DEVICE} | AMP: {config.AMP_AVAILABLE}")
             
         except Exception as e:
             self.device_var.set("⚠️ Device init failed")
             self.draw_indicator(self.indicator_gpu, Colors.ERROR)
-            config.logger.error(f"Device initialization failed: {e}")
+            config.logger.error(f"Hardware initialization failed: {e}")
 
     # ============================================================
     # Training Data Tab - View Actual Training Images
