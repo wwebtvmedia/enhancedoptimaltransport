@@ -69,20 +69,27 @@ print(torch.__version__)
 print(torch.cuda.is_available())      # For NVIDIA
 print(torch.backends.mps.is_available())  # For Apple Silicon
 Launching the Program
-Once dependencies are installed and the virtual environment is active, simply run:
+The project uses a unified entry point with support for Desktop, Mobile/Web, and Terminal modes.
 
-bash
-python main.py
-You will be presented with an interactive menu. Choose the desired option (e.g., 1 for training, 5 for inference). Follow the prompts to configure epochs, labels, etc.
+1. **🖥️ Desktop Mode (Tkinter GUI):**
+   A professional Google Material Design interface for local training and analysis.
+   ```bash
+   python main.py --gui
+   ```
 
-Example: Quick training test
+2. **📱 Mobile/Web Mode (Streamlit):**
+   A responsive dashboard for monitoring training from your phone or browser.
+   ```bash
+   python main.py --streamlit
+   ```
 
-text
-python main.py
-> Enter choice (1-9): 2
-This will run a 5-epoch test to verify everything works.
+3. **🚀 Terminal Mode (Headless):**
+   Standard terminal output for server-side training (e.g., SSH, Colab).
+   ```bash
+   python main.py
+   ```
 
-All output (checkpoints, logs, samples) will be saved in the enhanced_label_sb/ directory.
+All output (checkpoints, logs, samples) will be saved in the `enhanced_label_sb/` directory.
 
 Mathematical Foundations
 1. Schrödinger Bridge Problem
@@ -172,19 +179,16 @@ Phase 2 (epochs 50-199): Train drift network, fine-tune encoder (decoder frozen)
 The schedule can be customized via the configuration menu (auto, manual, custom, alternate).
 
 Key Features
-Label Conditioning: Full support for class labels (10 classes for STL-10) via embedding and scale-shift modulation in every block.
+- **MCP Architecture:** Strict separation between the processing engine and display interfaces for maximum stability and cross-platform flexibility.
+- **Multi-Platform Monitoring:** Choose between a professional Google Material Design Desktop app (Tkinter) or a mobile-responsive Web dashboard (Streamlit).
+- **Label Conditioning:** Advanced label conditioning via Attention-augmented Residual blocks and scale-shift modulation.
+- **Live Visualization:** Real-time plotting of Loss curves, SNR trends, and Latent Channel health with built-in log parsing.
+- **Dataset Inspector:** Built-in tools to sample and visualize actual training data batches to compare learning progress.
+- **Hot-Swap Weights:** Ability to adjust Loss weights (KL, Diversity, etc.) in real-time during training without stopping the GPU.
+- **Composite Score:** Multi-metric score for model selection (SNR, KL, diversity, drift error) – best overall model saved automatically.
+- **Ornstein-Uhlenbeck Bridge:** theoretically grounded bridge sampling (mvOU-SBP) with exact variance computations.
+- **Multi-device Support:** Native support for CPU, CUDA (NVIDIA), MPS (Apple Silicon), and DirectML (AMD).
 
-Percentile Rescaling: Adaptive normalization that rescales activations based on running percentiles, improving stability.
-
-KPI Tracking: Real-time monitoring of key metrics (loss, SNR, latent statistics) with convergence detection and early stopping.
-
-Snapshot Ensemble: Automatic saving of model snapshots every N epochs; can revert to last good snapshot on NaN/inf.
-
-Composite Score: Multi-metric score for model selection (SNR, KL, diversity, drift error) – best overall model saved separately.
-
-Ornstein-Uhlenbeck Bridge: Optional exact OU bridge sampling for theoretically grounded training (mvOU-SBP).
-
-Multi-device Support: Runs on CPU, CUDA (NVIDIA), MPS (Apple Silicon), DirectML (AMD).
 
 Usage
 After launching main.py, you will see an interactive menu. Options include:
