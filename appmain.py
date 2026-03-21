@@ -1060,7 +1060,13 @@ class SchrödingerBridgeGUI:
                                  command=self.load_log_file,
                                  bg=Colors.BG_LIGHT, fg=Colors.FG,
                                  relief="flat", padx=15, pady=5, cursor="hand2")
-        self.load_btn.pack(side='left')
+        self.load_btn.pack(side='left', padx=5)
+
+        self.latest_btn = tk.Button(control_bar, text="🔄 Load Latest", 
+                                   command=self.load_latest_log,
+                                   bg=Colors.ACCENT, fg="#ffffff",
+                                   relief="flat", padx=15, pady=5, cursor="hand2")
+        self.latest_btn.pack(side='left', padx=5)
 
         self.chart_notebook = ttk.Notebook(self.viz_frame)
         self.chart_notebook.pack(fill='both', expand=True)
@@ -1411,22 +1417,34 @@ class SchrödingerBridgeGUI:
     # ============================================================
     # File operations
     # ============================================================
+    def load_latest_log(self):
+        """Automatically find and load the latest log file"""
+        log_dir = config.DIRS["logs"]
+        log_files = list(log_dir.glob("train_*.log"))
+        if not log_files:
+            messagebox.showinfo("No Logs", "No log files found in enhanced_label_sb/logs")
+            return
+        
+        latest_log = max(log_files, key=lambda p: p.stat().st_mtime)
+        self.perform_load_log(str(latest_log))
+
     def load_log_file(self):
-        """Load and parse a log file"""
+        """Open file dialog to load a log file"""
         filename = filedialog.askopenfilename(
             filetypes=[("Log files", "*.log"), ("All files", "*.*")],
             title="Select training log file"
         )
-        
-        if not filename:
-            return
+        if filename:
+            self.perform_load_log(filename)
 
+    def perform_load_log(self, filename):
+        """Parse and load the specified log file"""
         self.status_var.set(f"📂 Loading {Path(filename).name}...")
         self.metrics.clear()
 
-        # Parse log file
+        # Improved Regex for multi-word loss names (e.g., 'Diversity loss')
         epoch_pattern = re.compile(r'Epoch (\d+)/(\d+) complete:')
-        loss_pattern = re.compile(r'  (\w+ loss): ([\d\.eE+-]+)')
+        loss_pattern = re.compile(r'  ([\w\s]+ loss): ([\d\.eE+-]+)')
         snr_pattern = re.compile(r'  SNR: ([\d\.]+)dB')
         latent_std_pattern = re.compile(r'  Latent std: ([\d\.]+)')
 
@@ -1438,14 +1456,15 @@ class SchrödingerBridgeGUI:
             for line in lines:
                 m = epoch_pattern.search(line)
                 if m:
-                    current_epoch = int(m.group(1))
+                    current_epoch = int(m.group(1)) - 1 # Zero-indexed for consistency
                     self.metrics[current_epoch] = {}
                     continue
 
                 if current_epoch is not None:
                     m = loss_pattern.search(line)
                     if m:
-                        key = m.group(1).replace(' ', '_')
+                        # Clean key name: 'Total loss' -> 'total'
+                        key = m.group(1).lower().replace(' loss', '').strip()
                         val = float(m.group(2))
                         self.metrics[current_epoch][key] = val
                     
