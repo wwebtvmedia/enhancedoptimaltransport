@@ -50,10 +50,10 @@ GRAD_CLIP = 1.0
 # ============================================================================
 # LOSS WEIGHTS
 # ============================================================================
-KL_WEIGHT = 0.0001       # Was 0.00001 — biggest single fix
+KL_WEIGHT = 0.00005      # Lowered to reduce posterior collapse
 RECON_WEIGHT = 2.5
 DRIFT_WEIGHT = 0.5
-DIVERSITY_WEIGHT = 0.3
+DIVERSITY_WEIGHT = 1.5    # Increased from 0.3 to fix channel collapse
 CONSISTENCY_WEIGHT = 0.5
 REVERT_THRESHOLD = 2.5
 SIM_LOST_FACTOR = 1.0
