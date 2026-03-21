@@ -174,9 +174,9 @@ dz_t = f(z_t, t, y)\,dt + g(t)\,dw_t,
 <p>We learn \(f\) via a neural network (the drift network) and integrate the ODE from \(t=0\) to \(t=1\) to transform noise into a latent code that decodes to an image.</p>
 
 <h3 id="latent">1.2 Latent Space Representation</h3>
-<p>Images \(\mathbf{x} \in \mathbb{R}^{3\times 96\times 96}\) are mapped to a latent space \(\mathbf{z} \in \mathbb{R}^{4\times 12\times 12}\) using a <strong>conditional VAE</strong>:</p>
+<p>Images \(\mathbf{x} \in \mathbb{R}^{3\times S\times S}\) (where \(S = \texttt{IMG\_SIZE}\)) are mapped to a spatial latent space \(\mathbf{z} \in \mathbb{R}^{C\times \frac{S}{8}\times \frac{S}{8}}\) (where \(C = \texttt{LATENT\_CHANNELS}\)) using a <strong>conditional VAE</strong>:</p>
 <ul>
-    <li><strong>Encoder</strong> \(q_\phi(\mathbf{z}|\mathbf{x},y)\) outputs mean \(\boldsymbol{\mu}_\phi(\mathbf{x},y)\) and logâ€‘variance \(\log\boldsymbol{\sigma}^2_\phi(\mathbf{x},y)\), both of shape \((4,12,12)\).</li>
+    <li><strong>Encoder</strong> \(q_\phi(\mathbf{z}|\mathbf{x},y)\) outputs mean \(\boldsymbol{\mu}_\phi(\mathbf{x},y)\) and log‑variance \(\log\boldsymbol{\sigma}^2_\phi(\mathbf{x},y)\), both of shape \((C, \frac{S}{8}, \frac{S}{8})\).</li>
     <li><strong>Decoder</strong> \(p_\theta(\mathbf{x}|\mathbf{z},y)\) reconstructs the image.</li>
 </ul>
 <p>The VAE is trained with the <strong>Evidence Lower Bound (ELBO)</strong>:</p>
@@ -229,29 +229,28 @@ dz_t = -\theta z_t\,dt + \sigma\,dw_t,
     </thead>
     <tbody>
         <tr><td colspan="4"><strong>Encoder</strong></td></tr>
-        <tr><td>Input image</td><td>\((B,3,64,64)\)</td><td>–</td><td>–</td></tr>
-        <tr><td>Fourier features</td><td>\((B,3,64,64)\)</td><td>optional: <code>_get_fourier_features</code></td><td>\((B,4F,64,64)\)</td></tr>
-        <tr><td><code>enc_in</code></td><td>\((B,3+4F,64,64)\)</td><td>Conv2d(3+4F → 64, 3×3)</td><td>\((B,64,64,64)\)</td></tr>
-        <tr><td>Block 1</td><td>\((B,64,64,64)\)</td><td><code>ResidualBlock(64,128,stride=2)</code></td><td>\((B,128,32,32)\)</td></tr>
-        <tr><td>Block 2</td><td>\((B,128,32,32)\)</td><td><code>LabelConditionedBlock(128,128)</code></td><td>\((B,128,32,32)\)</td></tr>
-        <tr><td>Block 3</td><td>\((B,128,32,32)\)</td><td><code>ResidualBlock(128,256,stride=2)</code></td><td>\((B,256,16,16)\)</td></tr>
-        <tr><td>Block 4</td><td>\((B,256,16,16)\)</td><td><code>SelfAttention(256)</code></td><td>\((B,256,16,16)\)</td></tr>
-        <tr><td>Block 5</td><td>\((B,256,16,16)\)</td><td><code>LabelConditionedBlock(256,512)</code></td><td>\((B,512,16,16)\)</td></tr>
-        <tr><td>Block 6</td><td>\((B,512,16,16)\)</td><td>Conv2d(512,512,4×4,stride=2,padding=1)</td><td>\((B,512,8,8)\)</td></tr>
-        <tr><td><code>z_mean</code></td><td>\((B,512,8,8)\)</td><td>Conv2d(512 → 4,3×3)</td><td>\((B,4,8,8)\)</td></tr>
-        <tr><td><code>z_logvar</code></td><td>\((B,512,8,8)\)</td><td>Conv2d(512 → 4,3×3)</td><td>\((B,4,8,8)\)</td></tr>
+        <tr><td>Input image</td><td>\((B,3,S,S)\)</td><td>–</td><td>–</td></tr>
+        <tr><td>Fourier features</td><td>\((B,3,S,S)\)</td><td>optional: <code>_get_fourier_features</code></td><td>\((B,4F,S,S)\)</td></tr>
+        <tr><td><code>enc_in</code></td><td>\((B,3+4F,S,S)\)</td><td>Conv2d(3+4F → 64, 3×3)</td><td>\((B,64,S,S)\)</td></tr>
+        <tr><td>Block 1</td><td>\((B,64,S,S)\)</td><td><code>ResidualBlock(64,128,stride=2)</code></td><td>\((B,128,S/2,S/2)\)</td></tr>
+        <tr><td>Block 2</td><td>\((B,128,S/2,S/2)\)</td><td><code>LabelConditionedBlock(128,128)</code></td><td>\((B,128,S/2,S/2)\)</td></tr>
+        <tr><td>Block 3</td><td>\((B,128,S/2,S/2)\)</td><td><code>ResidualBlock(128,256,stride=2)</code></td><td>\((B,256,S/4,S/4)\)</td></tr>
+        <tr><td>Block 4</td><td>\((B,256,S/4,S/4)\)</td><td><code>SelfAttention(256)</code></td><td>\((B,256,S/4,S/4)\)</td></tr>
+        <tr><td>Block 5</td><td>\((B,256,S/4,S/4)\)</td><td><code>LabelConditionedBlock(256,512)</code></td><td>\((B,512,S/4,S/4)\)</td></tr>
+        <tr><td>Block 6</td><td>\((B,512,S/4,S/4)\)</td><td>Conv2d(512,512,4×4,stride=2,padding=1)</td><td>\((B,512,S/8,S/8)\)</td></tr>
+        <tr><td><code>z_mean</code></td><td>\((B,512,S/8,S/8)\)</td><td>Conv2d(512 → C, 3×3)</td><td>\((B,C,S/8,S/8)\)</td></tr>
+        <tr><td><code>z_logvar</code></td><td>\((B,512,S/8,S/8)\)</td><td>Conv2d(512 → C, 3×3)</td><td>\((B,C,S/8,S/8)\)</td></tr>
         <tr><td colspan="4"><strong>Decoder</strong></td></tr>
-        <tr><td><code>dec_in</code></td><td>\((B,4,8,8)\)</td><td>Conv2d(4 → 512,3×3)</td><td>\((B,512,8,8)\)</td></tr>
-        <tr><td>Up‑block 1</td><td>\((B,512,8,8)\)</td><td>Conv2d(512 → 1024,3×3) + PixelShuffle(2)</td><td>\((B,256,16,16)\)</td></tr>
-        <tr><td>Block</td><td>\((B,256,16,16)\)</td><td><code>LabelConditionedBlock(256,256)</code></td><td>\((B,256,16,16)\)</td></tr>
-        <tr><td>Up‑block 2</td><td>\((B,256,16,16)\)</td><td>Conv2d(256 → 512,3×3) + PixelShuffle(2)</td><td>\((B,128,32,32)\)</td></tr>
-        <tr><td>Block</td><td>\((B,128,32,32)\)</td><td><code>LabelConditionedBlock(128,128)</code></td><td>\((B,128,32,32)\)</td></tr>
-        <tr><td>Up‑block 3</td><td>\((B,128,32,32)\)</td><td>Conv2d(128 → 256,3×3) + PixelShuffle(2)</td><td>\((B,64,64,64)\)</td></tr>
-        <tr><td>Block</td><td>\((B,64,64,64)\)</td><td><code>LabelConditionedBlock(64,64)</code></td><td>\((B,64,64,64)\)</td></tr>
-        <tr><td><code>dec_out</code></td><td>\((B,64,64,64)\)</td><td>Conv2d(64 → 3,3×3) + tanh</td><td>\((B,3,64,64)\)</td></tr>
+        <tr><td><code>dec_in</code></td><td>\((B,C,S/8,S/8)\)</td><td>Conv2d(C → 512,3×3)</td><td>\((B,512,S/8,S/8)\)</td></tr>
+        <tr><td>Up‑block 1</td><td>\((B,512,S/8,S/8)\)</td><td>Upsample(2) + Conv2d(512 → 256, 3×3)</td><td>\((B,256,S/4,S/4)\)</td></tr>
+        <tr><td>Block</td><td>\((B,256,S/4,S/4)\)</td><td><code>LabelConditionedBlock(256,256)</code></td><td>\((B,256,S/4,S/4)\)</td></tr>
+        <tr><td>Up‑block 2</td><td>\((B,256,S/4,S/4)\)</td><td>Upsample(2) + Conv2d(256 → 128, 3×3)</td><td>\((B,128,S/2,S/2)\)</td></tr>
+        <tr><td>Block</td><td>\((B,128,S/2,S/2)\)</td><td><code>LabelConditionedBlock(128,128)</code></td><td>\((B,128,S/2,S/2)\)</td></tr>
+        <tr><td>Up‑block 3</td><td>\((B,128,S/2,S/2)\)</td><td>Upsample(2) + Conv2d(128 → 64, 3×3)</td><td>\((B,64,S,S)\)</td></tr>
+        <tr><td>Block</td><td>\((B,64,S,S)\)</td><td><code>LabelConditionedBlock(64,64)</code></td><td>\((B,64,S,S)\)</td></tr>
+        <tr><td><code>dec_out</code></td><td>\((B,64,S,S)\)</td><td>Conv2d(64 → 3,3×3) + tanh</td><td>\((B,3,S,S)\)</td></tr>
     </tbody>
 </table>
-<p><strong>Notes:</strong> \(F = \texttt{len(FOURIER\_FREQS)}\) (default 5 ⇒ 4F = 20 channels). <code>LabelConditionedBlock</code> injects the label embedding via scale‑shift modulation. <code>ResidualBlock</code> and <code>SelfAttention</code> are standard.</p>
 
 <h3 id="drift-arch">2.2 LabelConditionedDrift</h3>
 <table>
@@ -260,23 +259,23 @@ dz_t = -\theta z_t\,dt + \sigma\,dw_t,
     </thead>
     <tbody>
         <tr><td><strong>Inputs</strong></td><td colspan="3"></td></tr>
-        <tr><td>Latent \(z\)</td><td>\((B,4,8,8)\)</td><td>–</td><td>–</td></tr>
+        <tr><td>Latent \(z\)</td><td>\((B,C,S/8,S/8)\)</td><td>–</td><td>–</td></tr>
         <tr><td>Time \(t\)</td><td>\((B,1)\)</td><td>–</td><td>–</td></tr>
         <tr><td>Label \(y\)</td><td>\((B,)\)</td><td>–</td><td>–</td></tr>
         <tr><td><strong>Time MLP</strong></td><td>\((B,1)\)</td><td>Linear(1→128) → SiLU → Linear(128→128)</td><td>\((B,128)\)</td></tr>
         <tr><td><strong>Label embed</strong></td><td>\((B,)\)</td><td><code>nn.Embedding(NUM_CLASSES,128)</code></td><td>\((B,128)\)</td></tr>
         <tr><td><strong>Cond proj</strong></td><td>\((B,256)\)</td><td>Concat(t_emb,label_emb) → Linear(256→128) → SiLU → Linear(128→128)</td><td>\((B,128)\)</td></tr>
         <tr><td colspan="4"><strong>U‑Net</strong></td></tr>
-        <tr><td><code>head</code></td><td>\((B,4,8,8)\)</td><td>Conv2d(4→64,3×3) (spectral norm)</td><td>\((B,64,8,8)\)</td></tr>
-        <tr><td><code>down1</code></td><td>\((B,64,8,8)\)</td><td><code>LabelConditionedBlock(64→128)</code></td><td>\((B,128,8,8)\)</td></tr>
-        <tr><td><code>down2_conv</code></td><td>\((B,128,8,8)\)</td><td>Conv2d(128→256,4×4,stride=2) (spec norm)</td><td>\((B,256,4,4)\)</td></tr>
-        <tr><td><code>down2_block</code></td><td>\((B,256,4,4)\)</td><td><code>LabelConditionedBlock(256→256)</code></td><td>\((B,256,4,4)\)</td></tr>
-        <tr><td><code>mid</code></td><td>\((B,256,4,4)\)</td><td><code>LabelConditionedBlock(256→256)</code></td><td>\((B,256,4,4)\)</td></tr>
-        <tr><td><code>up2_conv</code></td><td>\((B,256,4,4)\)</td><td>ConvTranspose2d(256→128,4×4,stride=2)</td><td>\((B,128,8,8)\)</td></tr>
-        <tr><td><code>up2_block</code></td><td>\((B,128,8,8)\)</td><td><code>LabelConditionedBlock(128→128)</code></td><td>\((B,128,8,8)\)</td></tr>
-        <tr><td><code>up1</code></td><td>\((B,128,8,8)\)</td><td><code>LabelConditionedBlock(128→64)</code> + skip from <code>down1</code> (addition)</td><td>\((B,64,8,8)\)</td></tr>
-        <tr><td><code>tail</code></td><td>\((B,64,8,8)\)</td><td>Conv2d(64→4,3×3) (spec norm)</td><td>\((B,4,8,8)\)</td></tr>
-        <tr><td><strong>Output scaling</strong></td><td>\((B,4,8,8)\)</td><td><code>tanh</code> → multiply by <code>output_scale</code> and time‑dependent factor</td><td>\((B,4,8,8)\)</td></tr>
+        <tr><td><code>head</code></td><td>\((B,C,S/8,S/8)\)</td><td>Conv2d(C→64,3×3) (spectral norm)</td><td>\((B,64,S/8,S/8)\)</td></tr>
+        <tr><td><code>down1</code></td><td>\((B,64,S/8,S/8)\)</td><td><code>LabelConditionedBlock(64→128)</code></td><td>\((B,128,S/8,S/8)\)</td></tr>
+        <tr><td><code>down2_conv</code></td><td>\((B,128,S/8,S/8)\)</td><td>Conv2d(128→256,4×4,stride=2) (spec norm)</td><td>\((B,256,S/16,S/16)\)</td></tr>
+        <tr><td><code>down2_block</code></td><td>\((B,256,S/16,S/16)\)</td><td><code>LabelConditionedBlock(256→256)</code></td><td>\((B,256,S/16,S/16)\)</td></tr>
+        <tr><td><code>mid</code></td><td>\((B,256,S/16,S/16)\)</td><td><code>LabelConditionedBlock(256→256)</code></td><td>\((B,256,S/16,S/16)\)</td></tr>
+        <tr><td><code>up2_conv</code></td><td>\((B,256,S/16,S/16)\)</td><td>ConvTranspose2d(256→128,4×4,stride=2)</td><td>\((B,128,S/8,S/8)\)</td></tr>
+        <tr><td><code>up2_block</code></td><td>\((B,128,S/8,S/8)\)</td><td><code>LabelConditionedBlock(128→128)</code></td><td>\((B,128,S/8,S/8)\)</td></tr>
+        <tr><td><code>up1</code></td><td>\((B,128,S/8,S/8)\)</td><td><code>LabelConditionedBlock(128→64)</code> + skip from <code>down1</code> (addition)</td><td>\((B,64,S/8,S/8)\)</td></tr>
+        <tr><td><code>tail</code></td><td>\((B,64,S/8,S/8)\)</td><td>Conv2d(64→C,3×3) (spec norm)</td><td>\((B,C,S/8,S/8)\)</td></tr>
+        <tr><td><strong>Output scaling</strong></td><td>\((B,C,S/8,S/8)\)</td><td>multiply by <code>output_scale</code> and time‑adaptive factor</td><td>\((B,C,S/8,S/8)\)</td></tr>
     </tbody>
 </table>
 
@@ -405,11 +404,13 @@ z \leftarrow z + \frac{\eta}{2}\, s\, f_\psi(z,1,y) + \sqrt{\eta}\,\epsilon,\qqu
 
 <h2 id="features">6. Key Features</h2>
 <ul>
-    <li><strong>Label conditioning</strong> via embedding and scale‑shift modulation in every block.</li>
+    <li><strong>Flexible Data Loading:</strong> support for multiple datasets (STL-10, CIFAR-10) or custom local image folders with automatic label discovery.</li>
+    <li><strong>Configurable Resolutions:</strong> independent control over model input size (<code>IMG_SIZE</code>) and final generation size (<code>GEN_SIZE</code>).</li>
+    <li><strong>MCP Design Pattern:</strong> strict separation of concerns between logic (Processor), state (Context), and interface (Display).</li>
+    <li><strong>Label conditioning</strong> via Attention-augmented Residual blocks and scale‑shift modulation in every block.</li>
     <li><strong>Percentile rescaling</strong> – adaptive normalisation based on running percentiles, improving stability.</li>
     <li><strong>KPI tracking</strong> – real‑time monitoring of loss, SNR, latent statistics, with convergence detection and early stopping.</li>
     <li><strong>Snapshot ensemble</strong> – automatic saving of model snapshots every <code>SNAPSHOT_INTERVAL</code> epochs; emergency revert on NaN/Inf.</li>
-    <li><strong>Composite score</strong> – multi‑metric score for model selection (SNR, KL, diversity, drift error) – best overall model saved separately.</li>
     <li><strong>Ornstein‑Uhlenbeck bridge</strong> – exact OU bridge sampling for theoretically grounded training.</li>
     <li><strong>Multi‑device support</strong> – CUDA, MPS (Apple Silicon), DirectML, CPU.</li>
 </ul>
@@ -417,7 +418,7 @@ z \leftarrow z + \frac{\eta}{2}\, s\, f_\psi(z,1,y) + \sqrt{\eta}\,\epsilon,\qqu
 <hr>
 
 <h2 id="usage">7. Installation and Usage</h2>
-<p>See the original <code>README.md</code> for detailed installation steps (Python virtual environment, dependencies, etc.). The main entry point is <code>main.py</code> which provides an interactive menu for training, inference, and snapshot management.</p>
+<p>See the original <code>README.md</code> for detailed installation steps. The project uses a unified entry point <code>main.py</code> with support for Desktop GUI (<code>--gui</code>), Mobile/Web Dashboard (<code>--streamlit</code>), and headless Terminal modes.</p>
 
 <hr>
 
