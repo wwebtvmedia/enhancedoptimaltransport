@@ -27,6 +27,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 import logging
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 
 # ===== Third‑party imports =====
 try:
@@ -62,20 +63,21 @@ import models
 import inference
 
 # ============================================================
-# Modern Dark Theme Colors
+# Google Material Design Colors - Light Theme
 # ============================================================
 class Colors:
-    BG_DARK = "#1e1e2e"      # Main background
-    BG_MEDIUM = "#2d2d3f"     # Secondary background
-    BG_LIGHT = "#3d3d5a"      # Input fields
-    FG = "#ffffff"            # Foreground text
-    FG_SECONDARY = "#b4b4c0"  # Secondary text
-    ACCENT = "#89b4fa"        # Blue accent
-    ACCENT2 = "#cba6f7"       # Purple accent
-    SUCCESS = "#a6e3a1"       # Green
-    WARNING = "#f9e2af"       # Yellow
-    ERROR = "#f38ba8"         # Red
-    BORDER = "#45475a"        # Border color
+    BG_DARK = "#f8f9fa"      # Google Gray 50
+    BG_MEDIUM = "#ffffff"    # Pure White
+    BG_LIGHT = "#ffffff"     # White
+    FG = "#202124"           # Google Gray 900 (Text)
+    FG_SECONDARY = "#5f6368" # Google Gray 700 (Secondary Text)
+    ACCENT = "#1a73e8"       # Google Blue
+    ACCENT2 = "#a142f4"      # Google Purple
+    SUCCESS = "#1e8e3e"      # Google Green
+    WARNING = "#f9ab00"      # Google Yellow
+    ERROR = "#d93025"        # Google Red
+    BORDER = "#dadce0"       # Google Gray 300
+    CARD_SHADOW = "#e8eaed"  # Subtle shadow color
 
 # ============================================================
 # Custom logging handler
@@ -108,10 +110,10 @@ class ToolTip:
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
         label = tk.Label(tw, text=self.text, justify=tk.LEFT,
-                         background=Colors.BG_LIGHT, foreground=Colors.FG,
-                         relief=tk.SOLID, borderwidth=1,
-                         font=("Segoe UI", 9))
-        label.pack(padx=5, pady=5)
+                         background="#3c4043", foreground="#ffffff",
+                         relief=tk.SOLID, borderwidth=0,
+                         font=("Roboto", 9), padx=8, pady=4)
+        label.pack()
 
     def leave(self, event=None):
         if self.tip_window:
@@ -119,7 +121,7 @@ class ToolTip:
             self.tip_window = None
 
 # ============================================================
-# Modern Card Frame
+# Modern Card Frame - Google Style
 # ============================================================
 class CardFrame(ttk.Frame):
     def __init__(self, parent, title="", **kwargs):
@@ -127,14 +129,14 @@ class CardFrame(ttk.Frame):
         self.configure(style="Card.TFrame")
         
         if title:
-            title_label = ttk.Label(self, text=title, style="CardTitle.TLabel")
-            title_label.pack(anchor='w', padx=10, pady=(5, 0))
+            header = ttk.Frame(self, style="Card.TFrame")
+            header.pack(fill='x', padx=16, pady=(16, 8))
             
-            separator = ttk.Separator(self, orient='horizontal')
-            separator.pack(fill='x', padx=10, pady=5)
-        
+            title_label = ttk.Label(header, text=title, style="CardTitle.TLabel")
+            title_label.pack(side='left')
+            
         self.content = ttk.Frame(self, style="Card.TFrame")
-        self.content.pack(fill='both', expand=True, padx=10, pady=10)
+        self.content.pack(fill='both', expand=True, padx=16, pady=(0, 16))
 
 # ============================================================
 # Main GUI Application
@@ -144,6 +146,7 @@ class SchrödingerBridgeGUI:
         self.root = root
         self.root.title("Schrödinger Bridge Trainer v2.0")
         self.root.geometry("1450x950")
+        self.root.configure(bg=Colors.BG_DARK)
         
         # Set up modern styling
         self.setup_styling()
@@ -156,7 +159,9 @@ class SchrödingerBridgeGUI:
         self.current_epoch = 0
         self.trainer_instance = None
         self.current_preview_image = None # Added for Visual Gallery
-
+        self.training_images_cache = None  # Cache for training data
+        self.training_labels_cache = None
+        
         # Create UI
         self.create_header()
         self.create_main_content()
@@ -167,68 +172,81 @@ class SchrödingerBridgeGUI:
         
         # Start queue processing
         self.process_log_queue()
+        
+        # Load training data preview
+        self.load_training_data_preview()
 
     def setup_styling(self):
-        """Configure modern ttk styles"""
+        """Configure Google Material Design ttk styles"""
         style = ttk.Style()
         
         # Configure colors
         style.theme_use('clam')
+        
+        # Use Roboto if available, else Segoe UI
+        main_font = ("Roboto", 10) if "Roboto" in tkfont.families() else ("Segoe UI", 10)
+        header_font = ("Roboto", 18, "bold") if "Roboto" in tkfont.families() else ("Segoe UI", 18, "bold")
+        tab_font = ("Roboto", 10, "bold") if "Roboto" in tkfont.families() else ("Segoe UI", 10, "bold")
         
         # Configure colors for all elements
         style.configure(".", 
                        background=Colors.BG_DARK,
                        foreground=Colors.FG,
                        fieldbackground=Colors.BG_LIGHT,
-                       troughcolor=Colors.BG_MEDIUM,
+                       troughcolor=Colors.BG_DARK,
                        selectbackground=Colors.ACCENT,
-                       selectforeground=Colors.BG_DARK,
-                       font=("Segoe UI", 10))
+                       selectforeground="#ffffff",
+                       font=main_font)
         
-        # Notebook styling
+        # Notebook styling (Google style tabs)
         style.configure("TNotebook", background=Colors.BG_DARK, borderwidth=0)
         style.configure("TNotebook.Tab", 
-                       background=Colors.BG_MEDIUM,
-                       foreground=Colors.FG,
-                       padding=[15, 5],
-                       font=("Segoe UI", 10, "bold"))
+                       background=Colors.BG_DARK,
+                       foreground=Colors.FG_SECONDARY,
+                       padding=[24, 12],
+                       font=tab_font,
+                       borderwidth=0)
         style.map("TNotebook.Tab",
-                 background=[("selected", Colors.ACCENT)],
-                 foreground=[("selected", Colors.BG_DARK)])
+                 background=[("selected", Colors.BG_DARK)],
+                 foreground=[("selected", Colors.ACCENT)],
+                 focuscolor=[("selected", Colors.BG_DARK)])
         
-        # Button styling
+        # Button styling (Material Contained Button)
         style.configure("Accent.TButton",
                        background=Colors.ACCENT,
-                       foreground=Colors.BG_DARK,
+                       foreground="#ffffff",
                        borderwidth=0,
                        focuscolor="none",
-                       font=("Segoe UI", 10, "bold"))
+                       font=tab_font)
         style.map("Accent.TButton",
-                 background=[("active", "#9bb9f0"), ("pressed", "#6d91d0")])
+                 background=[("active", "#1967d2"), ("pressed", "#185abc")])
         
+        # Outlined Button style
         style.configure("TButton",
-                       background=Colors.BG_LIGHT,
-                       foreground=Colors.FG,
+                       background=Colors.BG_MEDIUM,
+                       foreground=Colors.ACCENT,
                        borderwidth=1,
+                       bordercolor=Colors.BORDER,
                        focuscolor="none",
-                       font=("Segoe UI", 10))
+                       font=tab_font)
         style.map("TButton",
-                 background=[("active", Colors.BG_MEDIUM)],
-                 relief=[("pressed", "sunken")])
+                 background=[("active", "#f1f3f4")],
+                 bordercolor=[("active", Colors.ACCENT)])
         
         # Label styling
         style.configure("TLabel", 
                        background=Colors.BG_DARK,
                        foreground=Colors.FG,
-                       font=("Segoe UI", 10))
+                       font=main_font)
         
         style.configure("Header.TLabel",
-                       font=("Segoe UI", 16, "bold"),
-                       foreground=Colors.ACCENT)
+                       font=header_font,
+                       foreground=Colors.ACCENT,
+                       background=Colors.BG_DARK)
         
         style.configure("CardTitle.TLabel",
-                       font=("Segoe UI", 12, "bold"),
-                       foreground=Colors.ACCENT2,
+                       font=("Roboto", 12, "bold") if "Roboto" in tkfont.families() else ("Segoe UI", 12, "bold"),
+                       foreground=Colors.FG,
                        background=Colors.BG_MEDIUM)
         
         # Entry styling
@@ -240,58 +258,39 @@ class SchrödingerBridgeGUI:
                        relief="solid")
         
         style.map("TEntry",
-                 fieldbackground=[("focus", Colors.BG_MEDIUM)],
                  bordercolor=[("focus", Colors.ACCENT)])
-        
-        # Combobox styling
-        style.configure("TCombobox",
-                       fieldbackground=Colors.BG_LIGHT,
-                       foreground=Colors.FG,
-                       arrowcolor=Colors.FG,
-                       borderwidth=1)
-        style.map("TCombobox",
-                 fieldbackground=[("focus", Colors.BG_MEDIUM)],
-                 bordercolor=[("focus", Colors.ACCENT)])
-        
-        # Checkbutton styling
-        style.configure("TCheckbutton",
-                       background=Colors.BG_DARK,
-                       foreground=Colors.FG,
-                       font=("Segoe UI", 10))
-        style.map("TCheckbutton",
-                 background=[("active", Colors.BG_DARK)],
-                 foreground=[("active", Colors.ACCENT)])
         
         # Progress bar styling
         style.configure("Horizontal.TProgressbar",
                        background=Colors.ACCENT,
-                       troughcolor=Colors.BG_MEDIUM,
+                       troughcolor=Colors.BORDER,
                        borderwidth=0)
         
         # Scrollbar styling
         style.configure("Vertical.TScrollbar",
-                       background=Colors.BG_LIGHT,
+                       background=Colors.BORDER,
                        troughcolor=Colors.BG_DARK,
-                       arrowcolor=Colors.FG,
+                       width=12,
                        borderwidth=0)
         
-        # Separator
-        style.configure("TSeparator",
-                       background=Colors.BORDER)
-        
-        # Frame styling
+        # Frame styling (Card with subtle border instead of dark bg)
         style.configure("Card.TFrame",
                        background=Colors.BG_MEDIUM,
-                       relief="solid",
+                       relief="flat",
                        borderwidth=1)
+        # Use a canvas for actual cards to simulate shadows if needed, 
+        # but for now, we'll use themed frames with borders.
+        
+        # Separator
+        style.configure("TSeparator", background=Colors.BORDER)
 
     def create_header(self):
-        """Create modern header with title and description"""
-        header_frame = ttk.Frame(self.root)
-        header_frame.pack(fill='x', padx=20, pady=(20, 10))
+        """Create modern Google-style header"""
+        header_frame = ttk.Frame(self.root, style="TFrame")
+        header_frame.pack(fill='x', padx=32, pady=(32, 16))
         
         # Title
-        title_label = ttk.Label(header_frame, text="🧠 Schrödinger Bridge Trainer", 
+        title_label = ttk.Label(header_frame, text="Schrödinger Bridge Trainer", 
                                 style="Header.TLabel")
         title_label.pack(side='left')
         
@@ -301,12 +300,8 @@ class SchrödingerBridgeGUI:
         
         self.device_var = tk.StringVar(value="Initializing...")
         device_label = ttk.Label(info_frame, textvariable=self.device_var, 
-                                foreground=Colors.FG_SECONDARY)
+                                foreground=Colors.FG_SECONDARY, background=Colors.BG_DARK)
         device_label.pack()
-        
-        # Separator
-        separator = ttk.Separator(self.root, orient='horizontal')
-        separator.pack(fill='x', padx=20, pady=10)
 
     def create_main_content(self):
         """Create main notebook and content"""
@@ -316,7 +311,8 @@ class SchrödingerBridgeGUI:
         # Create tabs
         self.create_config_tab()
         self.create_training_tab()
-        self.create_gallery_tab() # Added Enhancement
+        self.create_training_data_tab()
+        self.create_gallery_tab()
         self.create_visualization_tab()
 
     def create_status_bar(self):
@@ -388,6 +384,357 @@ class SchrödingerBridgeGUI:
             self.device_var.set("⚠️ Device init failed")
             self.draw_indicator(self.indicator_gpu, Colors.ERROR)
             config.logger.error(f"Device initialization failed: {e}")
+
+    # ============================================================
+    # Training Data Tab - View Actual Training Images
+    # ============================================================
+    def create_training_data_tab(self):
+        """Create tab to view actual training images from the dataset"""
+        self.training_data_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.training_data_frame, text="📚 Training Data")
+        
+        # Create canvas with scrollbar
+        canvas = tk.Canvas(self.training_data_frame, bg=Colors.BG_DARK, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.training_data_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        scrollbar.pack(side="right", fill="y")
+        
+        # Control panel
+        control_frame = CardFrame(scrollable_frame, title="Training Data Viewer")
+        control_frame.pack(fill='x', padx=10, pady=5)
+        
+        # Controls
+        btn_frame = ttk.Frame(control_frame.content)
+        btn_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(btn_frame, text="Images per row:").pack(side='left', padx=5)
+        self.nrow_var = tk.IntVar(value=8)
+        nrow_spin = ttk.Spinbox(btn_frame, from_=2, to=16, textvariable=self.nrow_var, width=5)
+        nrow_spin.pack(side='left', padx=5)
+        
+        ttk.Label(btn_frame, text="Max images:").pack(side='left', padx=5)
+        self.max_images_var = tk.IntVar(value=64)
+        max_spin = ttk.Spinbox(btn_frame, from_=8, to=200, textvariable=self.max_images_var, width=8)
+        max_spin.pack(side='left', padx=5)
+        
+        refresh_btn = tk.Button(btn_frame, text="🔄 Refresh", 
+                               command=self.load_training_data_preview,
+                               bg=Colors.ACCENT, fg=Colors.BG_DARK,
+                               font=("Segoe UI", 10, "bold"),
+                               relief="flat", padx=15, pady=5, cursor="hand2")
+        refresh_btn.pack(side='left', padx=10)
+        
+        compare_btn = tk.Button(btn_frame, text="🖼️ Compare with Latest Generation", 
+                               command=self.compare_with_generation,
+                               bg=Colors.ACCENT2, fg=Colors.BG_DARK,
+                               font=("Segoe UI", 10, "bold"),
+                               relief="flat", padx=15, pady=5, cursor="hand2")
+        compare_btn.pack(side='left', padx=10)
+        
+        # Info label
+        self.data_info_var = tk.StringVar(value="Loading training data...")
+        info_label = ttk.Label(btn_frame, textvariable=self.data_info_var, foreground=Colors.FG_SECONDARY)
+        info_label.pack(side='right', padx=10)
+        
+        # Image display area
+        self.training_display_frame = ttk.Frame(scrollable_frame)
+        self.training_display_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        # Label legend
+        legend_frame = CardFrame(scrollable_frame, title="Class Legend")
+        legend_frame.pack(fill='x', padx=10, pady=5)
+        
+        class_names = ["airplane", "automobile", "bird", "cat", "deer", 
+                      "dog", "frog", "horse", "ship", "truck"]
+        # Professional categorical palette
+        colors = ['#E11D48', '#D97706', '#059669', '#2563EB', '#7C3AED',
+                  '#DB2777', '#0891B2', '#4B5563', '#92400E', '#1E40AF']
+        
+        legend_grid = ttk.Frame(legend_frame.content)
+        legend_grid.pack()
+        
+        for i, (name, color) in enumerate(zip(class_names, colors)):
+            label_frame = ttk.Frame(legend_grid)
+            label_frame.grid(row=i//5, column=i%5, padx=10, pady=2, sticky='w')
+            
+            color_box = tk.Canvas(label_frame, width=12, height=12, bg=color, highlightthickness=0)
+            color_box.pack(side='left')
+            
+            ttk.Label(label_frame, text=f"{i}: {name}").pack(side='left', padx=5)
+
+    def load_training_data_preview(self):
+        """Load and display actual training images from the dataset"""
+        try:
+            import torch
+            import torchvision.utils as vutils
+            
+            # Load data loader
+            loader = dm.load_data()
+            
+            # Get a batch of images
+            max_images = self.max_images_var.get()
+            nrow = self.nrow_var.get()
+            
+            all_images = []
+            all_labels = []
+            
+            # Collect images from multiple batches if needed
+            for batch_idx, batch in enumerate(loader):
+                if len(all_images) >= max_images:
+                    break
+                
+                if isinstance(batch, dict):
+                    images = batch['image']
+                    labels = batch['label']
+                else:
+                    images, labels = batch
+                
+                # Convert to display range [0, 1]
+                images_display = (images + 1) / 2
+                images_display = torch.clamp(images_display, 0, 1)
+                
+                remaining = max_images - len(all_images)
+                all_images.append(images_display[:remaining])
+                all_labels.extend(labels[:remaining].tolist())
+            
+            if not all_images:
+                self.data_info_var.set("No images loaded!")
+                return
+            
+            # Concatenate images
+            all_images_tensor = torch.cat(all_images, dim=0)[:max_images]
+            all_labels_list = all_labels[:max_images]
+            
+            # Cache for later use
+            self.training_images_cache = all_images_tensor
+            self.training_labels_cache = all_labels_list
+            
+            # Create grid
+            grid = vutils.make_grid(all_images_tensor, nrow=nrow, padding=2, normalize=False)
+            
+            # Convert to PIL Image
+            grid_np = grid.permute(1, 2, 0).cpu().numpy()
+            grid_np = (grid_np * 255).astype(np.uint8)
+            pil_image = Image.fromarray(grid_np)
+            
+            # Resize for display (max width 1200)
+            max_width = 1200
+            if pil_image.width > max_width:
+                ratio = max_width / pil_image.width
+                new_size = (max_width, int(pil_image.height * ratio))
+                pil_image = pil_image.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # Convert to PhotoImage
+            self.training_photo = ImageTk.PhotoImage(pil_image)
+            
+            # Clear previous display
+            for widget in self.training_display_frame.winfo_children():
+                widget.destroy()
+            
+            # Create scrollable canvas for image
+            image_canvas = tk.Canvas(self.training_display_frame, bg=Colors.BG_DARK, highlightthickness=0)
+            image_canvas.pack(fill='both', expand=True)
+            
+            image_canvas.create_image(0, 0, anchor='nw', image=self.training_photo)
+            image_canvas.configure(scrollregion=image_canvas.bbox("all"))
+            
+            # Add scrollbar to image canvas
+            v_scrollbar = ttk.Scrollbar(self.training_display_frame, orient="vertical", command=image_canvas.yview)
+            h_scrollbar = ttk.Scrollbar(self.training_display_frame, orient="horizontal", command=image_canvas.xview)
+            image_canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+            
+            v_scrollbar.pack(side='right', fill='y')
+            h_scrollbar.pack(side='bottom', fill='x')
+            
+            # Add click-to-view functionality
+            def on_click(event):
+                x, y = event.x, event.y
+                # Calculate which image was clicked
+                img_width = pil_image.width
+                img_height = pil_image.height
+                img_per_row = nrow
+                img_size = img_width // img_per_row
+                
+                col = x // img_size
+                row = y // img_size
+                idx = int(row * img_per_row + col)
+                
+                if 0 <= idx < len(all_labels_list):
+                    class_names = ["airplane", "automobile", "bird", "cat", "deer", 
+                                  "dog", "frog", "horse", "ship", "truck"]
+                    label = all_labels_list[idx]
+                    
+                    # Create popup window to show individual image
+                    popup = tk.Toplevel(self.root)
+                    popup.title(f"Training Image #{idx} - Class {label}: {class_names[label]}")
+                    popup.geometry("300x300")
+                    popup.configure(bg=Colors.BG_DARK)
+                    
+                    # Get individual image
+                    single_img = all_images_tensor[idx]
+                    single_img_np = single_img.permute(1, 2, 0).cpu().numpy()
+                    single_img_np = (single_img_np * 255).astype(np.uint8)
+                    single_pil = Image.fromarray(single_img_np)
+                    single_pil.thumbnail((256, 256), Image.Resampling.LANCZOS)
+                    
+                    photo = ImageTk.PhotoImage(single_pil)
+                    img_label = tk.Label(popup, image=photo, bg=Colors.BG_DARK)
+                    img_label.image = photo
+                    img_label.pack(pady=20)
+                    
+                    ttk.Label(popup, text=f"Class {label}: {class_names[label]}", 
+                             font=("Segoe UI", 12, "bold")).pack()
+                    ttk.Label(popup, text=f"Index: {idx}").pack()
+                    
+                    tk.Button(popup, text="Close", command=popup.destroy,
+                             bg=Colors.ACCENT, fg=Colors.BG_DARK,
+                             relief="flat", padx=20, pady=5).pack(pady=10)
+            
+            image_canvas.bind("<Button-1>", on_click)
+            
+            self.data_info_var.set(f"Loaded {len(all_labels_list)} training images")
+            config.logger.info(f"Training data preview loaded: {len(all_labels_list)} images")
+            
+        except Exception as e:
+            self.data_info_var.set(f"Error loading data: {str(e)[:50]}")
+            config.logger.error(f"Failed to load training data preview: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def compare_with_generation(self):
+        """Compare training images with the latest generated samples"""
+        # Find the latest generated sample
+        samples_dir = config.DIRS["samples"]
+        png_files = list(samples_dir.glob("gen_*.png"))
+        
+        if not png_files:
+            messagebox.showinfo("No Samples", "No generated samples found. Train the model first or generate samples.")
+            return
+        
+        latest_sample = max(png_files, key=lambda p: p.stat().st_mtime)
+        
+        if self.training_images_cache is None or len(self.training_images_cache) == 0:
+            messagebox.showinfo("No Training Data", "Please refresh the Training Data tab first.")
+            return
+        
+        # Create comparison window
+        compare_window = tk.Toplevel(self.root)
+        compare_window.title("Comparison: Training Data vs Generated Samples")
+        compare_window.geometry("1400x800")
+        compare_window.configure(bg=Colors.BG_DARK)
+        
+        # Create notebook for comparison views
+        compare_notebook = ttk.Notebook(compare_window)
+        compare_notebook.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Tab 1: Side by Side
+        side_by_side_frame = ttk.Frame(compare_notebook)
+        compare_notebook.add(side_by_side_frame, text="Side by Side")
+        
+        # Left panel - Training images
+        left_card = CardFrame(side_by_side_frame, title="Training Data (First 16 Images)")
+        left_card.pack(side='left', fill='both', expand=True, padx=5, pady=5)
+        
+        # Right panel - Generated images
+        right_card = CardFrame(side_by_side_frame, title=f"Generated Samples - {latest_sample.name}")
+        right_card.pack(side='right', fill='both', expand=True, padx=5, pady=5)
+        
+        # Display training images (first 16)
+        train_display = self.training_images_cache[:16]
+        nrow = 4
+        import torchvision.utils as vutils
+        train_grid = vutils.make_grid(train_display, nrow=nrow, padding=2, normalize=False)
+        train_grid_np = train_grid.permute(1, 2, 0).cpu().numpy()
+        train_grid_np = (train_grid_np * 255).astype(np.uint8)
+        train_pil = Image.fromarray(train_grid_np)
+        train_pil.thumbnail((500, 500), Image.Resampling.LANCZOS)
+        train_photo = ImageTk.PhotoImage(train_pil)
+        
+        train_label = ttk.Label(left_card.content, image=train_photo)
+        train_label.image = train_photo
+        train_label.pack(pady=10)
+        
+        # Display generated images
+        try:
+            gen_img = Image.open(latest_sample)
+            gen_img.thumbnail((500, 500), Image.Resampling.LANCZOS)
+            gen_photo = ImageTk.PhotoImage(gen_img)
+            gen_label = ttk.Label(right_card.content, image=gen_photo)
+            gen_label.image = gen_photo
+            gen_label.pack(pady=10)
+        except Exception as e:
+            ttk.Label(right_card.content, text=f"Error loading image: {e}").pack()
+        
+        # Tab 2: Training Data Labels
+        labels_frame = ttk.Frame(compare_notebook)
+        compare_notebook.add(labels_frame, text="Training Labels")
+        
+        labels_card = CardFrame(labels_frame, title="Training Images with Labels")
+        labels_card.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Create grid with labels
+        class_names = ["airplane", "automobile", "bird", "cat", "deer", 
+                      "dog", "frog", "horse", "ship", "truck"]
+        
+        # Show first 32 images with labels
+        nrow_labels = 8
+        for idx in range(min(32, len(self.training_images_cache))):
+            row = idx // nrow_labels
+            col = idx % nrow_labels
+            
+            frame = ttk.Frame(labels_card.content)
+            frame.grid(row=row, column=col, padx=5, pady=5)
+            
+            # Get individual image
+            img = self.training_images_cache[idx]
+            img_np = img.permute(1, 2, 0).cpu().numpy()
+            img_np = (img_np * 255).astype(np.uint8)
+            pil_img = Image.fromarray(img_np)
+            pil_img.thumbnail((80, 80), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(pil_img)
+            
+            img_label = ttk.Label(frame, image=photo)
+            img_label.image = photo
+            img_label.pack()
+            
+            label = self.training_labels_cache[idx]
+            ttk.Label(frame, text=f"{label}: {class_names[label]}", 
+                     font=("Segoe UI", 8)).pack()
+        
+        # Tab 3: Class Distribution
+        dist_frame = ttk.Frame(compare_notebook)
+        compare_notebook.add(dist_frame, text="Class Distribution")
+        
+        from collections import Counter
+        label_counts = Counter(self.training_labels_cache)
+        
+        dist_card = CardFrame(dist_frame, title="Label Distribution in Training Data")
+        dist_card.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Create text display
+        dist_text = scrolledtext.ScrolledText(dist_card.content, height=15, width=40,
+                                              bg=Colors.BG_DARK, fg=Colors.FG,
+                                              font=("Consolas", 10))
+        dist_text.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        dist_text.insert(tk.END, "Class Distribution:\n\n")
+        for label in range(10):
+            count = label_counts.get(label, 0)
+            percentage = (count / len(self.training_labels_cache)) * 100 if self.training_labels_cache else 0
+            dist_text.insert(tk.END, f"{label:2d} - {class_names[label]:12s}: {count:4d} images ({percentage:5.1f}%)\n")
+            dist_text.insert(tk.END, "█" * int(percentage / 2) + "\n\n")
+        
+        dist_text.configure(state='disabled')
 
     # ============================================================
     # Configuration Tab (Improved)
@@ -474,31 +821,32 @@ class SchrödingerBridgeGUI:
             btn.bind("<Leave>", lambda e, b=btn, c=color: b.config(bg=c))
 
     def lighten_color(self, color):
-        """Lighten a color for hover effect"""
+        """Lighten a color for hover effect (Material style)"""
         if color == Colors.ACCENT:
-            return "#9bb9f0"
+            return "#e8f0fe" # Light blue hover for outlined
         elif color == Colors.ACCENT2:
-            return "#d5b9fc"
+            return "#f3e8fd" # Light purple hover
         else:
-            return Colors.BG_MEDIUM
+            return "#f1f3f4"
 
     def create_param_row(self, parent, param, row):
-        """Create a parameter row with tooltip"""
-        frame = ttk.Frame(parent)
-        frame.pack(fill='x', pady=2)
+        """Create a parameter row with Google-style inputs"""
+        frame = ttk.Frame(parent, style="Card.TFrame")
+        frame.pack(fill='x', pady=4)
 
         # Get current value
         default = getattr(config, param, "")
         
-        # Label with tooltip
-        label = ttk.Label(frame, text=param, width=25, anchor='w')
+        # Label
+        label = ttk.Label(frame, text=param, width=25, anchor='w', 
+                         foreground=Colors.FG_SECONDARY, background=Colors.BG_MEDIUM)
         label.pack(side='left', padx=(0, 10))
         
-        # Add tooltip with description if available
+        # Add tooltip
         tooltip_text = self.get_param_description(param)
         ToolTip(label, tooltip_text)
 
-        # Input field based on type
+        # Input field
         if isinstance(default, bool):
             var = tk.BooleanVar(value=default)
             cb = ttk.Checkbutton(frame, variable=var)
@@ -527,106 +875,96 @@ class SchrödingerBridgeGUI:
         }
         return descriptions.get(param, f"Configure {param} parameter")
 
-    # ============================================================
-    # Training Tab (Improved)
-    # ============================================================
     def create_training_tab(self):
-        """Create beautiful training control tab"""
+        """Create Google-style training control tab"""
         self.training_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.training_frame, text="🎮 Training")
 
-        # Left panel - Controls
+        # Left panel
         left_panel = ttk.Frame(self.training_frame, width=350)
-        left_panel.pack(side='left', fill='y', padx=(0, 10))
+        left_panel.pack(side='left', fill='y', padx=(0, 16))
         left_panel.pack_propagate(False)
 
         # Control card
-        control_card = CardFrame(left_panel, title="🎛️ Controls")
-        control_card.pack(fill='x', pady=(0, 10))
+        control_card = CardFrame(left_panel, title="Controls")
+        control_card.pack(fill='x', pady=(0, 16))
 
-        # Buttons with icons
-        btn_frame = ttk.Frame(control_card.content)
-        btn_frame.pack(fill='x', pady=5)
-
-        self.start_btn = tk.Button(btn_frame, text="▶️ Start Training", 
+        self.start_btn = tk.Button(control_card.content, text="Start Training", 
                                   command=self.start_training,
-                                  bg=Colors.SUCCESS, fg=Colors.BG_DARK,
-                                  font=("Segoe UI", 11, "bold"),
-                                  relief="flat", padx=20, pady=10, cursor="hand2")
-        self.start_btn.pack(fill='x', pady=2)
-        self.start_btn.bind("<Enter>", lambda e: self.start_btn.config(bg="#b4e0b0"))
-        self.start_btn.bind("<Leave>", lambda e: self.start_btn.config(bg=Colors.SUCCESS))
+                                  bg=Colors.ACCENT, fg="#ffffff",
+                                  font=("Roboto", 10, "bold") if "Roboto" in tkfont.families() else ("Segoe UI", 10, "bold"),
+                                  relief="flat", padx=24, pady=10, cursor="hand2")
+        self.start_btn.pack(fill='x', pady=4)
+        self.start_btn.bind("<Enter>", lambda e: self.start_btn.config(bg="#1967d2"))
+        self.start_btn.bind("<Leave>", lambda e: self.start_btn.config(bg=Colors.ACCENT))
 
-        # Enhancement: Hot Swap Button
-        self.swap_btn = tk.Button(control_card.content, text="🔥 Hot-Swap Weights", 
+        self.swap_btn = tk.Button(control_card.content, text="Hot-Swap Weights", 
                                  command=self.hot_swap_weights,
-                                 bg=Colors.ACCENT2, fg=Colors.BG_DARK,
-                                 font=("Segoe UI", 10, "bold"),
-                                 relief="flat", pady=5, cursor="hand2")
-        self.swap_btn.pack(fill='x', pady=2)
+                                 bg=Colors.BG_MEDIUM, fg=Colors.ACCENT2,
+                                 font=("Roboto", 10, "bold") if "Roboto" in tkfont.families() else ("Segoe UI", 10, "bold"),
+                                 relief="flat", pady=8, cursor="hand2",
+                                 highlightthickness=1, highlightbackground=Colors.BORDER)
+        self.swap_btn.pack(fill='x', pady=4)
 
-        self.stop_btn = tk.Button(btn_frame, text="⏹️ Stop Training", 
+        self.stop_btn = tk.Button(control_card.content, text="Stop Training", 
                                  command=self.stop_training, state=tk.DISABLED,
-                                 bg=Colors.ERROR, fg=Colors.BG_DARK,
-                                 font=("Segoe UI", 11, "bold"),
-                                 relief="flat", padx=20, pady=10, cursor="hand2")
-        self.stop_btn.pack(fill='x', pady=2)
+                                 bg="#ffffff", fg=Colors.ERROR,
+                                 font=("Roboto", 10, "bold") if "Roboto" in tkfont.families() else ("Segoe UI", 10, "bold"),
+                                 relief="flat", pady=10, cursor="hand2",
+                                 highlightthickness=1, highlightbackground=Colors.BORDER)
+        self.stop_btn.pack(fill='x', pady=4)
 
         # Progress card
-        progress_card = CardFrame(left_panel, title="📊 Progress")
-        progress_card.pack(fill='x', pady=(0, 10))
+        progress_card = CardFrame(left_panel, title="Progress")
+        progress_card.pack(fill='x', pady=(0, 16))
 
-        # Epoch progress
-        ttk.Label(progress_card.content, text="Epoch:").pack(anchor='w')
         self.epoch_var = tk.StringVar(value="0 / 0")
+        ttk.Label(progress_card.content, text="Current Epoch", foreground=Colors.FG_SECONDARY, background=Colors.BG_MEDIUM).pack(anchor='w')
         epoch_label = ttk.Label(progress_card.content, textvariable=self.epoch_var,
-                               font=("Segoe UI", 16, "bold"), foreground=Colors.ACCENT)
-        epoch_label.pack(anchor='w', pady=(0, 10))
+                               font=("Roboto", 24, "bold") if "Roboto" in tkfont.families() else ("Segoe UI", 24, "bold"), 
+                               foreground=Colors.ACCENT, background=Colors.BG_MEDIUM)
+        epoch_label.pack(anchor='w', pady=(0, 8))
 
-        # Progress bar
-        self.progress = ttk.Progressbar(progress_card.content, orient='horizontal',
-                                       length=250, mode='determinate')
-        self.progress.pack(fill='x', pady=5)
+        self.progress = ttk.Progressbar(progress_card.content, orient='horizontal', mode='determinate')
+        self.progress.pack(fill='x', pady=8)
 
         # Metrics card
-        metrics_card = CardFrame(left_panel, title="📈 Live Metrics")
+        metrics_card = CardFrame(left_panel, title="Live Metrics")
         metrics_card.pack(fill='both', expand=True)
 
         self.metrics_text = scrolledtext.ScrolledText(metrics_card.content,
                                                      height=8,
-                                                     bg=Colors.BG_DARK,
+                                                     bg="#f1f3f4",
                                                      fg=Colors.FG,
                                                      font=("Consolas", 10),
                                                      relief="flat",
-                                                     borderwidth=1)
-        self.metrics_text.pack(fill='x', expand=False, pady=(0, 10))
+                                                     padx=8, pady=8)
+        self.metrics_text.pack(fill='x', expand=False, pady=(0, 12))
 
-        # Latent Monitor Canvas
-        ttk.Label(metrics_card.content, text="🔬 Latent Monitor (Channel Stdev)").pack(anchor='w')
-        self.latent_canvas = tk.Canvas(metrics_card.content, bg=Colors.BG_DARK, height=120, highlightthickness=1, highlightbackground=Colors.BORDER)
-        self.latent_canvas.pack(fill='x', expand=True, pady=5)
+        # Latent Monitor
+        ttk.Label(metrics_card.content, text="Latent Channel Stdev", foreground=Colors.FG_SECONDARY, background=Colors.BG_MEDIUM).pack(anchor='w')
+        self.latent_canvas = tk.Canvas(metrics_card.content, bg="#ffffff", height=120, highlightthickness=1, highlightbackground=Colors.BORDER)
+        self.latent_canvas.pack(fill='x', expand=True, pady=8)
 
         # Right panel - Log
         right_panel = ttk.Frame(self.training_frame)
         right_panel.pack(side='right', fill='both', expand=True)
 
-        log_card = CardFrame(right_panel, title="📝 Training Log")
+        log_card = CardFrame(right_panel, title="Training Log")
         log_card.pack(fill='both', expand=True)
 
         self.log_text = scrolledtext.ScrolledText(log_card.content,
                                                  wrap='word',
-                                                 bg=Colors.BG_DARK,
+                                                 bg="#ffffff",
                                                  fg=Colors.FG,
                                                  font=("Consolas", 10),
-                                                 relief="flat",
-                                                 borderwidth=1)
+                                                 relief="flat")
         self.log_text.pack(fill='both', expand=True)
-
-        # Configure log text tags for colors
         self.log_text.tag_configure("error", foreground=Colors.ERROR)
         self.log_text.tag_configure("warning", foreground=Colors.WARNING)
         self.log_text.tag_configure("success", foreground=Colors.SUCCESS)
         self.log_text.tag_configure("info", foreground=Colors.FG)
+
 
     def create_gallery_tab(self):
         """Enhancement: Gallery tab for real-time visual results"""
@@ -647,6 +985,21 @@ class SchrödingerBridgeGUI:
         
         self.preview_label = ttk.Label(self.preview_card.content, text="Waiting for samples...", font=("Segoe UI", 12))
         self.preview_label.pack(pady=10)
+        
+        refresh_btn = tk.Button(self.preview_card.content, text="🔄 Refresh Gallery", 
+                               command=self.refresh_gallery,
+                               bg=Colors.ACCENT, fg=Colors.BG_DARK,
+                               font=("Segoe UI", 10, "bold"),
+                               relief="flat", padx=15, pady=5, cursor="hand2")
+        refresh_btn.pack(pady=5)
+    
+    def refresh_gallery(self):
+        """Load the latest generated sample from the samples folder"""
+        samples_dir = config.DIRS["samples"]
+        png_files = list(samples_dir.glob("gen_*.png"))
+        if png_files:
+            latest = max(png_files, key=lambda p: p.stat().st_mtime)
+            self.update_gallery(str(latest))
 
     def hot_swap_weights(self):
         """Open a dialog to hot-swap training loss weights in real-time"""
@@ -840,15 +1193,12 @@ class SchrödingerBridgeGUI:
                 self.log_queue.put(f"EPOCH_DONE:{epoch}:{epoch_losses}")
                 self.log_queue.put(f"PROGRESS:{epoch+1}/{total_epochs}")
 
-                # Simulated Async signals for the GUI (Trainer should emit these natively)
-                # self.log_queue.put("LATENT_MONITOR:[0.9, 0.8, 0.05, 0.95]")
-                # self.log_queue.put("UPDATE_GALLERY:./samples/latest.png")
-
                 if (epoch+1) % 5 == 0:
                     trainer.save_checkpoint()
 
                 if (epoch+1) % 10 == 0:
                     trainer.generate_samples()
+                    self.log_queue.put("UPDATE_GALLERY")
 
             config.logger.info("Training finished.")
 
@@ -899,9 +1249,8 @@ class SchrödingerBridgeGUI:
                     self.update_metrics_display(loss_dict)
                     self.update_charts()
 
-                elif msg.startswith("UPDATE_GALLERY:"):
-                    img_path = msg.split(":", 1)[1]
-                    self.update_gallery(img_path)
+                elif msg == "UPDATE_GALLERY":
+                    self.refresh_gallery()
 
                 elif msg.startswith("LATENT_MONITOR:"):
                     stds = eval(msg.split(":", 1)[1])

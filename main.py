@@ -456,7 +456,10 @@ def main():
             epochs_input = input(f"Number of epochs [{config.EPOCHS}]: ").strip()
             epochs = int(epochs_input) if epochs_input else config.EPOCHS
             training.train_model(num_epochs=epochs)
-            
+            # After training exit to save the results
+            print("\nExiting...")
+            break
+
         elif choice == '2':
             print("\n Running quick test (5 epochs)...")
             training.train_model(num_epochs=5)
