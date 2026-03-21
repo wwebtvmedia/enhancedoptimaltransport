@@ -32,7 +32,10 @@ class Colors:
 def get_param_description(param: str) -> str:
     """Get description for parameter tooltip/help"""
     descriptions = {
-        "IMG_SIZE": "Input image size (pixels). Default 96x96 for STL-10.",
+        "IMG_SIZE": "Internal processing size (pixels). All images are resized to this for the model.",
+        "GEN_SIZE": "Final output generation size (pixels). Used when saving samples.",
+        "DATASET_NAME": "The dataset to use for training (STL10, CIFAR10, or CUSTOM).",
+        "DATASET_PATH": "Path to the dataset files or where to download them.",
         "LATENT_CHANNELS": "Number of channels in latent space. Standard is 4.",
         "NUM_CLASSES": "Number of classes for label conditioning (e.g., 10 for STL-10).",
         "LR": "Learning rate for the optimizers.",

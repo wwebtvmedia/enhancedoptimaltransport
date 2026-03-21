@@ -52,6 +52,13 @@ class AppContext:
         if hasattr(self.config, name):
             setattr(self.config, name, value)
             
+            # Auto-recalculate dependent dimensions if IMG_SIZE changes
+            if name == "IMG_SIZE":
+                new_size = int(value)
+                self.config.LATENT_H = new_size // 8
+                self.config.LATENT_W = new_size // 8
+                self.config.LATENT_DIM = self.config.LATENT_CHANNELS * self.config.LATENT_H * self.config.LATENT_W
+            
     def reload_config(self):
         import importlib
         importlib.reload(self.config)

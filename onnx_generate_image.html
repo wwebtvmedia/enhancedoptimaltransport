@@ -151,6 +151,16 @@
             </div>
 
             <div class="control-group">
+                <label for="resSelect">Resolution</label>
+                <select id="resSelect">
+                    <option value="32">32x32 (CIFAR)</option>
+                    <option value="64">64x64</option>
+                    <option value="96" selected>96x96 (STL-10)</option>
+                    <option value="128">128x128</option>
+                </select>
+            </div>
+
+            <div class="control-group">
                 <label for="methodSelect">Solver Method</label>
                 <select id="methodSelect">
                     <option value="heun" selected>Heun (2nd Order)</option>
@@ -180,8 +190,8 @@
 
     <script>
         (async () => {
-            const LATENT_SHAPE = [1, 4, 12, 12];
-            const IMG_SIZE = 96;
+            let IMG_SIZE = 96;
+            let LATENT_SHAPE = [1, 4, 12, 12];
 
             const statusEl = document.getElementById('status');
             const canvas = document.getElementById('outputCanvas');
@@ -191,6 +201,17 @@
             const tempValue = document.getElementById('tempValue');
             const stepsSlider = document.getElementById('stepsSlider');
             const stepsValue = document.getElementById('stepsValue');
+            const resSelect = document.getElementById('resSelect');
+
+            resSelect.addEventListener('change', () => {
+                IMG_SIZE = parseInt(resSelect.value, 10);
+                const latentDim = IMG_SIZE / 8;
+                LATENT_SHAPE = [1, 4, latentDim, latentDim];
+                canvas.width = IMG_SIZE;
+                canvas.height = IMG_SIZE;
+                canvas.style.width = '384px'; // Maintain display size
+                canvas.style.height = '384px';
+            });
 
             tempSlider.addEventListener('input', () => tempValue.textContent = parseFloat(tempSlider.value).toFixed(2));
             stepsSlider.addEventListener('input', () => stepsValue.textContent = stepsSlider.value);

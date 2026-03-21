@@ -25,9 +25,16 @@ DIRS = {
 }
 
 # ============================================================================
+# DATASET CONFIGURATION
+# ============================================================================
+DATASET_NAME = "STL10"        # Options: "STL10", "CIFAR10", "CUSTOM"
+DATASET_PATH = Path("./data") # Path to download or find custom data
+
+# ============================================================================
 # MODEL DIMENSIONS
 # ============================================================================
-IMG_SIZE = 96
+IMG_SIZE = 96                # Internal processing size (standardized)
+GEN_SIZE = 96                # Final output generation size (can be different)
 LATENT_CHANNELS = 4
 LATENT_H = IMG_SIZE // 8
 LATENT_W = IMG_SIZE // 8

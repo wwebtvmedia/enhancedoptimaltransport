@@ -108,12 +108,8 @@ class SnapshotManager:
 # ============================================================
 # CHECKPOINT SAVE/LOAD FUNCTIONS
 # ============================================================
-# Replace the save_checkpoint function:
-
 def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = False) -> Path:
     """Save training checkpoint."""
-    
-    # Ensure checkpoint directory exists
     config.DIRS["ckpt"].mkdir(parents=True, exist_ok=True)
     
     checkpoint = {
@@ -129,14 +125,17 @@ def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = Fals
         'scheduler_drift_state': trainer.scheduler_drift.state_dict(),
         'best_loss': trainer.best_loss,
         'best_composite_score': trainer.best_composite_score,
-        'training_schedule': config.TRAINING_SCHEDULE
+        'training_schedule': config.TRAINING_SCHEDULE,
+        'config': {
+            'DATASET_NAME': config.DATASET_NAME,
+            'IMG_SIZE': config.IMG_SIZE,
+            'GEN_SIZE': config.GEN_SIZE
+        }
     }
     
-    # Add KPI metrics if they exist
     if hasattr(trainer, 'kpi_tracker') and hasattr(trainer.kpi_tracker, 'metrics'):
         checkpoint['kpi_metrics'] = trainer.kpi_tracker.metrics
     
-    # Save latest checkpoint
     latest_path = config.DIRS["ckpt"] / "latest.pt"
     torch.save(checkpoint, latest_path)
     config.logger.info(f"Checkpoint saved to {latest_path}")
@@ -166,7 +165,12 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
     try:
         checkpoint = torch.load(path, map_location=config.DEVICE, weights_only=False)
         
-        # Load model states
+        # Check for size/config mismatch
+        if 'config' in checkpoint:
+            saved_cfg = checkpoint['config']
+            if saved_cfg.get('IMG_SIZE') != config.IMG_SIZE:
+                config.logger.warning(f"IMG_SIZE mismatch: checkpoint={saved_cfg.get('IMG_SIZE')}, current={config.IMG_SIZE}")
+        
         trainer.vae.load_state_dict(checkpoint['vae_state'])
         trainer.drift.load_state_dict(checkpoint['drift_state'])
         trainer.opt_vae.load_state_dict(checkpoint['opt_vae_state'])
@@ -174,15 +178,11 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         trainer.scheduler_vae.load_state_dict(checkpoint['scheduler_vae_state'])
         trainer.scheduler_drift.load_state_dict(checkpoint['scheduler_drift_state'])
         
-        # Load training state
         trainer.epoch = checkpoint['epoch']
         trainer.step = checkpoint['step']
         trainer.phase = checkpoint.get('phase', 1)
-        
-        # Restore phase2_start_epoch if it exists
         trainer.phase2_start_epoch = checkpoint.get('phase2_start_epoch', None)
         
-        # Handle Phase 2 reference model if needed
         if trainer.phase >= 2 and not hasattr(trainer, 'vae_ref'):
             from models import LabelConditionedVAE
             trainer.vae_ref = LabelConditionedVAE().to(config.DEVICE)
@@ -192,15 +192,12 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
                 param.requires_grad = False
             config.logger.info("Reference anchor created from loaded checkpoint.")
         
-        # Update training schedule if present
         if 'training_schedule' in checkpoint:
             config.TRAINING_SCHEDULE.update(checkpoint['training_schedule'])
         
-        # Load best metrics
         trainer.best_loss = checkpoint.get('best_loss', float('inf'))
         trainer.best_composite_score = checkpoint.get('best_composite_score', float('-inf'))
         
-        # Load KPI metrics if they exist
         if 'kpi_metrics' in checkpoint and hasattr(trainer, 'kpi_tracker'):
             trainer.kpi_tracker.metrics = checkpoint['kpi_metrics']
         
@@ -209,8 +206,6 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         
     except Exception as e:
         config.logger.error(f"Failed to load checkpoint: {e}")
-        import traceback
-        traceback.print_exc()
         return False
 
 def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
@@ -224,18 +219,13 @@ def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
     
     try:
         checkpoint = torch.load(path, map_location=config.DEVICE, weights_only=False)
-        
         trainer.vae.load_state_dict(checkpoint['vae_state'])
         trainer.drift.load_state_dict(checkpoint['drift_state'])
-        
         trainer.epoch = checkpoint.get('epoch', 0)
-        
         trainer.vae.eval()
         trainer.drift.eval()
-        
         config.logger.info(f" Successfully loaded model from epoch {trainer.epoch}")
         return True
-        
     except Exception as e:
         config.logger.error(f"Failed to load checkpoint: {e}")
         return False
@@ -249,19 +239,18 @@ def save_image_grid(
     nrow: int = 4, 
     normalize: bool = True
 ) -> None:
-    """Save a grid of images to PNG.
-    
-    Args:
-        images: Tensor of shape (B, C, H, W) in range [-1, 1] if normalize=True
-        path: Path to save PNG
-        nrow: Number of images per row
-        normalize: If True, map [-1,1] to [0,1]
-    """
+    """Save a grid of images to PNG, respecting config.GEN_SIZE."""
     if normalize:
         images_display = (images + 1) / 2
         images_display = torch.clamp(images_display, 0, 1)
     else:
         images_display = images
+        
+    if config.GEN_SIZE != config.IMG_SIZE:
+        images_display = torch.nn.functional.interpolate(
+            images_display, size=(config.GEN_SIZE, config.GEN_SIZE), mode='bilinear', align_corners=False
+        )
+        
     grid = vutils.make_grid(images_display, nrow=nrow, padding=2)
     vutils.save_image(grid, path)
 
@@ -271,16 +260,15 @@ def save_individual_images(
     epoch: int, 
     base_dir: Optional[Path] = None
 ) -> None:
-    """Save each image individually with label in filename.
-    
-    Args:
-        images: Tensor of shape (B, C, H, W) in [0, 1] range
-        labels: List of integer labels
-        epoch: Current epoch (for filename)
-        base_dir: Directory to save (default: config.DIRS["samples"])
-    """
+    """Save each image individually, respecting config.GEN_SIZE."""
     if base_dir is None:
         base_dir = config.DIRS["samples"]
+        
+    if config.GEN_SIZE != config.IMG_SIZE:
+        images = torch.nn.functional.interpolate(
+            images, size=(config.GEN_SIZE, config.GEN_SIZE), mode='bilinear', align_corners=False
+        )
+        
     for idx, img in enumerate(images):
         individual_path = base_dir / f"gen_{idx}_label{labels[idx]}_epoch{epoch+1}.png"
         vutils.save_image(img, individual_path)
@@ -385,7 +373,7 @@ def get_dataloader_config() -> Dict:
 # DATA LOADING FUNCTION
 # ============================================================
 def load_data() -> DataLoader:
-    """Load dataset with device-optimized settings."""
+    """Load dataset based on config.DATASET_NAME with device-optimized settings."""
     transform = T.Compose([
         T.Resize((config.IMG_SIZE, config.IMG_SIZE)),
         T.RandomHorizontalFlip(),
@@ -393,42 +381,31 @@ def load_data() -> DataLoader:
         T.Normalize((0.5,)*3, (0.5,)*3)
     ])
     
-    datasets_list = []
+    config.logger.info(f"Loading dataset: {config.DATASET_NAME} from {config.DATASET_PATH}...")
     
-    local_path = Path("./data/images")
-    if local_path.exists():
-        config.logger.info("Loading local images...")
-        try:
-            local_ds = datasets.ImageFolder(str(local_path), transform=transform)
-            datasets_list.append(LabeledImageDataset(local_ds))
-            config.logger.info(f"Loaded {len(local_ds)} local images with {len(local_ds.classes)} classes")
-        except Exception as e:
-            config.logger.warning(f"Failed to load local images: {e}")
-    
-    config.logger.info("Loading STL-10 (96x96 native)...")
     try:
-        # STL-10 has 10 classes and is 96x96 natively, avoiding upsampling blur.
-        stl10_ds = datasets.STL10(root="./data", split='train', download=True, transform=transform)
+        if config.DATASET_NAME == "STL10":
+            base_ds = datasets.STL10(root=str(config.DATASET_PATH), split='train', download=True, transform=transform)
+            if not hasattr(base_ds, 'classes'):
+                base_ds.classes = ['airplane', 'bird', 'car', 'cat', 'deer', 'dog', 'horse', 'monkey', 'ship', 'truck']
         
-        # Override the generic classes to match STL-10 actual classes if not automatically set
-        if not hasattr(stl10_ds, 'classes'):
-            stl10_ds.classes = ['airplane', 'bird', 'car', 'cat', 'deer', 'dog', 'horse', 'monkey', 'ship', 'truck']
+        elif config.DATASET_NAME == "CIFAR10":
+            base_ds = datasets.CIFAR10(root=str(config.DATASET_PATH), train=True, download=True, transform=transform)
             
-        labeled_stl10 = LabeledImageDataset(stl10_ds)
-        datasets_list.append(labeled_stl10)
-        config.logger.info(f"Loaded {len(stl10_ds)} STL-10 images")
+        elif config.DATASET_NAME == "CUSTOM":
+            if not config.DATASET_PATH.exists():
+                raise FileNotFoundError(f"Custom data path {config.DATASET_PATH} does not exist!")
+            base_ds = datasets.ImageFolder(root=str(config.DATASET_PATH), transform=transform)
+            
+        else:
+            raise ValueError(f"Unknown dataset: {config.DATASET_NAME}")
+            
+        dataset = LabeledImageDataset(base_ds)
+        config.logger.info(f"Loaded {len(dataset)} images from {config.DATASET_NAME}")
+        
     except Exception as e:
-        config.logger.error(f"Failed to load STL-10: {e}")
-        if not datasets_list:
-            raise RuntimeError("No datasets could be loaded!")
-    
-    if len(datasets_list) > 1:
-        combined_ds = ConcatDataset(datasets_list)
-    else:
-        combined_ds = datasets_list[0]
-    
-    config.logger.info(f"Total dataset size: {len(combined_ds)} images")
+        config.logger.error(f"Failed to load dataset {config.DATASET_NAME}: {e}")
+        raise e
     
     dataloader_config = get_dataloader_config()
-    
-    return DataLoader(combined_ds, **dataloader_config)
+    return DataLoader(dataset, **dataloader_config)

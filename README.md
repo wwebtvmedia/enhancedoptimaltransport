@@ -179,6 +179,8 @@ Phase 2 (epochs 50-199): Train drift network, fine-tune encoder (decoder frozen)
 The schedule can be customized via the configuration menu (auto, manual, custom, alternate).
 
 Key Features
+- **Flexible Data Support:** New capability to train on multiple datasets (**STL10**, **CIFAR10**) or a **CUSTOM** local image folder.
+- **Configurable Resolutions:** Independent control over model input size (`IMG_SIZE`) and final generation size (`GEN_SIZE`).
 - **MCP Architecture:** Strict separation between the processing engine and display interfaces for maximum stability and cross-platform flexibility.
 - **Multi-Platform Monitoring:** Choose between a professional Google Material Design Desktop app (Tkinter) or a mobile-responsive Web dashboard (Streamlit).
 - **Label Conditioning:** Advanced label conditioning via Attention-augmented Residual blocks and scale-shift modulation.

@@ -62,15 +62,32 @@ with st.sidebar:
     st.title("⚙️ Config")
     st.info(f"Hardware: {ctx.device_info}")
     
-    with st.expander("🚀 Hyperparameters", expanded=True):
-        for p in ["LR", "EPOCHS", "BATCH_SIZE"]:
-            val = st.number_input(p, value=getattr(config, p), help=get_param_description(p))
-            setattr(config, p, val)
+    with st.expander("📁 Dataset Settings", expanded=True):
+        dataset_name = st.selectbox("Dataset", ["STL10", "CIFAR10", "CUSTOM"], 
+                                   index=["STL10", "CIFAR10", "CUSTOM"].index(config.DATASET_NAME))
+        dataset_path = st.text_input("Dataset Path", value=str(config.DATASET_PATH))
+        img_size = st.number_input("Model Input Size (IMG_SIZE)", value=config.IMG_SIZE, step=8)
+        gen_size = st.number_input("Generation Size (GEN_SIZE)", value=config.GEN_SIZE, step=8)
+        
+        # Apply updates
+        config.DATASET_NAME = dataset_name
+        config.DATASET_PATH = Path(dataset_path)
+        if img_size != config.IMG_SIZE:
+            config.IMG_SIZE = img_size
+            config.LATENT_H = img_size // 8
+            config.LATENT_W = img_size // 8
+            config.LATENT_DIM = config.LATENT_CHANNELS * config.LATENT_H * config.LATENT_W
+        config.GEN_SIZE = gen_size
+
+    with st.expander("🚀 Hyperparameters", expanded=False):
+        config.LR = st.number_input("Learning Rate", value=config.LR, format="%.6f", help=get_param_description("LR"))
+        config.EPOCHS = st.number_input("Epochs", value=config.EPOCHS, help=get_param_description("EPOCHS"))
+        config.BATCH_SIZE = st.number_input("Batch Size", value=config.BATCH_SIZE, help=get_param_description("BATCH_SIZE"))
             
     with st.expander("⚖️ Loss Weights", expanded=False):
-        for p in ["KL_WEIGHT", "RECON_WEIGHT", "DIVERSITY_WEIGHT"]:
-            val = st.number_input(p, value=getattr(config, p), format="%.6f", help=get_param_description(p))
-            setattr(config, p, val)
+        config.KL_WEIGHT = st.number_input("KL Weight", value=config.KL_WEIGHT, format="%.6f", help=get_param_description("KL_WEIGHT"))
+        config.RECON_WEIGHT = st.number_input("Recon Weight", value=config.RECON_WEIGHT, format="%.2f", help=get_param_description("RECON_WEIGHT"))
+        config.DIVERSITY_WEIGHT = st.number_input("Diversity Weight", value=config.DIVERSITY_WEIGHT, format="%.2f", help=get_param_description("DIVERSITY_WEIGHT"))
 
     if st.button("💾 Apply & Save", use_container_width=True):
         st.success("Configuration updated in memory!")

@@ -200,6 +200,7 @@ class SchrödingerBridgeGUI:
 
         self.config_vars = {}
         groups = [
+            ("📁 Dataset Settings", ["DATASET_NAME", "DATASET_PATH", "IMG_SIZE", "GEN_SIZE"]),
             ("⚡ Hyperparameters", ["LR", "EPOCHS", "BATCH_SIZE"]),
             ("⚖️ Loss Weights", ["KL_WEIGHT", "RECON_WEIGHT", "DIVERSITY_WEIGHT"])
         ]
