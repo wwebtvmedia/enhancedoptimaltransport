@@ -1213,6 +1213,14 @@ class EnhancedLabelTrainer:
             except Exception as e:
                 config.logger.warning(f"Could not merge external data for {model_path.name}: {e}")
 
+        # Wrapper class to export ONLY the decoder (generator) part of the VAE
+        class VAEGenerator(torch.nn.Module):
+            def __init__(self, vae):
+                super().__init__()
+                self.vae = vae
+            def forward(self, z, labels):
+                return self.vae.decode(z, labels)
+
         try:
             # --- Set export mode for VAE and Drift ---
             self.vae.eval()
@@ -1220,37 +1228,33 @@ class EnhancedLabelTrainer:
             self.vae.apply(lambda m: set_export_mode(m, True))
             self.drift.apply(lambda m: set_export_mode(m, True))
             
-            # Export VAE
-            dummy_img = torch.randn(1, 3, config.IMG_SIZE, config.IMG_SIZE, device=config.DEVICE)
+            # Export Generator (Decoder only)
+            dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
             dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
             
-            vae_path = config.DIRS["onnx"] / "vae.onnx"
+            gen_path = config.DIRS["onnx"] / "generator.onnx"
+            vae_gen = VAEGenerator(self.vae)
             
-            # Using Opset 18 as it's the native version for this PyTorch environment.
-            # This avoids the "No Adapter" and "Version conversion" errors.
             with torch.no_grad():
                 torch.onnx.export(
-                    self.vae,
-                    (dummy_img, dummy_label),
-                    str(vae_path),
+                    vae_gen,
+                    (dummy_z, dummy_label),
+                    str(gen_path),
                     export_params=True,
                     opset_version=18,
                     do_constant_folding=True,
-                    input_names=['image', 'label'],
-                    output_names=['reconstruction', 'mu', 'logvar'],
+                    input_names=['z', 'label'],
+                    output_names=['reconstruction'],
                     dynamic_axes={
-                        'image': {0: 'batch_size'},
+                        'z': {0: 'batch_size'},
                         'label': {0: 'batch_size'},
-                        'reconstruction': {0: 'batch_size'},
-                        'mu': {0: 'batch_size'},
-                        'logvar': {0: 'batch_size'}
+                        'reconstruction': {0: 'batch_size'}
                     }
                 )
-            merge_external_data(vae_path)
-            config.logger.info(f"VAE exported to {vae_path}")
+            merge_external_data(gen_path)
+            config.logger.info(f"Generator exported to {gen_path}")
             
             # Export Drift
-            dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
             dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
             
             drift_path = config.DIRS["onnx"] / "drift.onnx"

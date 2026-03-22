@@ -247,12 +247,12 @@
             async function loadFromFiles(files) {
                 let vaeFile, driftFile;
                 for (const file of files) {
-                    if (file.name === 'vae.onnx') vaeFile = file;
+                    if (file.name === 'generator.onnx') vaeFile = file;
                     if (file.name === 'drift.onnx') driftFile = file;
                 }
 
                 if (!vaeFile || !driftFile) {
-                    statusEl.textContent = 'Error: Missing vae.onnx or drift.onnx in selected folder.';
+                    statusEl.textContent = 'Error: Missing generator.onnx or drift.onnx in selected folder.';
                     return;
                 }
 
@@ -306,7 +306,7 @@
                     executionProviders: providers,
                     graphOptimizationLevel: 'all'
                 });
-                vaeSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/vae.onnx', {
+                vaeSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/generator.onnx', {
                     executionProviders: providers,
                     graphOptimizationLevel: 'all'
                 });
