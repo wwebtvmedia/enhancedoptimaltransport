@@ -231,11 +231,11 @@
             let driftSession, vaeSession;
             try {
                 statusEl.textContent = 'Loading neural networks...';
-                driftSession = await ort.InferenceSession.create('./drift.onnx', {
+                driftSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift.onnx', {
                     executionProviders: ['webgl'],
                     graphOptimizationLevel: 'all'
                 });
-                vaeSession = await ort.InferenceSession.create('./vae.onnx', {
+                vaeSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/vae.onnx', {
                     executionProviders: ['webgl'],
                     graphOptimizationLevel: 'all'
                 });
