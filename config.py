@@ -117,7 +117,7 @@ TIME_WEIGHT_FACTOR = 2.0                   # time_weights = 1 + TIME_WEIGHT_FACT
 DEFAULT_STEPS = 50
 DEFAULT_SEED = 42
 INFERENCE_TEMPERATURE = 0.8
-DEFAULT_LANGEVIN_STEPS = 10    # Added default refinement
+DEFAULT_LANGEVIN_STEPS = 0    # Disabled by default to keep images clean
 LANGEVIN_STEP_SIZE = 0.05      # Smaller steps are more stable
 LANGEVIN_SCORE_SCALE = 1.2     # Slight boost for sharpness
 LANGEVIN_DECAY = 0.9           # Rate at which refinement settles

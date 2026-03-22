@@ -1029,7 +1029,8 @@ class EnhancedLabelTrainer:
                 
                 with torch.no_grad():
                     mu, logvar = self.vae.encode(images, bash_labels)
-                    z_init = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * 0.3
+                    # Start with a bit more variance (0.8 instead of 0.3) to give the drift more signal
+                    z_init = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * 0.8
                     
                     # If we need more samples than we have, repeat
                     if num_samples > z_init.shape[0]:
@@ -1039,7 +1040,8 @@ class EnhancedLabelTrainer:
                         z = z_init[:num_samples]
             except Exception as e:
                 config.logger.warning(f"Could not estimate latent distribution, using random noise: {e}")
-                z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * 0.5
+                # Use std=1.0 for pure noise to match standard diffusion/bridge priors
+                z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * 1.0
 
 
 
