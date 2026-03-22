@@ -262,7 +262,8 @@
                     const vaeUrl = URL.createObjectURL(vaeFile);
                     const driftUrl = URL.createObjectURL(driftFile);
 
-                    const providers = ['webgl', 'cpu'];
+                    // For Opset 18+, 'cpu' (WASM) is more reliable for specialized operators.
+                    const providers = ['cpu', 'webgl'];
                     
                     vaeSession = await ort.InferenceSession.create(vaeUrl, {
                         executionProviders: providers,
@@ -296,7 +297,7 @@
             // Initial auto-load attempt
             try {
                 statusEl.textContent = 'Loading neural networks...';
-                const providers = ['webgl', 'cpu'];
+                const providers = ['cpu', 'webgl'];
                 
                 driftSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift.onnx', {
                     executionProviders: providers,

@@ -1226,16 +1226,15 @@ class EnhancedLabelTrainer:
             
             vae_path = config.DIRS["onnx"] / "vae.onnx"
             
-            # Use direct export with Opset 17. 
-            # Opset 17 supports modern LayerNorm/GroupNorm but keeps the older Split operator (v13),
-            # which is much more compatible with ONNX Runtime Web.
+            # Using Opset 18 as it's the native version for this PyTorch environment.
+            # This avoids the "No Adapter" and "Version conversion" errors.
             with torch.no_grad():
                 torch.onnx.export(
                     self.vae,
                     (dummy_img, dummy_label),
                     str(vae_path),
                     export_params=True,
-                    opset_version=17,
+                    opset_version=18,
                     do_constant_folding=True,
                     input_names=['image', 'label'],
                     output_names=['reconstruction', 'mu', 'logvar'],
@@ -1262,7 +1261,7 @@ class EnhancedLabelTrainer:
                     (dummy_z, dummy_t, dummy_label),
                     str(drift_path),
                     export_params=True,
-                    opset_version=17,
+                    opset_version=18,
                     do_constant_folding=True,
                     input_names=['z', 't', 'label'],
                     output_names=['drift'],
