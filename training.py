@@ -696,20 +696,22 @@ class EnhancedLabelTrainer:
 
             consistency_decay = max(0.1, 1.0 - (self.epoch - drift_start_epoch) / (config.EPOCHS - drift_start_epoch))
             
-            # PHASE 3 ENHANCEMENT: Also train the VAE to reconstruct from the bridge-derived z1
+            # PHASE 3 ENHANCEMENT: Also train the VAE to reconstruct from the latent mean
             if phase == 3:
-                # Calculate reconstruction from the z1 we sampled
-                recon_z1 = self.vae.decode(z1, labels)
-                recon_loss_z1 = F.l1_loss(recon_z1, images) * config.RECON_WEIGHT
-                # Also include perceptual if available
-                recon_loss_z1 += config.SIM_LOST_FACTOR * self.ssim_loss(recon_z1, images)
+                # Use mu (the clean latent) for VAE stability in Phase 3
+                # This ensures the decoder stays sharp without being confused by bridge noise
+                recon_p3 = self.vae.decode(mu, labels)
                 
-                total_loss = drift_loss_base + (consistency_loss * config.CONSISTENCY_WEIGHT * consistency_decay) + recon_loss_z1
+                # Scale recon loss down in Phase 3 so it doesn't overwhelm the Drift training
+                p3_scale = getattr(config, 'PHASE3_RECON_SCALE', 0.1)
+                recon_loss_p3 = F.l1_loss(recon_p3, images) * config.RECON_WEIGHT * p3_scale
+                
+                total_loss = drift_loss_base + (consistency_loss * config.CONSISTENCY_WEIGHT * consistency_decay) + recon_loss_p3
                 loss_dict = {
                     'total': total_loss,
                     'drift': drift_loss_base.item(),
                     'consistency': consistency_loss.item(),
-                    'recon_p3': recon_loss_z1.item(),
+                    'recon_p3': recon_loss_p3.item(),
                     'temperature': temperature
                 }
             else:
