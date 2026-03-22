@@ -372,6 +372,10 @@ class LabelConditionedDrift(nn.Module):
         self.register_buffer('drift_std', torch.ones(1))
         self.register_buffer('n_samples', torch.zeros(1))
         self.momentum = 0.99
+        self._is_exporting = False
+
+    def _set_export_mode(self, is_exporting=True):
+        self._is_exporting = is_exporting
 
     def forward(self, z, t, labels):
         """Forward pass - predict drift at time t."""
@@ -425,26 +429,28 @@ class LabelConditionedDrift(nn.Module):
         out = out * (1.0 + time_scale)
         
         # Update running statistics for adaptive clipping (only in training)
-        if self.training:
+        if self.training and not self._is_exporting:
             with torch.no_grad():
-                batch_mean = out.mean().item()
-                batch_std = out.std().item()
-                batch_size = out.shape[0]
+                # Avoid .item() to keep it symbolic/onnx-friendly
+                batch_mean = out.mean()
+                batch_std = out.std()
                 
                 # Update running statistics
-                self.drift_mean = self.momentum * self.drift_mean + (1 - self.momentum) * batch_mean
-                self.drift_std = self.momentum * self.drift_std + (1 - self.momentum) * batch_std
-                self.n_samples += batch_size
+                self.drift_mean.mul_(self.momentum).add_(batch_mean, alpha=1 - self.momentum)
+                self.drift_std.mul_(self.momentum).add_(batch_std, alpha=1 - self.momentum)
+                self.n_samples.add_(out.shape[0])
         
         # Apply adaptive clipping during inference only
-        if not self.training:
+        if not self.training or self._is_exporting:
             threshold = self.get_adaptive_threshold(num_std=3.0)
+            # Use out.clamp with tensor threshold
             out = torch.clamp(out, -threshold, threshold)
 
         return out
 
     def get_adaptive_threshold(self, num_std=3.0):
         """Get adaptive clipping threshold based on running statistics."""
-        if self.n_samples < 100:  # Not enough samples yet
-            return 5.0
-        return abs(self.drift_mean.item()) + num_std * self.drift_std.item()
+        # Use torch.where to avoid data-dependent control flow during export
+        threshold = torch.abs(self.drift_mean) + num_std * self.drift_std
+        default_threshold = torch.tensor(5.0, device=self.n_samples.device)
+        return torch.where(self.n_samples < 100, default_threshold, threshold)

@@ -1191,89 +1191,88 @@ class EnhancedLabelTrainer:
             if hasattr(module, '_set_export_mode'):
                 module._set_export_mode(mode)
         
+        try:
+            # --- Set export mode for VAE and Drift ---
+            self.vae.apply(lambda m: set_export_mode(m, True))
+            self.drift.apply(lambda m: set_export_mode(m, True))
+            
+            # Export VAE
+            dummy_img = torch.randn(1, 3, config.IMG_SIZE, config.IMG_SIZE, device=config.DEVICE)
+            dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
+            
+            vae_path = config.DIRS["onnx"] / "vae.onnx"
+            torch.onnx.export(
+                self.vae,
+                (dummy_img, dummy_label),
+                vae_path,
+                input_names=['image', 'label'],
+                # Naming 'reconstruction' matches the key expected in onnx_generate_image.html
+                output_names=['reconstruction', 'mu', 'logvar'],
+                dynamic_axes={
+                    'image': {0: 'batch_size'},
+                    'label': {0: 'batch_size'},
+                    'reconstruction': {0: 'batch_size'},
+                    'mu': {0: 'batch_size'},
+                    'logvar': {0: 'batch_size'}
+                },
+                opset_version=14
+            )
+            config.logger.info(f"VAE exported to {vae_path}")
+            
+            # Export Drift
+            dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
+            dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
+            
+            drift_path = config.DIRS["onnx"] / "drift.onnx"
+            torch.onnx.export(
+                self.drift,
+                (dummy_z, dummy_t, dummy_label),
+                drift_path,
+                input_names=['z', 't', 'label'],
+                output_names=['drift'],
+                dynamic_axes={
+                    'z': {0: 'batch_size'},
+                    't': {0: 'batch_size'}, # Enabled dynamic batch for time tensor
+                    'label': {0: 'batch_size'},
+                    'drift': {0: 'batch_size'}
+                },
+                opset_version=11 # Opset 11 is highly compatible with WebGL backends
+            )
+            config.logger.info(f"Drift exported to {drift_path}")
 
-            try:
-                # --- Set export mode for VAE and Drift ---
-                self.vae.apply(lambda m: set_export_mode(m, True))
-                self.drift.apply(lambda m: set_export_mode(m, True))
-                
-                # Export VAE
-                dummy_img = torch.randn(1, 3, config.IMG_SIZE, config.IMG_SIZE, device=config.DEVICE)
-                dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
-                
-                vae_path = config.DIRS["onnx"] / "vae.onnx"
-                torch.onnx.export(
-                    self.vae,
-                    (dummy_img, dummy_label),
-                    vae_path,
-                    input_names=['image', 'label'],
-                    # Naming 'reconstruction' matches the key expected in onnx_generate_image.html
-                    output_names=['reconstruction', 'mu', 'logvar'],
-                    dynamic_axes={
-                        'image': {0: 'batch_size'},
-                        'label': {0: 'batch_size'},
-                        'reconstruction': {0: 'batch_size'},
-                        'mu': {0: 'batch_size'},
-                        'logvar': {0: 'batch_size'}
-                    },
-                    opset_version=14
-                )
-                config.logger.info(f"VAE exported to {vae_path}")
-                
-                # Export Drift
-                dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
-                dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
-                
-                drift_path = config.DIRS["onnx"] / "drift.onnx"
-                torch.onnx.export(
-                    self.drift,
-                    (dummy_z, dummy_t, dummy_label),
-                    drift_path,
-                    input_names=['z', 't', 'label'],
-                    output_names=['drift'],
-                    dynamic_axes={
-                        'z': {0: 'batch_size'},
-                        't': {0: 'batch_size'}, # Enabled dynamic batch for time tensor
-                        'label': {0: 'batch_size'},
-                        'drift': {0: 'batch_size'}
-                    },
-                    opset_version=11 # Opset 11 is highly compatible with WebGL backends
-                )
-                config.logger.info(f"Drift exported to {drift_path}")
+            # --- Auto-configure the HTML file to match the current dimensions ---
+            html_path = config.BASE_DIR / "onnx_generate_image.html"
+            if html_path.exists():
+                try:
+                    with open(html_path, 'r', encoding='utf-8') as f:
+                        html_content = f.read()
 
-                # --- Auto-configure the HTML file to match the current dimensions ---
-                html_path = config.BASE_DIR / "onnx_generate_image.html"
-                if html_path.exists():
-                    try:
-                        with open(html_path, 'r', encoding='utf-8') as f:
-                            html_content = f.read()
+                    import re
+                    # Replace LATENT_SHAPE array
+                    html_content = re.sub(
+                        r'const LATENT_SHAPE = \[1, \d+, \d+, \d+\];',
+                        f'const LATENT_SHAPE = [1, {config.LATENT_CHANNELS}, {config.LATENT_H}, {config.LATENT_W}];',
+                        html_content
+                    )
+                    # Replace IMG_SIZE constant
+                    html_content = re.sub(
+                        r'const IMG_SIZE = \d+;',
+                        f'const IMG_SIZE = {config.IMG_SIZE};',
+                        html_content
+                    )
 
-                        import re
-                        # Replace LATENT_SHAPE array
-                        html_content = re.sub(
-                            r'const LATENT_SHAPE = \[1, \d+, \d+, \d+\];',
-                            f'const LATENT_SHAPE = [1, {config.LATENT_CHANNELS}, {config.LATENT_H}, {config.LATENT_W}];',
-                            html_content
-                        )
-                        # Replace IMG_SIZE constant
-                        html_content = re.sub(
-                            r'const IMG_SIZE = \d+;',
-                            f'const IMG_SIZE = {config.IMG_SIZE};',
-                            html_content
-                        )
+                    with open(html_path, 'w', encoding='utf-8') as f:
+                        f.write(html_content)
+                    config.logger.info(f"Updated {html_path.name} with new dimensions (IMG_SIZE={config.IMG_SIZE}).")
+                except Exception as e:
+                    config.logger.warning(f"Could not auto-update HTML file dimensions: {e}")
 
-                        with open(html_path, 'w', encoding='utf-8') as f:
-                            f.write(html_content)
-                        config.logger.info(f"Updated {html_path.name} with new dimensions (IMG_SIZE={config.IMG_SIZE}).")
-                    except Exception as e:
-                        config.logger.warning(f"Could not auto-update HTML file dimensions: {e}")
-
-                # --- Reset export mode ---
-                self.vae.apply(lambda m: set_export_mode(m, False))
-                self.drift.apply(lambda m: set_export_mode(m, False))
-                
-            except Exception as e:
-                config.logger.error(f"ONNX export failed: {e}")
+            # --- Reset export mode ---
+            self.vae.apply(lambda m: set_export_mode(m, False))
+            self.drift.apply(lambda m: set_export_mode(m, False))
+            
+        except Exception as e:
+            config.logger.error(f"ONNX export failed: {e}")
 
 
 # ============================================================
