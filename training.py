@@ -1191,6 +1191,28 @@ class EnhancedLabelTrainer:
             if hasattr(module, '_set_export_mode'):
                 module._set_export_mode(mode)
         
+        # Helper to merge .onnx.data files back into the .onnx file
+        def merge_external_data(model_path):
+            try:
+                import onnx
+                from pathlib import Path
+                model_path = Path(model_path)
+                if not model_path.exists():
+                    return
+                
+                # Load model and external data automatically
+                model = onnx.load(str(model_path))
+                # Save model as a single file (default behavior when not specifying external data location)
+                onnx.save(model, str(model_path))
+                
+                # Remove the now redundant .data file
+                data_path = model_path.with_suffix(model_path.suffix + ".data")
+                if data_path.exists():
+                    data_path.unlink()
+                    config.logger.info(f"Merged and removed external data: {data_path.name}")
+            except Exception as e:
+                config.logger.warning(f"Could not merge external data for {model_path.name}: {e}")
+
         try:
             # --- Set export mode for VAE and Drift ---
             self.vae.apply(lambda m: set_export_mode(m, True))
@@ -1218,6 +1240,7 @@ class EnhancedLabelTrainer:
                 opset_version=14,
                 do_constant_folding=True
             )
+            merge_external_data(vae_path)
             config.logger.info(f"VAE exported to {vae_path}")
             
             # Export Drift
@@ -1240,6 +1263,7 @@ class EnhancedLabelTrainer:
                 opset_version=11, # Opset 11 is highly compatible with WebGL backends
                 do_constant_folding=True
             )
+            merge_external_data(drift_path)
             config.logger.info(f"Drift exported to {drift_path}")
 
             # --- Auto-configure the HTML file to match the current dimensions ---

@@ -241,12 +241,10 @@
             const dirInput = document.getElementById('dirInput');
 
             async function loadFromFiles(files) {
-                let vaeFile, driftFile, vaeDataFile, driftDataFile;
+                let vaeFile, driftFile;
                 for (const file of files) {
                     if (file.name === 'vae.onnx') vaeFile = file;
                     if (file.name === 'drift.onnx') driftFile = file;
-                    if (file.name === 'vae.onnx.data') vaeDataFile = file;
-                    if (file.name === 'drift.onnx.data') driftDataFile = file;
                 }
 
                 if (!vaeFile || !driftFile) {
@@ -257,22 +255,25 @@
                 try {
                     statusEl.textContent = 'Loading selected neural networks...';
                     
+                    // Revoke old URLs to free memory
+                    if (vaeSession) URL.revokeObjectURL(vaeSession._url);
+                    if (driftSession) URL.revokeObjectURL(driftSession._url);
+
                     // Create blobs for ONNX models
                     const vaeUrl = URL.createObjectURL(vaeFile);
                     const driftUrl = URL.createObjectURL(driftFile);
 
-                    // Note: ONNX Runtime Web might need special handling for .data files
-                    // if they are not in the same directory. But with URL.createObjectURL,
-                    // we usually load the whole model at once.
-                    
-                    driftSession = await ort.InferenceSession.create(driftUrl, {
-                        executionProviders: ['webgl'],
-                        graphOptimizationLevel: 'all'
-                    });
                     vaeSession = await ort.InferenceSession.create(vaeUrl, {
                         executionProviders: ['webgl'],
                         graphOptimizationLevel: 'all'
                     });
+                    vaeSession._url = vaeUrl; // Store to revoke later
+
+                    driftSession = await ort.InferenceSession.create(driftUrl, {
+                        executionProviders: ['webgl'],
+                        graphOptimizationLevel: 'all'
+                    });
+                    driftSession._url = driftUrl;
 
                     statusEl.textContent = 'Ready (Loaded from Folder).';
                     generateBtn.textContent = 'Generate Image';
