@@ -1204,7 +1204,7 @@ class EnhancedLabelTrainer:
             torch.onnx.export(
                 self.vae,
                 (dummy_img, dummy_label),
-                vae_path,
+                str(vae_path), # Use string path
                 input_names=['image', 'label'],
                 # Naming 'reconstruction' matches the key expected in onnx_generate_image.html
                 output_names=['reconstruction', 'mu', 'logvar'],
@@ -1215,7 +1215,8 @@ class EnhancedLabelTrainer:
                     'mu': {0: 'batch_size'},
                     'logvar': {0: 'batch_size'}
                 },
-                opset_version=14
+                opset_version=14,
+                do_constant_folding=True
             )
             config.logger.info(f"VAE exported to {vae_path}")
             
@@ -1227,7 +1228,7 @@ class EnhancedLabelTrainer:
             torch.onnx.export(
                 self.drift,
                 (dummy_z, dummy_t, dummy_label),
-                drift_path,
+                str(drift_path), # Use string path
                 input_names=['z', 't', 'label'],
                 output_names=['drift'],
                 dynamic_axes={
@@ -1236,7 +1237,8 @@ class EnhancedLabelTrainer:
                     'label': {0: 'batch_size'},
                     'drift': {0: 'batch_size'}
                 },
-                opset_version=11 # Opset 11 is highly compatible with WebGL backends
+                opset_version=11, # Opset 11 is highly compatible with WebGL backends
+                do_constant_folding=True
             )
             config.logger.info(f"Drift exported to {drift_path}")
 
