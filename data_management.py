@@ -136,6 +136,10 @@ def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = Fals
     if hasattr(trainer, 'kpi_tracker') and hasattr(trainer.kpi_tracker, 'metrics'):
         checkpoint['kpi_metrics'] = trainer.kpi_tracker.metrics
     
+    # Save reference VAE if it exists
+    if hasattr(trainer, 'vae_ref') and trainer.vae_ref is not None:
+        checkpoint['vae_ref_state'] = trainer.vae_ref.state_dict()
+    
     latest_path = config.DIRS["ckpt"] / "latest.pt"
     torch.save(checkpoint, latest_path)
     config.logger.info(f"Checkpoint saved to {latest_path}")
@@ -183,14 +187,21 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         trainer.phase = checkpoint.get('phase', 1)
         trainer.phase2_start_epoch = checkpoint.get('phase2_start_epoch', None)
         
-        if trainer.phase >= 2 and not hasattr(trainer, 'vae_ref'):
+        # Load or recreate reference VAE
+        if trainer.phase >= 2:
             from models import LabelConditionedVAE
             trainer.vae_ref = LabelConditionedVAE().to(config.DEVICE)
-            trainer.vae_ref.load_state_dict(trainer.vae.state_dict())
+            
+            if 'vae_ref_state' in checkpoint:
+                trainer.vae_ref.load_state_dict(checkpoint['vae_ref_state'])
+                config.logger.info("Reference anchor loaded from checkpoint.")
+            else:
+                trainer.vae_ref.load_state_dict(trainer.vae.state_dict())
+                config.logger.info("Reference anchor recreated from VAE state (no saved anchor found).")
+                
             trainer.vae_ref.eval()
             for param in trainer.vae_ref.parameters():
                 param.requires_grad = False
-            config.logger.info("Reference anchor created from loaded checkpoint.")
         
         if 'training_schedule' in checkpoint:
             config.TRAINING_SCHEDULE.update(checkpoint['training_schedule'])

