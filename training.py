@@ -1223,12 +1223,16 @@ class EnhancedLabelTrainer:
             dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
             
             vae_path = config.DIRS["onnx"] / "vae.onnx"
+            # Using the legacy exporter path by not using Dynamo/TorchExport
+            # and ensuring script-based tracing is used.
             torch.onnx.export(
                 self.vae,
                 (dummy_img, dummy_label),
-                str(vae_path), # Use string path
+                str(vae_path),
+                export_params=True,
+                opset_version=16,
+                do_constant_folding=True,
                 input_names=['image', 'label'],
-                # Naming 'reconstruction' matches the key expected in onnx_generate_image.html
                 output_names=['reconstruction', 'mu', 'logvar'],
                 dynamic_axes={
                     'image': {0: 'batch_size'},
@@ -1236,9 +1240,7 @@ class EnhancedLabelTrainer:
                     'reconstruction': {0: 'batch_size'},
                     'mu': {0: 'batch_size'},
                     'logvar': {0: 'batch_size'}
-                },
-                opset_version=16, # Opset 16 is widely supported and avoids Opset 18 Split issues
-                do_constant_folding=True
+                }
             )
             merge_external_data(vae_path)
             config.logger.info(f"VAE exported to {vae_path}")
@@ -1251,17 +1253,18 @@ class EnhancedLabelTrainer:
             torch.onnx.export(
                 self.drift,
                 (dummy_z, dummy_t, dummy_label),
-                str(drift_path), # Use string path
+                str(drift_path),
+                export_params=True,
+                opset_version=16,
+                do_constant_folding=True,
                 input_names=['z', 't', 'label'],
                 output_names=['drift'],
                 dynamic_axes={
                     'z': {0: 'batch_size'},
-                    't': {0: 'batch_size'}, # Enabled dynamic batch for time tensor
+                    't': {0: 'batch_size'},
                     'label': {0: 'batch_size'},
                     'drift': {0: 'batch_size'}
-                },
-                opset_version=16, # Match VAE opset for consistency
-                do_constant_folding=True
+                }
             )
             merge_external_data(drift_path)
             config.logger.info(f"Drift exported to {drift_path}")
