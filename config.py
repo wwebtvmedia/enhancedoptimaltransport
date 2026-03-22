@@ -57,11 +57,12 @@ GRAD_CLIP = 1.0
 # ============================================================================
 # LOSS WEIGHTS
 # ============================================================================
-KL_WEIGHT = 0.00005      # Lowered to reduce posterior collapse
+KL_WEIGHT = 0.0005       # Increased from 0.00005 to force label information
 RECON_WEIGHT = 2.5
 DRIFT_WEIGHT = 0.5
-DIVERSITY_WEIGHT = 1.5    # Increased from 0.3 to fix channel collapse
+DIVERSITY_WEIGHT = 0.5    # Reduced from 1.5 to prevent latent corruption
 CONSISTENCY_WEIGHT = 0.5
+PHASE3_RECON_SCALE = 0.5  # Increased from 0.1 to keep VAE sharp in Phase 3
 REVERT_THRESHOLD = 2.5
 SIM_LOST_FACTOR = 1.0
 PERSP_LOST_FACTOR = 1.0

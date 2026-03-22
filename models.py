@@ -61,7 +61,7 @@ class PercentileRescale(nn.Module):
         if self._is_exporting or not self.training:
             scale = (self.high - self.low).clamp(min=1e-6).view(1, -1, 1, 1)
             shift = self.low.view(1, -1, 1, 1)
-            return torch.tanh((x - shift) / scale * 0.9)  # Slightly reduced scale for stability
+            return torch.tanh((x - shift) / scale)
         
         if self.training:
             with torch.no_grad():
@@ -74,7 +74,7 @@ class PercentileRescale(nn.Module):
         
         scale = (self.high - self.low).clamp(min=1e-6).view(1, -1, 1, 1)
         shift = self.low.view(1, -1, 1, 1)
-        return torch.tanh((x - shift) / scale * 0.9)
+        return torch.tanh((x - shift) / scale)
 
 # ============================================================
 # LABEL-CONDITIONED BLOCK
