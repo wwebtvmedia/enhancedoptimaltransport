@@ -159,11 +159,18 @@ with tab3:
 # --- TAB 4: Curves & Logs (Restored) ---
 with tab4:
     st.subheader("Historical Training Curves")
-    latest_log = get_latest_log_path(config.DIRS["logs"])
     
-    if latest_log:
-        st.caption(f"Analyzing log: {latest_log.name}")
-        metrics = parse_training_log(str(latest_log))
+    # Log File Selection
+    log_dir = config.DIRS["logs"]
+    log_files = sorted(list(log_dir.glob("train_*.log")), key=os.path.getmtime, reverse=True)
+    
+    if log_files:
+        log_names = [f.name for f in log_files]
+        selected_log_name = st.selectbox("Select Log File to Analyze", log_names, index=0)
+        selected_log_path = log_dir / selected_log_name
+        
+        st.caption(f"Analyzing log: {selected_log_path.name}")
+        metrics = parse_training_log(str(selected_log_path))
         
         if metrics:
             df = pd.DataFrame.from_dict(metrics, orient='index')

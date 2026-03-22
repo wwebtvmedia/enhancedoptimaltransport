@@ -288,6 +288,7 @@ class SchrödingerBridgeGUI:
         bar.pack(fill='x', pady=5)
         
         tk.Button(bar, text="🔄 Load Latest Log", command=self.load_latest_log, bg=Colors.ACCENT, fg="white", relief='flat', padx=15).pack(side='left', padx=10)
+        tk.Button(bar, text="📂 Select Log File", command=self.select_log_file, bg=Colors.BG_MEDIUM, fg=Colors.ACCENT, relief='flat', padx=15).pack(side='left', padx=10)
         self.viz_status = tk.StringVar(value="Ready to plot.")
         ttk.Label(bar, textvariable=self.viz_status).pack(side='left')
 
@@ -304,9 +305,26 @@ class SchrödingerBridgeGUI:
     def load_latest_log(self):
         path = get_latest_log_path(config.DIRS["logs"])
         if path:
-            self.metrics = parse_training_log(str(path))
+            self._load_log_from_path(path)
+
+    def select_log_file(self):
+        initial_dir = config.DIRS["logs"]
+        file_path = filedialog.askopenfilename(
+            initialdir=initial_dir,
+            title="Select Training Log File",
+            filetypes=(("Log files", "*.log"), ("Text files", "*.txt"), ("All files", "*.*"))
+        )
+        if file_path:
+            path = Path(file_path)
+            self._load_log_from_path(path)
+
+    def _load_log_from_path(self, path: Path):
+        self.metrics = parse_training_log(str(path))
+        if self.metrics:
             self.viz_status.set(f"Loaded {len(self.metrics)} epochs from {path.name}")
             self.update_charts()
+        else:
+            self.viz_status.set(f"❌ Failed to parse or empty log: {path.name}")
 
     def update_charts(self):
         if not PYGL_AVAILABLE or not self.metrics: return
