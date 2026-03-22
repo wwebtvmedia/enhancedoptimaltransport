@@ -179,6 +179,15 @@
                 <input type="range" id="stepsSlider" min="10" max="100" value="50" step="1">
             </div>
 
+            <div class="control-group" style="grid-column: 1 / -1; border-top: 1px solid var(--google-gray-200); padding-top: 24px;">
+                <label for="dirInput">📂 Load Models from Directory (Optional)</label>
+                <div style="display: flex; gap: 10px;">
+                    <input type="file" id="dirInput" webkitdirectory directory multiple style="flex-grow: 1;">
+                    <button id="loadDirBtn" class="btn-primary" style="padding: 8px 16px; font-size: 14px; width: auto;">Load Folder</button>
+                </div>
+                <small style="color: var(--google-gray-700); margin-top: 4px;">Select the 'onnx' folder containing .onnx and .onnx.data files.</small>
+            </div>
+
             <button id="generateBtn" class="btn-primary" disabled>Initialize Models...</button>
         </div>
 
@@ -228,6 +237,60 @@
                 return new ort.Tensor('float32', new Float32Array(data), dims);
             }
 
+            const loadDirBtn = document.getElementById('loadDirBtn');
+            const dirInput = document.getElementById('dirInput');
+
+            async function loadFromFiles(files) {
+                let vaeFile, driftFile, vaeDataFile, driftDataFile;
+                for (const file of files) {
+                    if (file.name === 'vae.onnx') vaeFile = file;
+                    if (file.name === 'drift.onnx') driftFile = file;
+                    if (file.name === 'vae.onnx.data') vaeDataFile = file;
+                    if (file.name === 'drift.onnx.data') driftDataFile = file;
+                }
+
+                if (!vaeFile || !driftFile) {
+                    statusEl.textContent = 'Error: Missing vae.onnx or drift.onnx in selected folder.';
+                    return;
+                }
+
+                try {
+                    statusEl.textContent = 'Loading selected neural networks...';
+                    
+                    // Create blobs for ONNX models
+                    const vaeUrl = URL.createObjectURL(vaeFile);
+                    const driftUrl = URL.createObjectURL(driftFile);
+
+                    // Note: ONNX Runtime Web might need special handling for .data files
+                    // if they are not in the same directory. But with URL.createObjectURL,
+                    // we usually load the whole model at once.
+                    
+                    driftSession = await ort.InferenceSession.create(driftUrl, {
+                        executionProviders: ['webgl'],
+                        graphOptimizationLevel: 'all'
+                    });
+                    vaeSession = await ort.InferenceSession.create(vaeUrl, {
+                        executionProviders: ['webgl'],
+                        graphOptimizationLevel: 'all'
+                    });
+
+                    statusEl.textContent = 'Ready (Loaded from Folder).';
+                    generateBtn.textContent = 'Generate Image';
+                    generateBtn.disabled = false;
+                } catch (err) {
+                    statusEl.textContent = 'Error loading from folder: ' + err.message;
+                    console.error(err);
+                }
+            }
+
+            loadDirBtn.addEventListener('click', () => {
+                if (dirInput.files.length > 0) {
+                    loadFromFiles(dirInput.files);
+                } else {
+                    statusEl.textContent = 'Please select a directory first.';
+                }
+            });
+
             let driftSession, vaeSession;
             try {
                 statusEl.textContent = 'Loading neural networks...';
@@ -243,8 +306,8 @@
                 generateBtn.textContent = 'Generate Image';
                 generateBtn.disabled = false;
             } catch (err) {
-                statusEl.textContent = 'Error: Ensure drift.onnx and vae.onnx are in this folder.';
-                console.error(err);
+                statusEl.textContent = 'Auto-load failed. Please use "Load Models from Directory".';
+                console.warn('Auto-load failed:', err);
             }
 
             async function runDrift(z, t, labelTensor) {
@@ -267,7 +330,7 @@
                     const labelTensor = createTensor([label], [1]);
 
                     // 1. Initial Noise (z0)
-                    const latentSize = 1 * 4 * 12 * 12;
+                    const latentSize = LATENT_SHAPE[0] * LATENT_SHAPE[1] * LATENT_SHAPE[2] * LATENT_SHAPE[3];
                     const z0Data = new Float32Array(latentSize);
                     for (let i = 0; i < latentSize; i++) z0Data[i] = normalRandom(0, temp);
                     let z = createTensor(z0Data, LATENT_SHAPE);
@@ -299,10 +362,11 @@
                     const canvasData = ctx.createImageData(IMG_SIZE, IMG_SIZE);
                     const pixels = canvasData.data;
 
-                    for (let i = 0; i < IMG_SIZE * IMG_SIZE; i++) {
-                        pixels[i*4 + 0] = Math.min(255, Math.max(0, Math.round((imgData[0*9216 + i] + 1) / 2 * 255)));
-                        pixels[i*4 + 1] = Math.min(255, Math.max(0, Math.round((imgData[1*9216 + i] + 1) / 2 * 255)));
-                        pixels[i*4 + 2] = Math.min(255, Math.max(0, Math.round((imgData[2*9216 + i] + 1) / 2 * 255)));
+                    const planeSize = IMG_SIZE * IMG_SIZE;
+                    for (let i = 0; i < planeSize; i++) {
+                        pixels[i*4 + 0] = Math.min(255, Math.max(0, Math.round((imgData[0*planeSize + i] + 1) / 2 * 255)));
+                        pixels[i*4 + 1] = Math.min(255, Math.max(0, Math.round((imgData[1*planeSize + i] + 1) / 2 * 255)));
+                        pixels[i*4 + 2] = Math.min(255, Math.max(0, Math.round((imgData[2*planeSize + i] + 1) / 2 * 255)));
                         pixels[i*4 + 3] = 255;
                     }
 
