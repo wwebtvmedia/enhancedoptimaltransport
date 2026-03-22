@@ -1237,7 +1237,7 @@ class EnhancedLabelTrainer:
                     'mu': {0: 'batch_size'},
                     'logvar': {0: 'batch_size'}
                 },
-                opset_version=14,
+                opset_version=16, # Opset 16 is widely supported and avoids Opset 18 Split issues
                 do_constant_folding=True
             )
             merge_external_data(vae_path)
@@ -1260,7 +1260,7 @@ class EnhancedLabelTrainer:
                     'label': {0: 'batch_size'},
                     'drift': {0: 'batch_size'}
                 },
-                opset_version=11, # Opset 11 is highly compatible with WebGL backends
+                opset_version=16, # Match VAE opset for consistency
                 do_constant_folding=True
             )
             merge_external_data(drift_path)

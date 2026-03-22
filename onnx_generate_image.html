@@ -126,12 +126,13 @@
             margin-left: 8px;
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.webgl.min.js"></script>
+    <!-- Use the full bundle for better operator support and CPU fallback -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script>
 </head>
 <body>
     <div class="container">
         <h1><span>📊</span> Schrödinger Bridge Generator</h1>
-        <p class="subtitle">Edge AI: Generating 96x96 images directly in your browser via WebGL.</p>
+        <p class="subtitle">Edge AI: Generating images directly in your browser via WebGL/CPU.</p>
 
         <div class="controls-grid">
             <div class="control-group">
@@ -185,7 +186,7 @@
                     <input type="file" id="dirInput" webkitdirectory directory multiple style="flex-grow: 1;">
                     <button id="loadDirBtn" class="btn-primary" style="padding: 8px 16px; font-size: 14px; width: auto;">Load Folder</button>
                 </div>
-                <small style="color: var(--google-gray-700); margin-top: 4px;">Select the 'onnx' folder containing .onnx and .onnx.data files.</small>
+                <small style="color: var(--google-gray-700); margin-top: 4px;">Select the 'onnx' folder containing .onnx files.</small>
             </div>
 
             <button id="generateBtn" class="btn-primary" disabled>Initialize Models...</button>
@@ -201,6 +202,7 @@
         (async () => {
             let IMG_SIZE = 96;
             let LATENT_SHAPE = [1, 4, 12, 12];
+            let driftSession, vaeSession;
 
             const statusEl = document.getElementById('status');
             const canvas = document.getElementById('outputCanvas');
@@ -211,6 +213,8 @@
             const stepsSlider = document.getElementById('stepsSlider');
             const stepsValue = document.getElementById('stepsValue');
             const resSelect = document.getElementById('resSelect');
+            const loadDirBtn = document.getElementById('loadDirBtn');
+            const dirInput = document.getElementById('dirInput');
 
             resSelect.addEventListener('change', () => {
                 IMG_SIZE = parseInt(resSelect.value, 10);
@@ -218,7 +222,7 @@
                 LATENT_SHAPE = [1, 4, latentDim, latentDim];
                 canvas.width = IMG_SIZE;
                 canvas.height = IMG_SIZE;
-                canvas.style.width = '384px'; // Maintain display size
+                canvas.style.width = '384px';
                 canvas.style.height = '384px';
             });
 
@@ -237,9 +241,6 @@
                 return new ort.Tensor('float32', new Float32Array(data), dims);
             }
 
-            const loadDirBtn = document.getElementById('loadDirBtn');
-            const dirInput = document.getElementById('dirInput');
-
             async function loadFromFiles(files) {
                 let vaeFile, driftFile;
                 for (const file of files) {
@@ -255,22 +256,22 @@
                 try {
                     statusEl.textContent = 'Loading selected neural networks...';
                     
-                    // Revoke old URLs to free memory
-                    if (vaeSession) URL.revokeObjectURL(vaeSession._url);
-                    if (driftSession) URL.revokeObjectURL(driftSession._url);
+                    if (vaeSession && vaeSession._url) URL.revokeObjectURL(vaeSession._url);
+                    if (driftSession && driftSession._url) URL.revokeObjectURL(driftSession._url);
 
-                    // Create blobs for ONNX models
                     const vaeUrl = URL.createObjectURL(vaeFile);
                     const driftUrl = URL.createObjectURL(driftFile);
 
+                    const providers = ['webgl', 'cpu'];
+                    
                     vaeSession = await ort.InferenceSession.create(vaeUrl, {
-                        executionProviders: ['webgl'],
+                        executionProviders: providers,
                         graphOptimizationLevel: 'all'
                     });
-                    vaeSession._url = vaeUrl; // Store to revoke later
+                    vaeSession._url = vaeUrl;
 
                     driftSession = await ort.InferenceSession.create(driftUrl, {
-                        executionProviders: ['webgl'],
+                        executionProviders: providers,
                         graphOptimizationLevel: 'all'
                     });
                     driftSession._url = driftUrl;
@@ -280,7 +281,7 @@
                     generateBtn.disabled = false;
                 } catch (err) {
                     statusEl.textContent = 'Error loading from folder: ' + err.message;
-                    console.error(err);
+                    console.error('Manual load failed:', err);
                 }
             }
 
@@ -292,15 +293,17 @@
                 }
             });
 
-            let driftSession, vaeSession;
+            // Initial auto-load attempt
             try {
                 statusEl.textContent = 'Loading neural networks...';
+                const providers = ['webgl', 'cpu'];
+                
                 driftSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift.onnx', {
-                    executionProviders: ['webgl'],
+                    executionProviders: providers,
                     graphOptimizationLevel: 'all'
                 });
                 vaeSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/vae.onnx', {
-                    executionProviders: ['webgl'],
+                    executionProviders: providers,
                     graphOptimizationLevel: 'all'
                 });
                 statusEl.textContent = 'Ready.';
@@ -330,13 +333,11 @@
                     const dt = 1.0 / steps;
                     const labelTensor = createTensor([label], [1]);
 
-                    // 1. Initial Noise (z0)
                     const latentSize = LATENT_SHAPE[0] * LATENT_SHAPE[1] * LATENT_SHAPE[2] * LATENT_SHAPE[3];
                     const z0Data = new Float32Array(latentSize);
                     for (let i = 0; i < latentSize; i++) z0Data[i] = normalRandom(0, temp);
                     let z = createTensor(z0Data, LATENT_SHAPE);
 
-                    // 2. Integration
                     for (let i = 0; i < steps; i++) {
                         const t = i * dt;
                         if (method === 'euler') {
@@ -356,7 +357,6 @@
                         statusEl.textContent = `Processing: ${Math.round((i/steps)*100)}%`;
                     }
 
-                    // 3. Decode
                     statusEl.textContent = 'Decoding latent space...';
                     const decodeResults = await vaeSession.run({ z, label: labelTensor });
                     const imgData = decodeResults.reconstruction.data;
@@ -375,6 +375,7 @@
                     statusEl.textContent = 'Done!';
                 } catch (err) {
                     statusEl.textContent = 'Error: ' + err.message;
+                    console.error('Generation failed:', err);
                 } finally {
                     generateBtn.disabled = false;
                     generateBtn.textContent = 'Generate Image';
