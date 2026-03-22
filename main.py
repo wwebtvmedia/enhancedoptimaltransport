@@ -91,7 +91,8 @@ def run_menu():
         choice = input("\nSelect an option: ").strip().lower()
         
         if choice == '1':
-            epochs_input = input(f"Enter number of epochs [default {config.EPOCHS}]: ").strip()
+            print("\n🚀 Starting fresh training...")
+            epochs_input = input(f"Enter TOTAL number of epochs [default {config.EPOCHS}]: ").strip()
             if epochs_input:
                 config.EPOCHS = int(epochs_input)
             run_headless_training()
@@ -136,6 +137,27 @@ def run_menu():
             
         elif choice == '7':
             print("\n⏯️ Resuming from latest checkpoint...")
+            
+            # Check current progress to provide helpful default
+            import data_management as dm
+            ckpt_path = config.DIRS["ckpt"] / "latest.pt"
+            current_epoch = 0
+            if ckpt_path.exists():
+                try:
+                    import torch
+                    checkpoint = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+                    current_epoch = checkpoint.get('epoch', 0)
+                    print(f"Current progress: Epoch {current_epoch}/{config.EPOCHS}")
+                except:
+                    pass
+            
+            additional_input = input("Enter number of ADDITIONAL epochs to train [default 10]: ").strip()
+            add_epochs = int(additional_input) if additional_input else 10
+            
+            # Update total EPOCHS in config to allow continuation
+            config.EPOCHS = current_epoch + add_epochs + 1
+            print(f"Setting target to epoch {config.EPOCHS}...")
+            
             run_headless_training()
             break
             
