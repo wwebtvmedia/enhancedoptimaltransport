@@ -695,15 +695,31 @@ class EnhancedLabelTrainer:
             drift_loss_base = F.huber_loss(pred * time_weights, target * time_weights, delta=1.0) * config.DRIFT_WEIGHT
 
             consistency_decay = max(0.1, 1.0 - (self.epoch - drift_start_epoch) / (config.EPOCHS - drift_start_epoch))
-            # In Phase 3, we might want a different decay schedule; for now keep same.
-            total_loss = drift_loss_base + (consistency_loss * config.CONSISTENCY_WEIGHT * consistency_decay)
             
-            loss_dict = {
-                'total': total_loss,
-                'drift': drift_loss_base.item(),
-                'consistency': consistency_loss.item(),
-                'temperature': temperature
-            }
+            # PHASE 3 ENHANCEMENT: Also train the VAE to reconstruct from the bridge-derived z1
+            if phase == 3:
+                # Calculate reconstruction from the z1 we sampled
+                recon_z1 = self.vae.decode(z1, labels)
+                recon_loss_z1 = F.l1_loss(recon_z1, images) * config.RECON_WEIGHT
+                # Also include perceptual if available
+                recon_loss_z1 += config.SIM_LOST_FACTOR * self.ssim_loss(recon_z1, images)
+                
+                total_loss = drift_loss_base + (consistency_loss * config.CONSISTENCY_WEIGHT * consistency_decay) + recon_loss_z1
+                loss_dict = {
+                    'total': total_loss,
+                    'drift': drift_loss_base.item(),
+                    'consistency': consistency_loss.item(),
+                    'recon_p3': recon_loss_z1.item(),
+                    'temperature': temperature
+                }
+            else:
+                total_loss = drift_loss_base + (consistency_loss * config.CONSISTENCY_WEIGHT * consistency_decay)
+                loss_dict = {
+                    'total': total_loss,
+                    'drift': drift_loss_base.item(),
+                    'consistency': consistency_loss.item(),
+                    'temperature': temperature
+                }
         
         # Add composite score
         loss_dict['composite_score'] = composite_score(loss_dict, phase)
@@ -808,7 +824,7 @@ class EnhancedLabelTrainer:
                         latent_std_values.append(loss_dict['latent_std'])
                     if 'min_channel_std' in loss_dict:
                         channel_std_values.append(loss_dict['min_channel_std'])
-                else:
+                elif phase == 2:
                     self.opt_drift.zero_grad()
                     
                     if self.scaler is not None:
@@ -821,6 +837,26 @@ class EnhancedLabelTrainer:
                     else:
                         loss_dict['total'].backward()
                         torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR)
+                        self.opt_drift.step()
+                elif phase == 3:
+                    # In Phase 3, we update BOTH
+                    self.opt_vae.zero_grad()
+                    self.opt_drift.zero_grad()
+                    
+                    if self.scaler is not None:
+                        self.scaler.scale(loss_dict['total']).backward()
+                        self.scaler.unscale_(self.opt_vae)
+                        self.scaler.unscale_(self.opt_drift)
+                        torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
+                        torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR)
+                        self.scaler.step(self.opt_vae)
+                        self.scaler.step(self.opt_drift)
+                        self.scaler.update()
+                    else:
+                        loss_dict['total'].backward()
+                        torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
+                        torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR)
+                        self.opt_vae.step()
                         self.opt_drift.step()
                 
                 # Accumulate losses

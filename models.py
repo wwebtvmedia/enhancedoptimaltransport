@@ -120,9 +120,13 @@ class LabelConditionedBlock(nn.Module):
         h = self.conv1(h)
         
         if labels is not None:
+            # Stronger FiLM-like modulation
             scale_shift = self.label_proj(labels)
             scale, shift = scale_shift.chunk(2, dim=1)
-            h = h * (1 + scale.view(-1, scale.shape[1], 1, 1)) + shift.view(-1, shift.shape[1], 1, 1)
+            # Reshape for broadcasting
+            scale = scale.view(-1, scale.shape[1], 1, 1)
+            shift = shift.view(-1, shift.shape[1], 1, 1)
+            h = h * (1 + scale) + shift
         
         h = F.silu(self.norm2(h))
         h = self.conv2(h)
