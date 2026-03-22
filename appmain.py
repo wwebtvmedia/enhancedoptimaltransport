@@ -1687,13 +1687,27 @@ class SchrödingerBridgeGUI:
     def export_onnx(self):
         """Export models to ONNX"""
         try:
+            from tkinter import filedialog
+            export_dir = filedialog.askdirectory(title="Select ONNX Export Directory", initialdir=config.DIRS["onnx"])
+            if not export_dir:
+                return
+
             from torch.utils.data import DataLoader, TensorDataset
             dummy = DataLoader(TensorDataset(torch.randn(1,3,config.IMG_SIZE,config.IMG_SIZE)), batch_size=1)
             trainer = training.EnhancedLabelTrainer(dummy)
             
             if trainer.load_for_inference():
-                trainer.export_onnx()
-                messagebox.showinfo("Success", f"Models exported to {config.DIRS['onnx']}")
+                # Temporarily override the config directory for this export
+                original_onnx_dir = config.DIRS["onnx"]
+                config.DIRS["onnx"] = Path(export_dir)
+                config.DIRS["onnx"].mkdir(parents=True, exist_ok=True)
+                
+                try:
+                    trainer.export_onnx()
+                    messagebox.showinfo("Success", f"Models exported to {export_dir}")
+                finally:
+                    # Restore original config
+                    config.DIRS["onnx"] = original_onnx_dir
             else:
                 messagebox.showerror("Error", "No checkpoint found")
                 

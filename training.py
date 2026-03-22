@@ -988,7 +988,7 @@ class EnhancedLabelTrainer:
             return False
         
     def generate_samples(self, labels=None, num_samples=8, temperature=None, method='heun',
-                        langevin_steps=0, langevin_step_size=None, langevin_score_scale=None):
+                        langevin_steps=None, langevin_step_size=None, langevin_score_scale=None):
         """
         Generate samples with label conditioning.
         
@@ -997,10 +997,12 @@ class EnhancedLabelTrainer:
             num_samples: Number of samples to generate
             temperature: Ignored (kept for API compatibility)
             method: 'euler', 'heun', or 'rk4'
-            langevin_steps: Number of Langevin refinement steps (0 = disable)
+            langevin_steps: Number of Langevin refinement steps (None = use config default)
             langevin_step_size: Step size for Langevin dynamics (default from config)
             langevin_score_scale: Scaling factor for the approximate score (default from config)
         """
+        if langevin_steps is None:
+            langevin_steps = getattr(config, 'DEFAULT_LANGEVIN_STEPS', 0)
         if langevin_step_size is None:
             langevin_step_size = config.LANGEVIN_STEP_SIZE
         if langevin_score_scale is None:

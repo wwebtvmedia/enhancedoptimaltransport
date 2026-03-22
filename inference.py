@@ -68,8 +68,9 @@ def run_inference(labels: Optional[List[int]] = None,
     
     # Langevin refinement options
     if langevin_steps is None:
-        langevin_input = input("Langevin refinement steps [default: 0 (disabled)]: ").strip()
-        langevin_steps = int(langevin_input) if langevin_input else 0
+        default_l_steps = getattr(config, 'DEFAULT_LANGEVIN_STEPS', 0)
+        langevin_input = input(f"Langevin refinement steps [default: {default_l_steps}]: ").strip()
+        langevin_steps = int(langevin_input) if langevin_input else default_l_steps
     
     if langevin_step_size is None:
         if langevin_steps > 0:
