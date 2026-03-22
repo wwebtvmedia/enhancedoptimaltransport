@@ -1215,6 +1215,8 @@ class EnhancedLabelTrainer:
 
         try:
             # --- Set export mode for VAE and Drift ---
+            self.vae.eval()
+            self.drift.eval()
             self.vae.apply(lambda m: set_export_mode(m, True))
             self.drift.apply(lambda m: set_export_mode(m, True))
             
@@ -1223,25 +1225,28 @@ class EnhancedLabelTrainer:
             dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
             
             vae_path = config.DIRS["onnx"] / "vae.onnx"
-            # Using the legacy exporter path by not using Dynamo/TorchExport
-            # and ensuring script-based tracing is used.
-            torch.onnx.export(
-                self.vae,
-                (dummy_img, dummy_label),
-                str(vae_path),
-                export_params=True,
-                opset_version=16,
-                do_constant_folding=True,
-                input_names=['image', 'label'],
-                output_names=['reconstruction', 'mu', 'logvar'],
-                dynamic_axes={
-                    'image': {0: 'batch_size'},
-                    'label': {0: 'batch_size'},
-                    'reconstruction': {0: 'batch_size'},
-                    'mu': {0: 'batch_size'},
-                    'logvar': {0: 'batch_size'}
-                }
-            )
+            
+            # Force legacy path by tracing first
+            with torch.no_grad():
+                traced_vae = torch.jit.trace(self.vae, (dummy_img, dummy_label), check_trace=False)
+                
+                torch.onnx.export(
+                    traced_vae,
+                    (dummy_img, dummy_label),
+                    str(vae_path),
+                    export_params=True,
+                    opset_version=16,
+                    do_constant_folding=True,
+                    input_names=['image', 'label'],
+                    output_names=['reconstruction', 'mu', 'logvar'],
+                    dynamic_axes={
+                        'image': {0: 'batch_size'},
+                        'label': {0: 'batch_size'},
+                        'reconstruction': {0: 'batch_size'},
+                        'mu': {0: 'batch_size'},
+                        'logvar': {0: 'batch_size'}
+                    }
+                )
             merge_external_data(vae_path)
             config.logger.info(f"VAE exported to {vae_path}")
             
@@ -1250,22 +1255,26 @@ class EnhancedLabelTrainer:
             dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
             
             drift_path = config.DIRS["onnx"] / "drift.onnx"
-            torch.onnx.export(
-                self.drift,
-                (dummy_z, dummy_t, dummy_label),
-                str(drift_path),
-                export_params=True,
-                opset_version=16,
-                do_constant_folding=True,
-                input_names=['z', 't', 'label'],
-                output_names=['drift'],
-                dynamic_axes={
-                    'z': {0: 'batch_size'},
-                    't': {0: 'batch_size'},
-                    'label': {0: 'batch_size'},
-                    'drift': {0: 'batch_size'}
-                }
-            )
+            
+            with torch.no_grad():
+                traced_drift = torch.jit.trace(self.drift, (dummy_z, dummy_t, dummy_label), check_trace=False)
+                
+                torch.onnx.export(
+                    traced_drift,
+                    (dummy_z, dummy_t, dummy_label),
+                    str(drift_path),
+                    export_params=True,
+                    opset_version=16,
+                    do_constant_folding=True,
+                    input_names=['z', 't', 'label'],
+                    output_names=['drift'],
+                    dynamic_axes={
+                        'z': {0: 'batch_size'},
+                        't': {0: 'batch_size'},
+                        'label': {0: 'batch_size'},
+                        'drift': {0: 'batch_size'}
+                    }
+                )
             merge_external_data(drift_path)
             config.logger.info(f"Drift exported to {drift_path}")
 
