@@ -237,7 +237,10 @@
                 return mean + std * z;
             }
 
-            function createTensor(data, dims) {
+            function createTensor(data, dims, type = 'float32') {
+                if (type === 'int64') {
+                    return new ort.Tensor('int64', new BigInt64Array(data.map(x => BigInt(x))), dims);
+                }
                 return new ort.Tensor('float32', new Float32Array(data), dims);
             }
 
@@ -332,7 +335,7 @@
                     const method = document.getElementById('methodSelect').value;
                     const temp = parseFloat(tempSlider.value);
                     const dt = 1.0 / steps;
-                    const labelTensor = createTensor([label], [1]);
+                    const labelTensor = createTensor([label], [1], 'int64');
 
                     const latentSize = LATENT_SHAPE[0] * LATENT_SHAPE[1] * LATENT_SHAPE[2] * LATENT_SHAPE[3];
                     const z0Data = new Float32Array(latentSize);
