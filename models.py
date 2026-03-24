@@ -137,72 +137,83 @@ class LabelConditionedBlock(nn.Module):
 # LABEL-CONDITIONED VAE
 # ============================================================
 class LabelConditionedVAE(nn.Module):
-    """VAE with label conditioning for latent space encoding."""    
+    """VAE with label conditioning for latent space encoding."""
     def __init__(self, free_bits=config.FREE_BITS):
         super().__init__()
         self.free_bits = free_bits
         self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
-        self.current_epoch = 0  # For adaptive diversity loss scheduling
-        self.mu_noise_scale = config.MU_NOISE_SCALE # For adaptive collapse recovery    
-
+        self.current_epoch = 0
+        self.mu_noise_scale = config.MU_NOISE_SCALE
+        
         # Fourier feature channels
         if config.USE_FOURIER_FEATURES:
             self.fourier_channels = len(config.FOURIER_FREQS) * 4
         else:
             self.fourier_channels = 0
-
-        # Doubled from 32 to 64
+        
+        # Encoder with 4 stages (96 -> 48 -> 24 -> 12 -> 6)
         self.enc_in = nn.Conv2d(3 + self.fourier_channels, 64, 3, 1, 1)
-
-        # Patched with Residual and Attention upgrades
         self.enc_blocks = nn.ModuleList([
-            ResidualBlock(64, 128, stride=2),           # 16x16
+            ResidualBlock(64, 128, stride=2),           # 96 -> 48
             LabelConditionedBlock(128, 128),
-            ResidualBlock(128, 256, stride=2),          # 8x8
+            ResidualBlock(128, 256, stride=2),          # 48 -> 24
             SelfAttention(256),
             LabelConditionedBlock(256, 512),
-            nn.Conv2d(512, 512, 4, 2, 1),               # Maintain spatial resolution
+            ResidualBlock(512, 512, stride=2),          # 24 -> 12
+            nn.Conv2d(512, 512, 4, 2, 1),               # 12 -> 6
         ])
-        
-        # Input channels doubled from 256 to 512
         self.z_mean = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
         self.z_logvar = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
-        
-        # Decoder - Starting from Latent (8x8)
+
+        # ========== ENHANCED DECODER (4 symmetric upsample stages) ==========
         self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
-        
         self.dec_blocks = nn.ModuleList([
-            # Stage 1: 8x8 -> 16x16
-            nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(512, 256, 3, 1, 1), nn.SiLU()), 
+            # Stage 1: 6x6 -> 12x12
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Conv2d(512, 512, 3, 1, 1),
+                nn.SiLU()
+            ),
+            LabelConditionedBlock(512, 512),
+            SelfAttention(512),
+
+            # Stage 2: 12x12 -> 24x24
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Conv2d(512, 256, 3, 1, 1),
+                nn.SiLU()
+            ),
             LabelConditionedBlock(256, 256),
-            
-            # Stage 2: 16x16 -> 32x32
-            nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(256, 128, 3, 1, 1), nn.SiLU()),  
+            SelfAttention(256),
+
+            # Stage 3: 24x24 -> 48x48
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Conv2d(256, 128, 3, 1, 1),
+                nn.SiLU()
+            ),
             LabelConditionedBlock(128, 128),
-            SelfAttention(128),
-            
-            # Stage 3: 32x32 -> 64x64
-            nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(128, 64, 3, 1, 1), nn.SiLU()),
-            LabelConditionedBlock(64, 64), # Ensure internal skip is (64+64)
+
+            # Stage 4: 48x48 -> 96x96
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Conv2d(128, 64, 3, 1, 1),
+                nn.SiLU()
+            ),
+            LabelConditionedBlock(64, 64),
         ])
-        
-        # Final Output (Maintains 64x64)
+
         self.dec_out = nn.Conv2d(64, 3, 3, 1, 1)
-
         self.diversity_loss = None
-
+    
     def _get_fourier_features(self, x):
-        """
-        x: image tensor of shape (B, 3, H, W), values in [-1,1]
-        Returns: tensor of shape (B, C_fourier, H, W) or None if disabled.
-        """
+        """Generate Fourier features for spatial coordinates."""
         if not config.USE_FOURIER_FEATURES:
             return None
         B, C, H, W = x.shape
-        # Normalised coordinates in [-1, 1]
         y_coords = torch.linspace(-1, 1, H, device=x.device).view(1, 1, H, 1)
         x_coords = torch.linspace(-1, 1, W, device=x.device).view(1, 1, 1, W)
-        y_grid = y_coords.expand(B, 1, H, W)   # (B,1,H,W)
+        y_grid = y_coords.expand(B, 1, H, W)
         x_grid = x_coords.expand(B, 1, H, W)
         feats = []
         for f in config.FOURIER_FREQS:
@@ -210,33 +221,23 @@ class LabelConditionedVAE(nn.Module):
             feats.append(torch.cos(np.pi * f * x_grid))
             feats.append(torch.sin(np.pi * f * y_grid))
             feats.append(torch.cos(np.pi * f * y_grid))
-        return torch.cat(feats, dim=1)   # (B, 4*len(FOURIER_FREQS), H, W)
-
+        return torch.cat(feats, dim=1)
+    
     def _channel_diversity_loss(self, mu):
-        """Compute diversity loss to encourage all channels to be used.
-        
-        Uses configurable parameters from config that can be
-        updated dynamically during training.
-        """
+        """Compute diversity loss to encourage all channels to be used."""
         channel_stds = mu.std(dim=[0, 2, 3])
-        
-        # Calculate adaptive target if enabled
         if config.DIVERSITY_ADAPTIVE and hasattr(self, 'current_epoch'):
             progress = min(1.0, self.current_epoch / config.DIVERSITY_ADAPT_EPOCHS)
-            target_std = config.DIVERSITY_TARGET_START + progress * (config.DIVERSITY_TARGET_END - config.DIVERSITY_TARGET_START)
+            target_std = config.DIVERSITY_TARGET_START + progress * (
+                config.DIVERSITY_TARGET_END - config.DIVERSITY_TARGET_START
+            )
         else:
             target_std = config.DIVERSITY_TARGET_STD
         
-        # Penalize channels that are too low
         low_penalty = torch.mean(F.relu(target_std - channel_stds)) * config.DIVERSITY_LOW_PENALTY
-        
-        # Penalize channels that are too high
         high_penalty = torch.mean(F.relu(channel_stds - config.DIVERSITY_MAX_STD)) * config.DIVERSITY_HIGH_PENALTY
-        
-        # Balance loss - encourage all channels to have similar std
         balance_loss = channel_stds.std() * config.DIVERSITY_BALANCE_WEIGHT
         
-        # Store stats for monitoring
         if self.training:
             self.diversity_stats = {
                 'channel_stds': channel_stds.detach().cpu(),
@@ -245,70 +246,55 @@ class LabelConditionedVAE(nn.Module):
                 'high_penalty': high_penalty.item() if isinstance(high_penalty, torch.Tensor) else 0,
                 'balance_loss': balance_loss.item()
             }
-        
         return low_penalty + high_penalty + balance_loss
-
+    
     def encode(self, x, labels):
         """Encode images to latent distribution parameters."""
         label_emb = self.label_emb(labels)
-      
         if config.USE_FOURIER_FEATURES:
             fourier = self._get_fourier_features(x)
-            x = torch.cat([x, fourier], dim=1)   # (B, 3+4*len(FREQS), H, W)
-        
+            x = torch.cat([x, fourier], dim=1)
         h = self.enc_in(x)
-        
         for block in self.enc_blocks:
             if isinstance(block, LabelConditionedBlock):
                 h = block(h, label_emb)
             else:
                 h = block(h)
-        
-        # Stabilized mean prediction with scaling
         mu = self.z_mean(h) * config.LATENT_SCALE
-        
-        # Add small noise during training for stability
         if self.training:
             mu = mu + torch.randn_like(mu) * self.mu_noise_scale
-        
-        # Channel dropout for regularization - using config values
         if self.training and torch.rand(1).item() < config.CHANNEL_DROPOUT_PROB:
-            channel_mask = torch.bernoulli(torch.full((mu.shape[0], mu.shape[1], 1, 1), config.CHANNEL_DROPOUT_SURVIVAL, device=mu.device))
+            channel_mask = torch.bernoulli(
+                torch.full((mu.shape[0], mu.shape[1], 1, 1), 
+                          config.CHANNEL_DROPOUT_SURVIVAL, device=mu.device)
+            )
             mu = (mu * channel_mask) / config.CHANNEL_DROPOUT_SURVIVAL
-            
         logvar = torch.clamp(self.z_logvar(h), min=config.LOGVAR_CLAMP_MIN, max=config.LOGVAR_CLAMP_MAX)
-        
-        # Track channel diversity loss during training
         if self.training:
             self.diversity_loss = self._channel_diversity_loss(mu)
-        
         return mu, logvar
-
+    
     def decode(self, z, labels):
-        """Decode latents to images."""
+        """Decode latents to images with enhanced architecture."""
         label_emb = self.label_emb(labels)
-        
         h = self.dec_in(z)
         for block in self.dec_blocks:
             if isinstance(block, LabelConditionedBlock):
                 h = block(h, label_emb)
             else:
                 h = block(h)
-        
         return torch.tanh(self.dec_out(h))
-
+    
     def forward(self, x, labels):
         """Forward pass with reparameterization."""
         mu, logvar = self.encode(x, labels)
-        
         if self.training:
             std = torch.exp(0.5 * logvar)
             z = mu + std * torch.randn_like(std)
         else:
             z = mu
-            
         return self.decode(z, labels), mu, logvar
-
+    
     def reparameterize(self, mu, logvar):
         """Reparameterization trick for sampling."""
         if self.training:
@@ -318,30 +304,52 @@ class LabelConditionedVAE(nn.Module):
         else:
             return mu
 
+# ============================================================================
+# FOURIER TIME EMBEDDING (NEW)
+# ============================================================================
+class FourierTimeEmbed(nn.Module):
+    """Fourier features for time conditioning - captures complex temporal dynamics."""
+    def __init__(self, dim=128, max_freq=64):
+        super().__init__()
+        self.dim = dim
+        self.register_buffer('freqs', torch.linspace(1, max_freq, dim//2))
+    
+    def forward(self, t):
+        """
+        Args:
+            t: Time tensor of shape (B, 1) in range [0, 1]
+        Returns:
+            Time embedding of shape (B, dim)
+        """
+        t = t * 2 * math.pi  # Scale to [0, 2π]
+        sin_emb = torch.sin(t * self.freqs)
+        cos_emb = torch.cos(t * self.freqs)
+        return torch.cat([sin_emb, cos_emb], dim=-1)
+
+
 # ============================================================
 # LABEL-CONDITIONED DRIFT
 # ============================================================
 class LabelConditionedDrift(nn.Module):
     """Drift network for probability flow ODE."""
-    
     def __init__(self):
         super().__init__()
-        
-        # Time conditioning
+        # ========== ENHANCED TIME EMBEDDING WITH FOURIER FEATURES ==========
         self.time_mlp = nn.Sequential(
-            nn.Linear(1, 128),
+            FourierTimeEmbed(dim=128),
+            nn.Linear(128, 256),
             nn.SiLU(),
-            nn.Linear(128, 128)
+            nn.Linear(256, 256)
         )
-        
+        # Rest of initialization remains the same...
         # Label conditioning
         self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
         self.cond_proj = nn.Sequential(
-            nn.Linear(128 + config.LABEL_EMB_DIM, 128),
+            nn.Linear(256 + config.LABEL_EMB_DIM, 128),
             nn.SiLU(),
             nn.Linear(128, 128)
         )
-        
+
         # Time-adaptive scaling
         self.time_weight_net = nn.Sequential(
             nn.Linear(1, 32),

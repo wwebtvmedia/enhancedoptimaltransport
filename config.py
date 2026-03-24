@@ -36,8 +36,8 @@ DATASET_PATH = Path("./data") # Path to download or find custom data
 IMG_SIZE = 96                # Internal processing size (standardized)
 GEN_SIZE = 96                # Final output generation size (can be different)
 LATENT_CHANNELS = 4
-LATENT_H = IMG_SIZE // 8
-LATENT_W = IMG_SIZE // 8
+LATENT_H = IMG_SIZE // 16    # 6x6 for 96x96 images (4 downsampling stages)
+LATENT_W = IMG_SIZE // 16
 LATENT_DIM = LATENT_CHANNELS * LATENT_H * LATENT_W
 
 # ============================================================================
@@ -55,36 +55,53 @@ WEIGHT_DECAY = 1e-4
 GRAD_CLIP = 1.0
 
 # ============================================================================
-# LOSS WEIGHTS
+# LOSS WEIGHTS (ENHANCED FOR QUALITY)
 # ============================================================================
-KL_WEIGHT = 0.0005       # Increased from 0.00005 to force label information
-RECON_WEIGHT = 2.5
-DRIFT_WEIGHT = 0.5
-DIVERSITY_WEIGHT = 0.5    # Reduced from 1.5 to prevent latent corruption
-CONSISTENCY_WEIGHT = 0.5
-PHASE3_RECON_SCALE = 0.5  # Increased from 0.1 to keep VAE sharp in Phase 3
-REVERT_THRESHOLD = 2.5
-SIM_LOST_FACTOR = 1.0
-PERSP_LOST_FACTOR = 1.0
+KL_WEIGHT = 0.001              # Increased from 0.0005 for better latent structure
+RECON_WEIGHT = 3.0             # Increased from 2.5 for sharper reconstruction
+DRIFT_WEIGHT = 1.0             # Increased from 0.5 for better trajectory learning
+DIVERSITY_WEIGHT = 1.0         # Increased from 0.5 to prevent channel collapse
+CONSISTENCY_WEIGHT = 1.0       # Increased from 0.5 for better anchor stability
+PHASE3_RECON_SCALE = 0.5       # Keep decoder sharp in Phase 3
+
+# NEW: Quality-focused loss weights
+PERCEPTUAL_WEIGHT = 0.5        # VGG feature matching
+LPIPS_WEIGHT = 0.3             # Learned perceptual similarity (if available)
+EDGE_WEIGHT = 0.2              # Edge preservation loss
 
 # ============================================================================
-# VAE SPECIFIC
+# INFERENCE (ENHANCED FOR QUALITY)
+# ============================================================================
+DEFAULT_STEPS = 100            # Increased from 50 for smoother trajectories
+DEFAULT_SEED = 42
+INFERENCE_TEMPERATURE = 0.6    # Lower from 0.8 for sharper samples
+DEFAULT_LANGEVIN_STEPS = 20    # Enabled from 0 for refinement
+LANGEVIN_STEP_SIZE = 0.02      # Smaller from 0.05 for stability
+LANGEVIN_SCORE_SCALE = 1.5     # Increased from 1.2 for stronger guidance
+LANGEVIN_DECAY = 0.95          # Slower decay for better convergence
+
+# ============================================================================
+# VAE SPECIFIC (ENHANCED)
 # ============================================================================
 LATENT_SCALE = 1.0
 FREE_BITS = 1.0
-DIVERSITY_TARGET_STD = 0.8                    # Target std for channels
-DIVERSITY_MAX_STD = 2.0                       # Maximum allowed channel std
-DIVERSITY_LOW_PENALTY = 2.0                    # Multiplier for too-low channels
-DIVERSITY_HIGH_PENALTY = 0.5                   # Multiplier for too-high channels
-DIVERSITY_BALANCE_WEIGHT = 0.4                 # Weight for channel balance loss
-DIVERSITY_ADAPTIVE = True                      # Whether to adapt target during training
-DIVERSITY_TARGET_START = 0.3                   # Initial target if adaptive
-DIVERSITY_TARGET_END = 1.0                      # Final target if adaptive
-DIVERSITY_ADAPT_EPOCHS = 50                     # Over how many epochs to adapt
+DIVERSITY_TARGET_STD = 0.8
+DIVERSITY_MAX_STD = 2.0
+DIVERSITY_LOW_PENALTY = 2.0
+DIVERSITY_HIGH_PENALTY = 0.5
+DIVERSITY_BALANCE_WEIGHT = 0.4
+DIVERSITY_ADAPTIVE = True
+DIVERSITY_TARGET_START = 0.3
+DIVERSITY_TARGET_END = 1.0
+DIVERSITY_ADAPT_EPOCHS = 50
 KL_ANNEALING_EPOCHS = 30
 LOGVAR_CLAMP_MIN = -4
 LOGVAR_CLAMP_MAX = 4
 MU_NOISE_SCALE = 0.01
+
+# NEW: Enhanced decoder settings
+DECODER_ATTENTION_LAYERS = [16, 32]  # Resolutions to add self-attention
+DECODER_UPSAMPLE_STAGES = 4          # Increased from 3
 
 # ============================================================================
 # CHANNEL DROPOUT SETTINGS
@@ -111,18 +128,6 @@ DRIFT_TARGET_NOISE_SCALE = 0.01
 
 # Time weighting factor for drift loss
 TIME_WEIGHT_FACTOR = 2.0                   # time_weights = 1 + TIME_WEIGHT_FACTOR * t
-
-# ============================================================================
-# INFERENCE
-# ============================================================================
-DEFAULT_STEPS = 50
-DEFAULT_SEED = 42
-INFERENCE_TEMPERATURE = 0.8
-DEFAULT_LANGEVIN_STEPS = 0    # Disabled by default to keep images clean
-LANGEVIN_STEP_SIZE = 0.05      # Smaller steps are more stable
-LANGEVIN_SCORE_SCALE = 1.2     # Slight boost for sharpness
-LANGEVIN_DECAY = 0.9           # Rate at which refinement settles
-
 
 # ============================================================================
 # FOURIER FEATURES

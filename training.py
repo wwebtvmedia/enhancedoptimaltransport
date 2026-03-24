@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 from scipy import stats
+import scipy.linalg  # Added for matrix operations if needed
 from typing import Optional, List, Dict, Union, Tuple, Any
 from torchvision.transforms.functional import rgb_to_grayscale
 
@@ -610,7 +611,24 @@ class EnhancedLabelTrainer:
                 
             kl_loss = raw_kl * current_kl_weight * kl_annealing * kl_multiplier
 
-            recon_loss = raw_l1 * config.RECON_WEIGHT + config.SIM_LOST_FACTOR * self.ssim_loss(recon, images) + config.PERSP_LOST_FACTOR * self.perceptual_loss(recon, images)
+            recon_loss = (raw_l1 * config.RECON_WEIGHT + 
+                         config.PERCEPTUAL_WEIGHT * self.perceptual_loss(recon, images))
+            
+            # Add edge preservation loss (differentiable)
+            if config.EDGE_WEIGHT > 0:
+                grad_x = torch.abs(recon[:, :, :, 1:] - recon[:, :, :, :-1]).mean()
+                grad_y = torch.abs(recon[:, :, 1:, :] - recon[:, :, :-1, :]).mean()
+                edge_strength = (grad_x + grad_y) / 2
+                
+                real_grad_x = torch.abs(images[:, :, :, 1:] - images[:, :, :, :-1]).mean()
+                real_grad_y = torch.abs(images[:, :, 1:, :] - images[:, :, :-1, :]).mean()
+                real_edge_strength = (real_grad_x + real_grad_y) / 2
+                
+                edge_loss = F.mse_loss(edge_strength, real_edge_strength) * config.EDGE_WEIGHT
+                recon_loss = recon_loss + edge_loss
+            else:
+                edge_loss = torch.tensor(0.0, device=config.DEVICE)
+
             total_loss = recon_loss + kl_loss + diversity_loss * config.DIVERSITY_WEIGHT
             
             snr = calc_snr(images, recon)
@@ -620,6 +638,7 @@ class EnhancedLabelTrainer:
                 'recon': recon_loss.item(),
                 'kl': kl_loss.item(),
                 'diversity': diversity_loss.item(),
+                'edge_loss': edge_loss.item() if isinstance(edge_loss, torch.Tensor) else edge_loss,
                 'snr': snr,
                 'raw_mse': raw_mse.item(),
                 'raw_kl': raw_kl.item(),
@@ -727,7 +746,48 @@ class EnhancedLabelTrainer:
         loss_dict['composite_score'] = composite_score(loss_dict, phase)
         return loss_dict
 
+
+    def _initialize_vgg(self):
+        """Ensure VGG is initialized for perceptual loss or FID."""
+        if not hasattr(self, 'vgg'):
+            try:
+                import torchvision.models as tv_models
+                self.vgg = tv_models.vgg16(weights=tv_models.VGG16_Weights.IMAGENET1K_V1).features[:16].to(config.DEVICE)
+                for param in self.vgg.parameters():
+                    param.requires_grad = False
+                self.vgg.eval()
+                config.logger.info("VGG16 initialized for quality assessment.")
+            except Exception as e:
+                config.logger.error(f"Failed to initialize VGG: {e}")
+                return False
+        return True
+
+    def calculate_fid_batch(self, real_features, fake_features):
+        """Calculate FID score using scipy for matrix square root."""
+        mu1 = real_features.mean(dim=0).cpu().numpy()
+        sigma1 = torch.cov(real_features.T).cpu().numpy()
+        mu2 = fake_features.mean(dim=0).cpu().numpy()
+        sigma2 = torch.cov(fake_features.T).cpu().numpy()
+        
+        diff = mu1 - mu2
+        
+        # Add regularization to prevent singularity with small batches
+        reg = 1e-5 * np.eye(sigma1.shape[0])
+        sigma1 += reg
+        sigma2 += reg
+        
+        # Matrix square root of (sigma1 @ sigma2)
+        covmean, _ = scipy.linalg.sqrtm(sigma1 @ sigma2, disp=False)
+        
+        # Handle imaginary parts from numerical instability
+        if np.iscomplexobj(covmean):
+            covmean = covmean.real
+            
+        fid = diff @ diff + np.trace(sigma1 + sigma2 - 2 * covmean)
+        return float(fid)
+
     def train_epoch(self) -> Dict:
+        
         """Train for one epoch."""
         losses = defaultdict(float)
         snr_values = []
@@ -890,6 +950,32 @@ class EnhancedLabelTrainer:
                 config.logger.error(f"Error processing batch {batch_idx}: {e}")
                 continue
                         
+                        
+        # Periodic FID calculation (every 20 epochs)
+        if (self.epoch + 1) % 20 == 0 and phase == 1:
+            try:
+                if self._initialize_vgg():
+                    # Collect more samples for more stable FID
+                    with torch.no_grad():
+                        fid_samples = 32 # Increased from 16
+                        batch = next(iter(self.loader))
+                        real_images = batch['image'][:fid_samples].to(config.DEVICE)
+                        real_labels = batch['label'][:fid_samples].to(config.DEVICE)
+                        
+                        # Correct VGG normalization
+                        real_norm = ((real_images + 1) / 2 - self.vgg_mean) / self.vgg_std
+                        real_feat = self.vgg(real_norm)
+                        
+                        gen_images, _, _ = self.vae(real_images, real_labels)
+                        gen_norm = ((gen_images + 1) / 2 - self.vgg_mean) / self.vgg_std
+                        gen_feat = self.vgg(gen_norm)
+                        
+                        fid_score = self.calculate_fid_batch(real_feat.flatten(1), gen_feat.flatten(1))
+                        losses['fid'] = fid_score
+                        config.logger.info(f"FID Score (approx): {fid_score:.2f}")
+            except Exception as e:
+                config.logger.warning(f"FID calculation failed: {e}")
+
         # Compute average losses
         if batch_count > 0:
             avg_losses = {}
