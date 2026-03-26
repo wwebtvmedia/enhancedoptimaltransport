@@ -15,7 +15,8 @@ def run_inference(labels: Optional[List[int]] = None,
                   method: str = 'rk4',
                   langevin_steps: Optional[int] = None,
                   langevin_step_size: Optional[float] = None,
-                  langevin_score_scale: Optional[float] = None) -> None:
+                  langevin_score_scale: Optional[float] = None,
+                  cfg_scale: Optional[float] = None) -> None:
     """
     Run inference with label conditioning.
     
@@ -23,10 +24,11 @@ def run_inference(labels: Optional[List[int]] = None,
         labels: List of class labels. If None, prompts user.
         samples_per_label: Number of samples per label. If None, prompts user.
         temperature: Sampling temperature. If None, prompts user.
-        method: Integration method ('euler' or 'rk4').
-        langevin_steps: Number of Langevin refinement steps. If None, prompts user.
-        langevin_step_size: Step size for Langevin dynamics. If None, prompts user.
-        langevin_score_scale: Scaling factor for the approximate score. If None, prompts user.
+        method: Integration method ('euler', 'heun', or 'rk4').
+        langevin_steps: Number of Langevin refinement steps.
+        langevin_step_size: Step size for Langevin dynamics.
+        langevin_score_scale: Scaling factor for the approximate score.
+        cfg_scale: Scale for classifier-free guidance.
     """
     checkpoint_path = config.DIRS["ckpt"] / "latest.pt"
     if not checkpoint_path.exists():
@@ -66,6 +68,12 @@ def run_inference(labels: Optional[List[int]] = None,
         temp_input = input(f"Temperature [default: {config.INFERENCE_TEMPERATURE}] (0.3-1.2): ").strip()
         temperature = float(temp_input) if temp_input else config.INFERENCE_TEMPERATURE
     
+    # CFG Option
+    if cfg_scale is None:
+        default_cfg = getattr(config, 'CFG_SCALE', 1.0)
+        cfg_input = input(f"CFG Scale [default: {default_cfg}] (1.0=disabled): ").strip()
+        cfg_scale = float(cfg_input) if cfg_input else default_cfg
+
     # Langevin refinement options
     if langevin_steps is None:
         default_l_steps = getattr(config, 'DEFAULT_LANGEVIN_STEPS', 0)
@@ -95,6 +103,7 @@ def run_inference(labels: Optional[List[int]] = None,
         all_labels.extend([label] * samples_per_label)
     
     print(f"\n Generating {len(all_labels)} samples with temperature {temperature} using {method.upper()}...")
+    print(f"  CFG Scale: {cfg_scale}")
     if langevin_steps > 0:
         print(f"  + {langevin_steps} Langevin refinement steps (step_size={langevin_step_size}, scale={langevin_score_scale})")
     
@@ -105,7 +114,8 @@ def run_inference(labels: Optional[List[int]] = None,
         method=method,
         langevin_steps=langevin_steps,
         langevin_step_size=langevin_step_size,
-        langevin_score_scale=langevin_score_scale
+        langevin_score_scale=langevin_score_scale,
+        cfg_scale=cfg_scale
     )
     
     print(f"\n Generated {len(all_labels)} samples")

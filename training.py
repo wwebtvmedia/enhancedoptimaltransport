@@ -88,6 +88,30 @@ class OUReference:
         
         return mean, var
 
+    def bridge_velocity(self, z0, z1, t):
+        """
+        Compute the velocity (time derivative of the mean) of the OU bridge.
+        d/dt E[zt | z0, z1]
+        """
+        exp_neg_theta_t = torch.exp(-self.theta * t)
+        exp_neg_theta_1_t = torch.exp(-self.theta * (1 - t))
+        exp_neg_theta = torch.exp(-self.theta)
+        
+        # d/dt sinh(theta(1-t)) = -theta cosh(theta(1-t))
+        # d/dt sinh(theta t) = theta cosh(theta t)
+        
+        # Mean formula: mu(t) = (sinh(theta(1-t)) z0 + sinh(theta t) z1) / sinh(theta)
+        # We'll use the exponential form for consistency with bridge_sample
+        # sinh(x) = (exp(x) - exp(-x)) / 2
+        
+        # Let's derive it directly from the mean formula used in bridge_sample:
+        # mean = (exp(-theta*t) * (1 - exp(-theta*(1-t))^2) * z0 + (1 - exp(-theta*t)^2) * exp(-theta*(1-t)) * z1) / (1 - exp(-theta)^2)
+        
+        dt = 1e-4
+        mean_plus, _ = self.bridge_sample(z0, z1, t + dt)
+        mean_minus, _ = self.bridge_sample(z0, z1, (t - dt).clamp(min=0))
+        return (mean_plus - mean_minus) / (2 * dt)
+
 # ============================================================
 # UTILITIES
 # ============================================================
@@ -327,8 +351,8 @@ class EnhancedLabelTrainer:
 
         # ImageNet Mean and Std (for 0-1 normalized images)
         # ImageNet Mean and Std (for 0-1 normalized images) - Moved to device once
-        self.vgg_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(config.DEVICE)
-        self.vgg_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(config.DEVICE)
+        self.vgg_mean = torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1).to(config.DEVICE)
+        self.vgg_std = torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1).to(config.DEVICE)
 
         # Pre-compute SSIM Gaussian Window
         window_size = 11
@@ -697,20 +721,26 @@ class EnhancedLabelTrainer:
             if config.USE_OU_BRIDGE and self.ou_ref is not None:
                 mean, var = self.ou_ref.bridge_sample(z0, z1, t)
                 zt = mean + torch.sqrt(var + 1e-8) * torch.randn_like(mean)
-                target = z1 - z0
+                target = self.ou_ref.bridge_velocity(z0, z1, t)
             else:
-                zt = (1 - t.view(-1, 1, 1, 1)) * z0 + t.view(-1, 1, 1, 1) * z1
+                zt = (1 - t.reshape(-1, 1, 1, 1)) * z0 + t.reshape(-1, 1, 1, 1) * z1
                 target = z1 - z0
             
             # Add noise to targets only (not to state) – scale from config
             if self.drift.training:
-                noise_scale = config.DRIFT_TARGET_NOISE_SCALE * (1 - t.view(-1, 1, 1, 1))
+                noise_scale = config.DRIFT_TARGET_NOISE_SCALE * (1 - t.reshape(-1, 1, 1, 1))
                 target = target + torch.randn_like(target) * noise_scale
             
-            pred = self.drift(zt, t, labels)
+            # Classifier-Free Guidance: Randomly drop labels (set to 0) during training
+            if self.drift.training and torch.rand(1).item() < config.LABEL_DROPOUT_PROB:
+                train_labels = torch.zeros_like(labels)
+            else:
+                train_labels = labels
+
+            pred = self.drift(zt, t, train_labels)
             
             # Time-weighted loss using config factor
-            time_weights = 1.0 + config.TIME_WEIGHT_FACTOR * t.view(-1, 1, 1, 1)
+            time_weights = 1.0 + config.TIME_WEIGHT_FACTOR * t.reshape(-1, 1, 1, 1)
             drift_loss_base = F.huber_loss(pred * time_weights, target * time_weights, delta=1.0) * config.DRIFT_WEIGHT
 
             consistency_decay = max(0.1, 1.0 - (self.epoch - drift_start_epoch) / (config.EPOCHS - drift_start_epoch))
@@ -1112,10 +1142,11 @@ class EnhancedLabelTrainer:
             return False
         
     def generate_samples(self, labels=None, num_samples=8, temperature=None, method='heun',
-                        langevin_steps=None, langevin_step_size=None, langevin_score_scale=None):
+                         langevin_steps=None, langevin_step_size=None, langevin_score_scale=None,
+                         cfg_scale=None):
         """
         Generate samples with label conditioning.
-        
+
         Args:
             labels: List of class labels
             num_samples: Number of samples to generate
@@ -1124,9 +1155,11 @@ class EnhancedLabelTrainer:
             langevin_steps: Number of Langevin refinement steps (None = use config default)
             langevin_step_size: Step size for Langevin dynamics (default from config)
             langevin_score_scale: Scaling factor for the approximate score (default from config)
+            cfg_scale: Scale for classifier-free guidance (None = use config default)
         """
-        if langevin_steps is None:
-            langevin_steps = getattr(config, 'DEFAULT_LANGEVIN_STEPS', 0)
+        if cfg_scale is None:
+            cfg_scale = getattr(config, 'CFG_SCALE', 1.0)
+        if langevin_steps is None:            langevin_steps = getattr(config, 'DEFAULT_LANGEVIN_STEPS', 0)
         if langevin_step_size is None:
             langevin_step_size = config.LANGEVIN_STEP_SIZE
         if langevin_score_scale is None:
@@ -1180,26 +1213,26 @@ class EnhancedLabelTrainer:
                 used_for_norm = None
 
                 if method == 'euler':
-                    drift = self.drift(z, t_cur, labels_tensor)
+                    drift = self.drift(z, t_cur, labels_tensor, cfg_scale=cfg_scale)
                     z = z + drift * dt
                     used_for_norm = drift
                 elif method == 'heun':
-                    k1 = self.drift(z, t_cur, labels_tensor)
+                    k1 = self.drift(z, t_cur, labels_tensor, cfg_scale=cfg_scale)
                     t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_pred = z + dt * k1
-                    k2 = self.drift(z_pred, t_next, labels_tensor)
+                    k2 = self.drift(z_pred, t_next, labels_tensor, cfg_scale=cfg_scale)
                     z = z + (dt / 2.0) * (k1 + k2)
                     used_for_norm = k1
                 elif method == 'rk4':
-                    k1 = self.drift(z, t_cur, labels_tensor)
+                    k1 = self.drift(z, t_cur, labels_tensor, cfg_scale=cfg_scale)
                     t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
                     z_half = z + 0.5 * dt * k1
-                    k2 = self.drift(z_half, t_half, labels_tensor)
+                    k2 = self.drift(z_half, t_half, labels_tensor, cfg_scale=cfg_scale)
                     z_half2 = z + 0.5 * dt * k2
-                    k3 = self.drift(z_half2, t_half, labels_tensor)
+                    k3 = self.drift(z_half2, t_half, labels_tensor, cfg_scale=cfg_scale)
                     t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_next = z + dt * k3
-                    k4 = self.drift(z_next, t_next, labels_tensor)
+                    k4 = self.drift(z_next, t_next, labels_tensor, cfg_scale=cfg_scale)
                     z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
                     used_for_norm = k1
                 else:

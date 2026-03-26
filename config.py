@@ -108,6 +108,13 @@ DECODER_UPSAMPLE_STAGES = 4          # Increased from 3
 # ============================================================================
 CHANNEL_DROPOUT_PROB = 0.2          # Probability of applying dropout
 CHANNEL_DROPOUT_SURVIVAL = 0.8      # Probability of channel surviving when dropout applied
+
+# ============================================================================
+# CLASSIFIER-FREE GUIDANCE (CFG)
+# ============================================================================
+LABEL_DROPOUT_PROB = 0.1            # Probability of dropping label during training
+CFG_SCALE = 1.0                     # Scale for classifier-free guidance (1.0 = disabled)
+
 # ============================================================================
 # DRIFT NETWORK SPECIFIC
 # ============================================================================
@@ -179,12 +186,49 @@ TRAINING_SCHEDULE = {
 }
 
 # ============================================================================
-# DEVICE CONFIGURATION (will be set at runtime)
+# DEVICE CONFIGURATION
 # ============================================================================
 DEVICE = None
 DTYPE = torch.float32
-BATCH_SIZE = 32  # Will be adjusted per device
+BATCH_SIZE = 32
 AMP_AVAILABLE = False
+
+def initialize_hardware():
+    """Determines best available hardware and updates global config."""
+    global DEVICE, AMP_AVAILABLE, BATCH_SIZE
+    
+    if torch.cuda.is_available():
+        DEVICE = torch.device("cuda")
+        AMP_AVAILABLE = True
+        info = f"🎮 CUDA: {torch.cuda.get_device_name(0)}"
+        BATCH_SIZE = 64
+    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+        DEVICE = torch.device("xpu")
+        AMP_AVAILABLE = True
+        info = f"🔵 Intel Arc: {torch.xpu.get_device_name(0)}"
+        BATCH_SIZE = 64
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        DEVICE = torch.device("mps")
+        AMP_AVAILABLE = False
+        info = "🍎 Apple Silicon (MPS)"
+        BATCH_SIZE = 32
+    else:
+        try:
+            import torch_directml
+            if torch_directml.is_available():
+                DEVICE = torch_directml.device()
+                AMP_AVAILABLE = False
+                info = "🎮 DirectML (AMD/Intel)"
+                BATCH_SIZE = 32
+            else:
+                raise ImportError
+        except ImportError:
+            DEVICE = torch.device("cpu")
+            AMP_AVAILABLE = False
+            info = "💻 CPU (Slow)"
+            BATCH_SIZE = 16
+            
+    return info
 
 # ============================================================================
 # LOGGER SETUP

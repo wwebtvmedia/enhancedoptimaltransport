@@ -1,275 +1,105 @@
-Enhanced Label-Conditioned Schrödinger Bridge with Ornstein-Uhlenbeck Reference
-This project implements a generative model based on the Schrödinger Bridge (SB) problem, enabling high-quality image generation with explicit label conditioning. The core idea is to learn a stochastic process that transports a simple prior (standard Gaussian) to a complex data distribution over a fixed time interval. The model combines a conditional Variational Autoencoder (VAE) for latent representation with a drift network that learns the bridge dynamics. An optional Ornstein-Uhlenbeck (OU) reference process provides a theoretically grounded prior for the bridge (mvOU-SBP).
+# Enhanced Label-Conditioned Schrödinger Bridge with Ornstein-Uhlenbeck Reference
 
-Table of Contents
-Installation and Setup
+This project implements a state-of-the-art generative model based on the **Latent Schrödinger Bridge (LSB)** problem. It enables high-quality, category-specific image generation by learning the optimal stochastic transport between a Gaussian prior and a learned latent data distribution.
 
-Prerequisites
+## 🚀 Key Advancements in v2.0
+- **Theoretically Correct OU Bridge:** Uses the exact time-derivative of the OU bridge mean as the training target, replacing linear approximations.
+- **Classifier-Free Guidance (CFG):** Integrated label dropout and guidance scaling for superior prompt/label alignment.
+- **Three-Phase Lifecycle:** Robust progression from VAE training → Drift Matching → Joint Fine-tuning.
+- **Unified Hardware Engine:** Centralized initialization for **NVIDIA (CUDA)**, **Apple Silicon (MPS)**, **Intel Arc (XPU)**, and **AMD (DirectML)**.
+- **MCP Architecture:** Model-Context-Protocol design separating the core `TrainingProcessor` from Desktop (Tkinter), Web (Streamlit), and CLI interfaces.
 
-Creating a Virtual Environment
+---
 
-Installing Dependencies
+## 🛠️ Installation and Setup
 
-Launching the Program
+### 1. Prerequisites
+- Python 3.8+
+- `pip` (Python package installer)
+- (Optional) GPU acceleration for faster training.
 
-Mathematical Foundations
+### 2. Setup Environment
+```bash
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# .venv\Scripts\activate  # Windows
 
-Key Features
+# Install core dependencies
+pip install torch torchvision numpy scipy tqdm onnx onnxruntime pillow streamlit pygal cairosvg
+```
 
-Usage
+### 3. Launching the Interfaces
+The project supports three distinct modes via `main.py`:
 
-Model Architecture
+- **🖥️ Desktop Mode (Full GUI):** `python main.py --gui`
+- **📱 Web Dashboard (Streamlit):** `python main.py --streamlit`
+- **🚀 Terminal Mode (Headless):** `python main.py`
 
-Results and Monitoring
+---
 
-References
+## 🧬 Mathematical Foundations
 
-Installation and Setup
-Prerequisites
-Python 3.8 or higher
+### 1. Schrödinger Bridge Problem
+The model solves for the most probable evolution between a prior $P_0 = \mathcal{N}(0, I)$ and the data distribution $P_1$ in a latent space. This results in a Stochastic Differential Equation (SDE):
+$$dz_t = f(z_t, t, y) dt + g(t) dw_t$$
+where $f$ is the learned drift network and $y$ is the class label.
 
-pip (Python package installer)
+### 2. Ornstein-Uhlenbeck Reference (mvOU-SBP)
+Unlike standard Wiener processes, the OU reference provides a mean-reverting prior:
+$$dx_t = -\theta x_t dt + \sigma dw_t$$
+The training target for the drift network is the **bridge velocity**:
+$$v_t = \frac{d}{dt} \mathbb{E}[z_t | z_0, z_1]$$
+Our implementation uses a stable numerical derivative of the exact OU bridge mean formula to ensure mathematical consistency.
 
-(Optional) CUDA-capable GPU for faster training (NVIDIA), or Apple Silicon (MPS), or AMD with DirectML
+### 3. Classifier-Free Guidance (CFG)
+To improve label adherence, the drift network is trained with **Label Dropout** (10%). During inference, the drift is calculated as:
+$$f_{cfg} = f(z, t, \text{null}) + s \cdot (f(z, t, y) - f(z, t, \text{null}))$$
+where $s$ is the `CFG_SCALE`.
 
-Creating a Virtual Environment
-It is strongly recommended to use a virtual environment to isolate dependencies.
+---
 
-On Windows (PowerShell or Command Prompt):
+## 🏗️ Model Architecture
 
-bash
-python -m venv venv
-venv\Scripts\activate
-On macOS/Linux:
+### Label-Conditioned VAE
+- **Encoder:** Maps images to a 4-channel latent space ($4 \times 12 \times 12$ for $96 \times 96$ inputs).
+- **Decoder:** Reconstructs images from latents.
+- **Conditioning:** Uses scale-shift modulation (FiLM) based on label embeddings.
+- **Regularization:** KL annealing and a **Diversity Loss** to prevent latent channel collapse.
 
-bash
-python3 -m venv venv
-source venv/bin/activate
-After activation, your terminal prompt should show (venv).
+### U-Net Drift Network
+- **Structure:** A time-aware U-Net with residual blocks and self-attention at the bottleneck.
+- **Embeddings:** Combined Fourier time embeddings and learned label embeddings.
+- **Adaptive Clipping:** Automatically tracks drift statistics to prevent "exploding gradients" during the integration of the bridge.
 
-Installing Dependencies
-Install the required packages using pip:
+---
 
-bash
-pip install torch torchvision numpy scipy tqdm onnx onnxruntime
-For AMD GPU support on Windows (DirectML):
-Replace the torch installation with:
+## 📈 Training & Monitoring
 
-bash
-pip install torch-directml torchvision numpy scipy tqdm onnx onnxruntime
-For Apple Silicon (MPS):
-The standard PyTorch installation from pip includes MPS support. Ensure you have the latest version.
+### Three-Phase Training
+1.  **Phase 1 (VAE):** Optimizes the latent space using KL-annealed ELBO.
+2.  **Phase 2 (Drift):** Freezes the VAE and trains the U-Net to match the bridge dynamics.
+3.  **Phase 3 (Joint):** Fine-tunes both networks for maximum sharpness and alignment.
 
-Verify Installation:
-Run Python and check that PyTorch can see your device:
+### Live Monitoring Tools
+- **Latent Monitor:** Real-time visualization of channel standard deviations to detect collapse early.
+- **Visual Gallery:** Automatic preview of generated samples directly within the GUI.
+- **Hot-Swap:** Change loss weights (KL, Diversity, etc.) on-the-fly without restarting training.
 
-python
-import torch
-print(torch.__version__)
-print(torch.cuda.is_available())      # For NVIDIA
-print(torch.backends.mps.is_available())  # For Apple Silicon
-Launching the Program
-The project uses a unified entry point with support for Desktop, Mobile/Web, and Terminal modes.
+---
 
-1. **🖥️ Desktop Mode (Tkinter GUI):**
-   A professional Google Material Design interface for local training and analysis.
-   ```bash
-   python main.py --gui
-   ```
+## 🌐 Edge Deployment (ONNX)
+Models can be exported to ONNX for browser-based inference.
+- **Generator:** `generator.onnx` (Latent $\to$ Image)
+- **Drift:** `drift.onnx` (Predicts bridge trajectory)
+- **Web UI:** Open `onnx_generate_image.html` in any modern browser to generate images locally using ONNX Runtime Web.
 
-2. **📱 Mobile/Web Mode (Streamlit):**
-   A responsive dashboard for monitoring training from your phone or browser.
-   ```bash
-   python main.py --streamlit
-   ```
+---
 
-3. **🚀 Terminal Mode (Headless):**
-   Standard terminal output for server-side training (e.g., SSH, Colab).
-   ```bash
-   python main.py
-   ```
-
-All output (checkpoints, logs, samples) will be saved in the `enhanced_label_sb/` directory.
-
-Mathematical Foundations
-1. Schrödinger Bridge Problem
-The Schrödinger Bridge problem seeks the most probable evolution between two probability distributions over a fixed time interval [0,1]. Given a reference process (e.g., Wiener or Ornstein-Uhlenbeck), we look for a process whose marginal distributions at t=0 and t=1 match given target distributions, minimizing the Kullback–Leibler divergence to the reference. In generative modeling, we set:
-
-t=0: Prior distribution P0 = N(0, I) (in latent space)
-
-t=1: Data distribution P1 = q_phi(z|x,y) (latent codes of real images)
-
-The solution yields a stochastic differential equation (SDE) of the form:
-
-dz_t = f(z_t, t) dt + g(t) dw_t
-
-where f is the drift we aim to learn, and g is the diffusion coefficient (fixed).
-
-2. Latent Space Representation
-Images x in R^(3x96x96) are mapped to a latent space z in R^(4x12x12) via a conditional VAE:
-
-Encoder q_phi(z|x,y) outputs mean mu_phi(x,y) and log-variance logvar_phi(x,y).
-
-Decoder p_theta(x|z,y) reconstructs the image.
-
-The VAE is trained with the Evidence Lower Bound (ELBO):
-
-log p(x|y) >= E_{q_phi}[log p_theta(x|z,y)] - beta * KL(q_phi(z|x,y) || p(z))
-
-where p(z) = N(0, I) is the prior. The KL term for spatial latents (CxHxW) is:
-
-KL = -0.5 * sum_{c,h,w} (1 + log(sigma_{c,h,w}^2) - mu_{c,h,w}^2 - sigma_{c,h,w}^2)
-
-3. Reference Process: Ornstein-Uhlenbeck
-The Ornstein-Uhlenbeck process is a natural reference because it is the unique stationary Gauss–Markov process. Its SDE is:
-
-dx_t = -theta x_t dt + sigma dw_t
-
-with stationary distribution N(0, sigma^2/(2 theta)). In our implementation, we can use either:
-
-Linear interpolation (simple, faster): z_t = (1-t) z_0 + t z_1
-
-Exact OU bridge (mvOU-SBP): samples from the true bridge between z_0 and z_1:
-
-z_t | z_0, z_1 ~ N( mu(t), sigma^2(t) )
-
-where
-mu(t) = (sinh(theta(1-t))/sinh(theta)) z_0 + (sinh(theta t)/sinh(theta)) z_1
-sigma^2(t) = (sigma^2/(2 theta)) * (sinh(theta t) sinh(theta(1-t)) / sinh(theta))
-
-(using exponential forms for numerical stability).
-
-4. Bridge Dynamics and Drift Network
-The drift network f_psi(z_t, t, y) learns the correction to the reference drift needed to match the data distribution. The target is the velocity:
-
-v = (z_1 - z_0) (for linear interpolation) or the residual from the OU mean.
-
-The network is conditioned on time t (via an MLP) and label y (via an embedding). It outputs the learned drift.
-
-5. Loss Functions
-5.1 VAE Loss (Phase 1)
-L_vae = L_recon + beta * L_kl + gamma * L_diversity
-
-L_recon = MSE between input and reconstruction
-
-L_kl = KL divergence with dynamic weighting based on latent statistics (to prevent collapse)
-
-L_diversity = channel diversity loss encouraging all latent channels to be used:
-
-L_diversity = mean(ReLU(target_min_std - channel_std)) + 0.1 * std(channel_std)
-
-5.2 Drift Loss (Phase 2)
-L_drift = E_{t, z_0, z_1} [ || w(t) * (z_1 - z_0 - f_psi(z_t, t, y)) ||_Huber ]
-
-where w(t) = 1 + 2t (higher weight on later timesteps). If using the OU reference, the target becomes (z_1 - z_0) - mu_OU, where mu_OU is the OU bridge mean.
-
-Additionally, a consistency loss keeps the current encoder close to a frozen reference encoder (from Phase 1) to stabilize training:
-
-L_consistency = MSE(mu, mu_ref)
-
-The total loss in Phase 2 is L_total = L_drift + lambda * L_consistency.
-
-6. Training Schedule
-Training is split into two phases:
-
-Phase 1 (epochs 0-49): Train VAE (encoder and decoder) with KL annealing.
-
-Phase 2 (epochs 50-199): Train drift network, fine-tune encoder (decoder frozen). The drift loss uses time-weighted Huber loss.
-
-The schedule can be customized via the configuration menu (auto, manual, custom, alternate).
-
-Key Features
-- **Flexible Data Support:** New capability to train on multiple datasets (**STL10**, **CIFAR10**) or a **CUSTOM** local image folder.
-- **Configurable Resolutions:** Independent control over model input size (`IMG_SIZE`) and final generation size (`GEN_SIZE`).
-- **MCP Architecture:** Strict separation between the processing engine and display interfaces for maximum stability and cross-platform flexibility.
-- **Multi-Platform Monitoring:** Choose between a professional Google Material Design Desktop app (Tkinter) or a mobile-responsive Web dashboard (Streamlit).
-- **Label Conditioning:** Advanced label conditioning via Attention-augmented Residual blocks and scale-shift modulation.
-- **Live Visualization:** Real-time plotting of Loss curves, SNR trends, and Latent Channel health with built-in log parsing.
-- **Dataset Inspector:** Built-in tools to sample and visualize actual training data batches to compare learning progress.
-- **Hot-Swap Weights:** Ability to adjust Loss weights (KL, Diversity, etc.) in real-time during training without stopping the GPU.
-- **Composite Score:** Multi-metric score for model selection (SNR, KL, diversity, drift error) – best overall model saved automatically.
-- **Ornstein-Uhlenbeck Bridge:** theoretically grounded bridge sampling (mvOU-SBP) with exact variance computations.
-- **Multi-device Support:** Native support for CPU, CUDA (NVIDIA), MPS (Apple Silicon), and DirectML (AMD).
-
-
-Usage
-After launching main.py, you will see an interactive menu. Options include:
-
-Enhanced training (fresh start): Train the model from scratch with full epochs (default 200). You can specify the number of epochs.
-
-Quick test (5 epochs): Run a short training loop to verify setup.
-
-Export models to ONNX: Convert trained models to ONNX format for deployment.
-
-Generate samples from checkpoint: Load the latest checkpoint and generate sample images.
-
-Label-conditioned inference: Interactive inference with user-provided labels and temperature.
-
-Snapshot management & recovery: List, inspect, compare, and load snapshots for continued training or restart.
-
-Resume from latest checkpoint: Continue training from the most recent checkpoint.
-
-Configure training schedule: Set phase switching mode (auto, manual, custom, alternate, vae_only, drift_only).
-
-Toggle OU bridge: Enable/disable the exact OU bridge sampling (mvOU-SBP).
-
-During training, checkpoints are saved in enhanced_label_sb/checkpoints/:
-
-latest.pt: latest model (overwritten each epoch)
-
-best.pt: model with lowest loss so far
-
-best_overall_epoch_XXXX.pt: model with highest composite score
-
-Snapshots are saved in enhanced_label_sb/snapshots/ every SNAPSHOT_INTERVAL (default 20) and kept up to SNAPSHOT_KEEP (default 5).
-
-Logs are written to enhanced_label_sb/logs/ and also printed to console.
-
-Model Architecture
-LabelConditionedVAE:
-
-Encoder: 3x96x96 -> 64x96x96 -> 128x48x48 -> 256x24x24 -> 512x12x12 -> mu/logvar (4x12x12)
-
-Decoder: 4x12x12 -> 512x12x12 -> 256x24x24 -> 128x48x48 -> 64x96x96 -> 3x96x96
-
-Label conditioning via embedding + scale-shift in each block.
-
-LabelConditionedDrift:
-
-Takes latent z (4x12x12), time t, label y.
-
-Time and label embeddings combined, processed through U-Net-like architecture with spectral normalization.
-
-Outputs drift of same shape as z.
-
-Time-aware weighting and learned output scaling.
-
-PercentileRescale: Adaptive normalization layer that tracks 1st and 99th percentiles and rescales to [-1,1] via tanh.
-
-Results and Monitoring
-During training, the console displays:
-
-Current epoch, phase, loss, SNR, latent statistics.
-
-KPI tracker monitors trends and can trigger early stopping if loss increases for EARLY_STOP_PATIENCE epochs (Phase 2 only).
-
-Generated samples are saved every 10 epochs in enhanced_label_sb/samples/. Each generation includes:
-
-A grid image
-
-Individual images per sample
-
-Raw latent tensors for debugging
-
-The composite score combines multiple metrics (SNR, KL, diversity, drift error) to select the overall best model, saved separately.
-
-References
-Léonard, C. (2014). A survey of the Schrödinger problem and some of its connections with optimal transport. Discrete and Continuous Dynamical Systems - Series A, 34(4), 1533-1574.
-
-De Bortoli, V., et al. (2021). Diffusion Schrödinger Bridge Matching. Advances in Neural Information Processing Systems.
-
-Song, Y., et al. (2021). Score-Based Generative Modeling through Stochastic Differential Equations. International Conference on Learning Representations.
-
-Chen, T., et al. (2022). Optimal Transport and Schrödinger Bridges. arXiv preprint.
-
-For any questions or issues, please open an issue on the repository.
+## 📚 References
+- De Bortoli, V., et al. (2021). *Diffusion Schrödinger Bridge Matching*.
+- Chen, T., et al. (2022). *Optimal Transport and Schrödinger Bridges*.
+- Song, Y., et al. (2021). *Score-Based Generative Modeling through SDEs*.
+
+---
+*Developed for high-performance generative research on consumer hardware.*

@@ -61,6 +61,8 @@ import training
 import data_management as dm
 import models
 import inference
+from app_context import AppContext
+from app_processor import TrainingProcessor
 
 # ============================================================
 # Google Material Design Colors - Light Theme
@@ -148,13 +150,18 @@ class SchrödingerBridgeGUI:
         self.root.geometry("1450x950")
         self.root.configure(bg=Colors.BG_DARK)
         
+        # MCP Initialization
+        self.ctx = AppContext()
+        self.engine = TrainingProcessor(self.ctx)
+        # Link context queue to GUI's log_queue
+        self.log_queue = self.ctx.log_queue
+
         # Set up modern styling
         self.setup_styling()
         
         # Control flags
         self.training_running = False
         self.stop_training_flag = False
-        self.log_queue = queue.Queue()
         self.metrics = {}
         self.current_epoch = 0
         self.trainer_instance = None
@@ -168,7 +175,7 @@ class SchrödingerBridgeGUI:
         self.create_status_bar()
         
         # Initialize device
-        self.initialize_device()
+        self.device_var.set(self.engine.initialize_hardware())
         
         # Start queue processing
         self.process_log_queue()
@@ -1180,72 +1187,31 @@ class SchrödingerBridgeGUI:
         self.log_text.delete(1.0, tk.END)
         self.metrics_text.delete(1.0, tk.END)
 
-        # Start training thread
-        self.train_thread = threading.Thread(target=self.run_training, daemon=True)
-        self.train_thread.start()
+        # Start engine
+        self.engine.start_training(on_epoch_done=self._on_epoch)
 
         # Start progress updates
         self.update_progress()
 
+    def _on_epoch(self, epoch, losses):
+        """Callback from engine when an epoch is finished"""
+        self.log_queue.put(f"EPOCH_DONE:{epoch}:{losses}")
+        self.log_queue.put(f"PROGRESS:{epoch+1}/{config.EPOCHS}")
+
     def stop_training(self):
-        if self.training_running:
-            self.stop_training_flag = True
-            self.status_var.set("⏹️ Stopping after current epoch...")
-
-    def run_training(self):
-        """Training thread with device initialization"""
-        # Add logging handler
-        qh = QueueHandler(self.log_queue)
-        qh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        config.logger.addHandler(qh)
-
-        try:
-            # Ensure device is initialized
-            if config.DEVICE is None:
-                self.initialize_device()
-
-            # Load data and create trainer
-            loader = dm.load_data()
-            trainer = training.EnhancedLabelTrainer(loader)
-
-            # Load latest checkpoint if exists
-            latest = config.DIRS["ckpt"] / "latest.pt"
-            if latest.exists():
-                trainer.load_checkpoint()
-
-            total_epochs = config.EPOCHS
-            for epoch in range(trainer.epoch, total_epochs):
-                if self.stop_training_flag:
-                    config.logger.info("Training stopped by user.")
-                    break
-
-                trainer.epoch = epoch
-                epoch_losses = trainer.train_epoch()
-                self.log_queue.put(f"EPOCH_DONE:{epoch}:{epoch_losses}")
-                self.log_queue.put(f"PROGRESS:{epoch+1}/{total_epochs}")
-
-                if (epoch+1) % 5 == 0:
-                    trainer.save_checkpoint()
-
-                if (epoch+1) % 10 == 0:
-                    trainer.generate_samples()
-                    self.log_queue.put("UPDATE_GALLERY")
-
-            config.logger.info("Training finished.")
-
-        except Exception as e:
-            config.logger.error(f"Training error: {e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            config.logger.removeHandler(qh)
-            self.log_queue.put("TRAINING_DONE")
+        self.engine.stop_training()
+        self.status_var.set("⏹️ Stopping after current epoch...")
 
     def update_progress(self):
         """Update UI from queue"""
         self.process_log_queue()
-        if self.training_running:
+        if self.ctx.is_training:
             self.root.after(500, self.update_progress)
+        else:
+            self.training_running = False
+            self.start_btn.config(state=tk.NORMAL, bg=Colors.ACCENT)
+            self.stop_btn.config(state=tk.DISABLED, bg=Colors.BG_MEDIUM)
+            self.status_var.set("✅ Training stopped")
 
     def process_log_queue(self):
         """Process messages from training thread with Async capability"""

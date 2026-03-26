@@ -36,10 +36,10 @@ class SelfAttention(nn.Module):
         self.ln = nn.LayerNorm(in_channels)
     def forward(self, x):
         b, c, h, w = x.shape
-        res = x.view(b, c, -1).permute(0, 2, 1)
+        res = x.reshape(b, c, -1).permute(0, 2, 1)
         attn_out, _ = self.mha(res, res, res)
         out = self.ln(res + attn_out)
-        return out.permute(0, 2, 1).view(b, c, h, w)
+        return out.permute(0, 2, 1).reshape(b, c, h, w)
 
 # ============================================================
 # PERCENTILE RESCALING
@@ -59,8 +59,8 @@ class PercentileRescale(nn.Module):
 
     def forward(self, x):
         if self._is_exporting or not self.training:
-            scale = (self.high - self.low).clamp(min=1e-6).view(1, -1, 1, 1)
-            shift = self.low.view(1, -1, 1, 1)
+            scale = (self.high - self.low).clamp(min=1e-6).reshape(1, -1, 1, 1)
+            shift = self.low.reshape(1, -1, 1, 1)
             return torch.tanh((x - shift) / scale)
         
         if self.training:
@@ -72,8 +72,8 @@ class PercentileRescale(nn.Module):
                     self.low.mul_(1 - self.m).add_(l, alpha=self.m)
                     self.high.mul_(1 - self.m).add_(h, alpha=self.m)
         
-        scale = (self.high - self.low).clamp(min=1e-6).view(1, -1, 1, 1)
-        shift = self.low.view(1, -1, 1, 1)
+        scale = (self.high - self.low).clamp(min=1e-6).reshape(1, -1, 1, 1)
+        shift = self.low.reshape(1, -1, 1, 1)
         return torch.tanh((x - shift) / scale)
 
 # ============================================================
@@ -124,8 +124,8 @@ class LabelConditionedBlock(nn.Module):
             scale_shift = self.label_proj(labels)
             scale, shift = scale_shift.chunk(2, dim=1)
             # Reshape for broadcasting
-            scale = scale.view(-1, scale.shape[1], 1, 1)
-            shift = shift.view(-1, shift.shape[1], 1, 1)
+            scale = scale.reshape(-1, scale.shape[1], 1, 1)
+            shift = shift.reshape(-1, shift.shape[1], 1, 1)
             h = h * (1 + scale) + shift
         
         h = F.silu(self.norm2(h))
@@ -211,8 +211,8 @@ class LabelConditionedVAE(nn.Module):
         if not config.USE_FOURIER_FEATURES:
             return None
         B, C, H, W = x.shape
-        y_coords = torch.linspace(-1, 1, H, device=x.device).view(1, 1, H, 1)
-        x_coords = torch.linspace(-1, 1, W, device=x.device).view(1, 1, 1, W)
+        y_coords = torch.linspace(-1, 1, H, device=x.device).reshape(1, 1, H, 1)
+        x_coords = torch.linspace(-1, 1, W, device=x.device).reshape(1, 1, 1, W)
         y_grid = y_coords.expand(B, 1, H, W)
         x_grid = x_coords.expand(B, 1, H, W)
         feats = []
@@ -389,13 +389,28 @@ class LabelConditionedDrift(nn.Module):
     def _set_export_mode(self, is_exporting=True):
         self._is_exporting = is_exporting
 
-    def forward(self, z, t, labels):
-        """Forward pass - predict drift at time t."""
+    def forward(self, z, t, labels, cfg_scale=1.0):
+        """Forward pass - predict drift at time t with CFG support."""
         # Time embedding
         if t.dim() == 1:
             t = t.unsqueeze(-1)
         t_emb = self.time_mlp(t)
 
+        # Handle Classifier-Free Guidance during inference
+        if cfg_scale != 1.0 and not self.training:
+            # Predict with conditional labels
+            cond_drift = self._forward_internal(z, t, labels, t_emb)
+            
+            # Predict with unconditional labels (using class index 0 as placeholder for 'null')
+            uncond_labels = torch.zeros_like(labels) 
+            uncond_drift = self._forward_internal(z, t, uncond_labels, t_emb)
+            
+            return uncond_drift + cfg_scale * (cond_drift - uncond_drift)
+            
+        return self._forward_internal(z, t, labels, t_emb)
+
+    def _forward_internal(self, z, t, labels, t_emb):
+        """Internal forward pass for a single label set."""
         # Label embedding
         label_emb = self.label_emb(labels)
 
@@ -413,12 +428,12 @@ class LabelConditionedDrift(nn.Module):
         frac = (t_scaled - idx_floor.float())             # fractional part in [0,1)
 
         # Gather scales (time_scales is a 1‑D tensor of length 4)
-        scale_floor = self.time_scales[idx_floor.view(-1)]   # (batch,)
-        scale_ceil  = self.time_scales[idx_ceil.view(-1)]    # (batch,)
+        scale_floor = self.time_scales[idx_floor.reshape(-1)]   # (batch,)
+        scale_ceil  = self.time_scales[idx_ceil.reshape(-1)]    # (batch,)
 
         # Linear blend
-        blended = scale_floor * (1 - frac.view(-1)) + scale_ceil * frac.view(-1)
-        time_scale = blended.view(-1, 1, 1, 1)                # (batch, 1, 1, 1)
+        blended = scale_floor * (1 - frac.reshape(-1)) + scale_ceil * frac.reshape(-1)
+        time_scale = blended.reshape(-1, 1, 1, 1)                # (batch, 1, 1, 1)
                 
         # Gentle clamping instead of tanh
         z = torch.clamp(z, -10, 10)
@@ -437,7 +452,7 @@ class LabelConditionedDrift(nn.Module):
         out = self.tail(u1)
         
         # Scale output (removed tanh to prevent capping drift values)
-        out = out * self.output_scale * (1.0 + time_weight.view(-1, 1, 1, 1))
+        out = out * self.output_scale * (1.0 + time_weight.reshape(-1, 1, 1, 1))
         out = out * (1.0 + time_scale)
         
         # Update running statistics for adaptive clipping (only in training)
