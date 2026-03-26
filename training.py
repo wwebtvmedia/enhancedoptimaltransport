@@ -1441,23 +1441,23 @@ class EnhancedLabelTrainer:
             config.logger.info(f"Drift exported to {drift_path}")
 
             # --- Auto-configure the HTML file to match the current dimensions ---
-            html_path = config.BASE_DIR / "onnx_generate_image.html"
+            html_path = Path("onnx_generate_image.html")
             if html_path.exists():
                 try:
                     with open(html_path, 'r', encoding='utf-8') as f:
                         html_content = f.read()
 
                     import re
-                    # Replace LATENT_SHAPE array
+                    # Replace LATENT_SHAPE array (handles let or const, and varied spacing)
                     html_content = re.sub(
-                        r'const LATENT_SHAPE = \[1, \d+, \d+, \d+\];',
-                        f'const LATENT_SHAPE = [1, {config.LATENT_CHANNELS}, {config.LATENT_H}, {config.LATENT_W}];',
+                        r'(let|const)\s+LATENT_SHAPE\s*=\s*\[1,\s*\d+,\s*\d+,\s*\d+\];',
+                        f'\\1 LATENT_SHAPE = [1, {config.LATENT_CHANNELS}, {config.LATENT_H}, {config.LATENT_W}];',
                         html_content
                     )
                     # Replace IMG_SIZE constant
                     html_content = re.sub(
-                        r'const IMG_SIZE = \d+;',
-                        f'const IMG_SIZE = {config.IMG_SIZE};',
+                        r'(let|const)\s+IMG_SIZE\s*=\s*\d+;',
+                        f'\\1 IMG_SIZE = {config.IMG_SIZE};',
                         html_content
                     )
 

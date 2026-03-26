@@ -214,7 +214,7 @@
     <script>
         (async () => {
             let IMG_SIZE = 96;
-            let LATENT_SHAPE = [1, 4, 12, 12];
+            let LATENT_SHAPE = [1, 4, 6, 6];
             let driftSession, vaeSession;
 
             const statusEl = document.getElementById('status');
@@ -232,7 +232,7 @@
 
             resSelect.addEventListener('change', () => {
                 IMG_SIZE = parseInt(resSelect.value, 10);
-                const latentDim = IMG_SIZE / 8;
+                const latentDim = IMG_SIZE / 16;
                 LATENT_SHAPE = [1, 4, latentDim, latentDim];
                 canvas.width = IMG_SIZE;
                 canvas.height = IMG_SIZE;
