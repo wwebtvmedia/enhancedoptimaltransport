@@ -214,7 +214,7 @@
     <script>
         (async () => {
             let IMG_SIZE = 96;
-            let LATENT_SHAPE = [1, 4, 6, 6];
+            let LATENT_SHAPE = [1, 8, 6, 6]; // Defaults, will be updated by detection
             let driftSession, vaeSession;
 
             const statusEl = document.getElementById('status');
@@ -230,10 +230,68 @@
             const loadDirBtn = document.getElementById('loadDirBtn');
             const dirInput = document.getElementById('dirInput');
 
+            // --- Dynamic Shape Detection ---
+            function detectModelShapes() {
+                if (!vaeSession || !driftSession) return;
+
+                try {
+                    // 1. Detect Latent Shape from VAE input 'z'
+                    // In modern ORT, metadata is accessed via session.getInputs() / session.getOutputs()
+                    // or directly on the session object depending on the environment
+                    const inputs = vaeSession.inputNames;
+                    const outputs = vaeSession.outputNames;
+                    
+                    // We attempt to find the 'z' input shape
+                    // Note: session.handler.inputMetadata is common in WebGL/CPU backends
+                    const metadata = vaeSession.handler ? vaeSession.handler.inputMetadata : null;
+                    
+                    if (metadata && metadata.z) {
+                        const detectedDims = metadata.z.dims.map(d => typeof d === 'number' ? d : 1);
+                        // Ensure batch size is 1 for inference
+                        detectedDims[0] = 1;
+                        LATENT_SHAPE = detectedDims;
+                        console.log("Detected Latent Shape:", LATENT_SHAPE);
+                    }
+
+                    // 2. Detect Image Size from VAE output 'reconstruction'
+                    const outMetadata = vaeSession.handler ? vaeSession.handler.outputMetadata : null;
+                    if (outMetadata && outMetadata.reconstruction) {
+                        const outDims = outMetadata.reconstruction.dims;
+                        // Expected shape: [batch, 3, height, width]
+                        if (outDims.length === 4) {
+                            IMG_SIZE = outDims[2];
+                            canvas.width = IMG_SIZE;
+                            canvas.height = IMG_SIZE;
+                            console.log("Detected Image Size:", IMG_SIZE);
+                            
+                            // Update UI resolution selector to match
+                            const options = Array.from(resSelect.options);
+                            const matchingOption = options.find(o => parseInt(o.value) === IMG_SIZE);
+                            if (matchingOption) {
+                                resSelect.value = IMG_SIZE.toString();
+                            } else {
+                                // Add custom resolution if not in list
+                                const newOpt = document.createElement('option');
+                                newOpt.value = IMG_SIZE;
+                                newOpt.textContent = `${IMG_SIZE}x${IMG_SIZE} (Custom)`;
+                                resSelect.appendChild(newOpt);
+                                resSelect.value = IMG_SIZE.toString();
+                            }
+                        }
+                    }
+
+                    statusEl.textContent = `Ready (Detected: ${LATENT_SHAPE[1]}ch latent, ${IMG_SIZE}px image).`;
+                } catch (e) {
+                    console.warn("Shape detection partially failed, using defaults:", e);
+                }
+            }
+
             resSelect.addEventListener('change', () => {
                 IMG_SIZE = parseInt(resSelect.value, 10);
                 const latentDim = IMG_SIZE / 16;
-                LATENT_SHAPE = [1, 4, latentDim, latentDim];
+                // Preserve the detected channel count
+                const channels = LATENT_SHAPE[1];
+                LATENT_SHAPE = [1, channels, latentDim, latentDim];
                 canvas.width = IMG_SIZE;
                 canvas.height = IMG_SIZE;
                 canvas.style.width = '384px';
@@ -294,7 +352,9 @@
                     });
                     driftSession._url = driftUrl;
 
-                    statusEl.textContent = 'Ready (Loaded from Folder).';
+                    // Trigger dynamic shape detection
+                    detectModelShapes();
+
                     generateBtn.textContent = 'Generate Image';
                     generateBtn.disabled = false;
                 } catch (err) {
@@ -324,7 +384,10 @@
                     executionProviders: providers,
                     graphOptimizationLevel: 'all'
                 });
-                statusEl.textContent = 'Ready.';
+                
+                // Trigger dynamic shape detection
+                detectModelShapes();
+
                 generateBtn.textContent = 'Generate Image';
                 generateBtn.disabled = false;
             } catch (err) {

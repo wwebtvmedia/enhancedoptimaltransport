@@ -35,10 +35,11 @@ DATASET_PATH = Path("./data") # Path to download or find custom data
 # ============================================================================
 IMG_SIZE = 96                # Internal processing size (standardized)
 GEN_SIZE = 96                # Final output generation size (can be different)
-LATENT_CHANNELS = 4
+LATENT_CHANNELS = 8          # Increased from 4 for better reconstruction quality
 LATENT_H = IMG_SIZE // 16    # 6x6 for 96x96 images (4 downsampling stages)
 LATENT_W = IMG_SIZE // 16
 LATENT_DIM = LATENT_CHANNELS * LATENT_H * LATENT_W
+COMPRESSION_RATIO = (IMG_SIZE * IMG_SIZE * 3) / LATENT_DIM
 
 # ============================================================================
 # LABEL CONDITIONING
