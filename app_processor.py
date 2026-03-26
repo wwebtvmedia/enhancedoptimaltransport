@@ -13,6 +13,7 @@ from typing import Callable, Dict, Any, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import training
 import data_management as dm
+import config
 
 class TrainingProcessor:
     """The Engine that performs all the heavy computations."""
