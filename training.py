@@ -416,9 +416,9 @@ class EnhancedLabelTrainer:
         recon_01 = (recon + 1) / 2
         target_01 = (target + 1) / 2
         
-        # 2. Apply ImageNet normalization
-        recon_norm = (recon_01 - mean) / std
-        target_norm = (target_01 - mean) / std
+        # 2. Apply ImageNet normalization - added .contiguous() for MPS stability
+        recon_norm = ((recon_01 - mean) / std).contiguous()
+        target_norm = ((target_01 - mean) / std).contiguous()
         
         # 3. Get features
         recon_feat = self.vgg(recon_norm)
@@ -723,12 +723,14 @@ class EnhancedLabelTrainer:
                 zt = mean + torch.sqrt(var + 1e-8) * torch.randn_like(mean)
                 target = self.ou_ref.bridge_velocity(z0, z1, t)
             else:
-                zt = (1 - t.reshape(-1, 1, 1, 1)) * z0 + t.reshape(-1, 1, 1, 1) * z1
+                t_reshaped = t.reshape(-1, 1, 1, 1).contiguous()
+                zt = (1 - t_reshaped) * z0 + t_reshaped * z1
                 target = z1 - z0
             
             # Add noise to targets only (not to state) – scale from config
             if self.drift.training:
-                noise_scale = config.DRIFT_TARGET_NOISE_SCALE * (1 - t.reshape(-1, 1, 1, 1))
+                t_reshaped = t.reshape(-1, 1, 1, 1).contiguous()
+                noise_scale = config.DRIFT_TARGET_NOISE_SCALE * (1 - t_reshaped)
                 target = target + torch.randn_like(target) * noise_scale
             
             # Classifier-Free Guidance: Randomly drop labels (set to 0) during training
@@ -740,7 +742,8 @@ class EnhancedLabelTrainer:
             pred = self.drift(zt, t, train_labels)
             
             # Time-weighted loss using config factor
-            time_weights = 1.0 + config.TIME_WEIGHT_FACTOR * t.reshape(-1, 1, 1, 1)
+            t_reshaped = t.reshape(-1, 1, 1, 1).contiguous()
+            time_weights = 1.0 + config.TIME_WEIGHT_FACTOR * t_reshaped
             drift_loss_base = F.huber_loss(pred * time_weights, target * time_weights, delta=1.0) * config.DRIFT_WEIGHT
 
             consistency_decay = max(0.1, 1.0 - (self.epoch - drift_start_epoch) / (config.EPOCHS - drift_start_epoch))

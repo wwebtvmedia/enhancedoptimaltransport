@@ -36,10 +36,12 @@ class SelfAttention(nn.Module):
         self.ln = nn.LayerNorm(in_channels)
     def forward(self, x):
         b, c, h, w = x.shape
-        res = x.reshape(b, c, -1).permute(0, 2, 1)
+        # Ensure contiguous before reshape
+        res = x.reshape(b, c, -1).permute(0, 2, 1).contiguous()
         attn_out, _ = self.mha(res, res, res)
         out = self.ln(res + attn_out)
-        return out.permute(0, 2, 1).reshape(b, c, h, w)
+        # Ensure contiguous before reshape
+        return out.permute(0, 2, 1).contiguous().reshape(b, c, h, w)
 
 # ============================================================
 # PERCENTILE RESCALING
@@ -65,7 +67,8 @@ class PercentileRescale(nn.Module):
         
         if self.training:
             with torch.no_grad():
-                flat = x.float().transpose(0, 1).reshape(x.shape[1], -1)
+                # Added .contiguous() to handle MPS layout issues
+                flat = x.float().transpose(0, 1).contiguous().reshape(x.shape[1], -1)
                 if flat.numel() > 0:
                     l = torch.quantile(flat, self.p_low/100, dim=1)
                     h = torch.quantile(flat, self.p_high/100, dim=1)
@@ -123,9 +126,9 @@ class LabelConditionedBlock(nn.Module):
             # Stronger FiLM-like modulation
             scale_shift = self.label_proj(labels)
             scale, shift = scale_shift.chunk(2, dim=1)
-            # Reshape for broadcasting
-            scale = scale.reshape(-1, scale.shape[1], 1, 1)
-            shift = shift.reshape(-1, shift.shape[1], 1, 1)
+            # Reshape for broadcasting - added .contiguous() for MPS stability
+            scale = scale.reshape(-1, scale.shape[1], 1, 1).contiguous()
+            shift = shift.reshape(-1, shift.shape[1], 1, 1).contiguous()
             h = h * (1 + scale) + shift
         
         h = F.silu(self.norm2(h))
@@ -428,12 +431,15 @@ class LabelConditionedDrift(nn.Module):
         frac = (t_scaled - idx_floor.float())             # fractional part in [0,1)
 
         # Gather scales (time_scales is a 1‑D tensor of length 4)
-        scale_floor = self.time_scales[idx_floor.reshape(-1)]   # (batch,)
-        scale_ceil  = self.time_scales[idx_ceil.reshape(-1)]    # (batch,)
+        # Added .contiguous() to index and result for MPS stability
+        idx_f_flat = idx_floor.reshape(-1).contiguous()
+        idx_c_flat = idx_ceil.reshape(-1).contiguous()
+        scale_floor = self.time_scales[idx_f_flat]   # (batch,)
+        scale_ceil  = self.time_scales[idx_c_flat]    # (batch,)
 
         # Linear blend
         blended = scale_floor * (1 - frac.reshape(-1)) + scale_ceil * frac.reshape(-1)
-        time_scale = blended.reshape(-1, 1, 1, 1)                # (batch, 1, 1, 1)
+        time_scale = blended.reshape(-1, 1, 1, 1).contiguous()                # (batch, 1, 1, 1)
                 
         # Gentle clamping instead of tanh
         z = torch.clamp(z, -10, 10)
@@ -452,7 +458,7 @@ class LabelConditionedDrift(nn.Module):
         out = self.tail(u1)
         
         # Scale output (removed tanh to prevent capping drift values)
-        out = out * self.output_scale * (1.0 + time_weight.reshape(-1, 1, 1, 1))
+        out = out * self.output_scale * (1.0 + time_weight.reshape(-1, 1, 1, 1).contiguous())
         out = out * (1.0 + time_scale)
         
         # Update running statistics for adaptive clipping (only in training)
