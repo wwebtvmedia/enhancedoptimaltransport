@@ -89,7 +89,7 @@ with st.sidebar:
         config.RECON_WEIGHT = st.number_input("Recon Weight", value=config.RECON_WEIGHT, format="%.2f", help=get_param_description("RECON_WEIGHT"))
         config.DIVERSITY_WEIGHT = st.number_input("Diversity Weight", value=config.DIVERSITY_WEIGHT, format="%.2f", help=get_param_description("DIVERSITY_WEIGHT"))
 
-    if st.button("💾 Apply & Save", use_container_width=True):
+    if st.button("💾 Apply & Save", width='stretch'):
         st.success("Configuration updated in memory!")
 
 # ============================================================
@@ -105,11 +105,11 @@ with tab1:
     with col_ctrl:
         st.subheader("Controls")
         if not ctx.is_training:
-            if st.button("▶️ Start Training", type="primary", use_container_width=True):
+            if st.button("▶️ Start Training", type="primary", width='stretch'):
                 engine.start_training()
                 st.rerun()
         else:
-            if st.button("⏹️ Stop Training", type="secondary", use_container_width=True):
+            if st.button("⏹️ Stop Training", type="secondary", width='stretch'):
                 engine.stop_training()
                 st.info("Stopping after current epoch...")
         
@@ -133,7 +133,7 @@ with tab2:
     col_d1, col_d2 = st.columns([1, 3])
     with col_d1:
         st.write("View the actual images the model is learning from.")
-        if st.button("🔄 Refresh Batch", use_container_width=True):
+        if st.button("🔄 Refresh Batch", width='stretch'):
             with st.spinner("Fetching batch..."):
                 loader = dm.load_data()
                 batch = next(iter(loader))
@@ -144,7 +144,7 @@ with tab2:
     
     with col_d2:
         if 'data_preview' in st.session_state:
-            st.image(st.session_state.data_preview, caption="Training Data Batch (96x96)", use_container_width=True)
+            st.image(st.session_state.data_preview, caption="Training Data Batch (96x96)", width='stretch')
 
 # --- TAB 3: Gallery ---
 with tab3:
@@ -152,7 +152,7 @@ with tab3:
     samples_dir = config.DIRS["samples"]
     png_files = sorted(list(samples_dir.glob("gen_*.png")), key=os.path.getmtime, reverse=True)
     if png_files:
-        st.image(str(png_files[0]), caption=f"Latest Result: {png_files[0].name}", use_container_width=True)
+        st.image(str(png_files[0]), caption=f"Latest Result: {png_files[0].name}", width='stretch')
     else:
         st.warning("No samples generated yet.")
 
@@ -188,7 +188,7 @@ with tab4:
                     st.line_chart(df[['snr']])
                 
             st.write("### Raw Epoch Data")
-            st.dataframe(df.tail(10), use_container_width=True)
+            st.dataframe(df.tail(10), width='stretch')
         else:
             st.error("Could not parse metrics from the latest log.")
     else:
