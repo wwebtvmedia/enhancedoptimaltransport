@@ -7,14 +7,17 @@ numpy>=1.24.0
 scipy>=1.10.0
 pandas>=2.0.0
 
+# Image Processing
+Pillow>=9.5.0
+
 # UI & Dashboards
 streamlit>=1.24.0
 tqdm>=4.65.0
 
-# Visualization (Desktop GUI)
+# Visualization & Desktop GUI
 pygal>=3.0.0
 cairosvg>=2.7.0
-Pillow>=9.5.0
+tkinterweb>=3.0.0
 
 # Model Export & Edge Inference
 onnx>=1.14.0
@@ -22,6 +25,3 @@ onnxruntime>=1.15.0
 
 # Remote Monitoring
 wandb>=0.15.0
-
-# Optional: better tkinter SVG
-tkinterweb>=3.0.0
