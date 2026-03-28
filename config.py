@@ -72,6 +72,7 @@ RECON_WEIGHT = 3.0             # Increased from 2.5 for sharper reconstruction
 DRIFT_WEIGHT = 1.0             # Increased from 0.5 for better trajectory learning
 DIVERSITY_WEIGHT = 1.0         # Increased from 0.5 to prevent channel collapse
 CONSISTENCY_WEIGHT = 1.0       # Increased from 0.5 for better anchor stability
+TEXT_ALIGN_WEIGHT = 0.5        # Weight for aligning text vectors to latent space
 PHASE3_RECON_SCALE = 0.5       # Keep decoder sharp in Phase 3
 
 # NEW: Quality-focused loss weights

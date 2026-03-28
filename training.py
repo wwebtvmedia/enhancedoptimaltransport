@@ -592,8 +592,24 @@ class EnhancedLabelTrainer:
             text_emb = self.text_encoder(tokens)
 
         if phase == 1:
-            # Phase 1: Train VAE + Text Encoder
+            # Phase 1: Train VAE + Text Encoder + Context Decoder
             recon, mu, logvar = self.vae(images, labels, text_emb)
+            
+            # 1. Classification & Text Branch
+            pred_text_emb, pred_logits = self.vae.context_decoder(mu)
+            cls_loss = F.cross_entropy(pred_logits, labels) if labels is not None else torch.tensor(0.0, device=config.DEVICE)
+            
+            # 2. Text Alignment (Mapping text vectors to the same latent space)
+            # This makes the "Text Training Vector" a first-class citizen.
+            latent_alignment_loss = torch.tensor(0.0, device=config.DEVICE)
+            if text_emb is not None:
+                z_txt = self.vae.encode_text(text_emb)
+                # MSE Alignment between Image Latent (mu) and Text Latent (z_txt)
+                latent_alignment_loss = F.mse_loss(mu, z_txt.detach()) # Align img to txt
+                # Also decode from text latent to ensure reconstructability
+                recon_from_txt = self.vae.decode(z_txt, labels, text_emb)
+                recon_loss_txt = F.l1_loss(recon_from_txt, images) * 0.1 # Small consistency bonus
+                latent_alignment_loss = latent_alignment_loss + recon_loss_txt
 
             # Periodically diagnose and correct latent collapse
             if batch_idx % self.debug_interval == 0:
@@ -615,7 +631,13 @@ class EnhancedLabelTrainer:
             recon_loss = (raw_l1 * config.RECON_WEIGHT + 
                          config.PERCEPTUAL_WEIGHT * self.perceptual_loss(recon, images))
             
-            total_loss = recon_loss + kl_loss + diversity_loss * config.DIVERSITY_WEIGHT
+            # Total Loss with Classification and Text-Alignment
+            text_align_weight = getattr(config, 'TEXT_ALIGN_WEIGHT', 1.0)
+            total_loss = (recon_loss + kl_loss + 
+                         (diversity_loss * config.DIVERSITY_WEIGHT) + 
+                         (cls_loss * 0.5) + 
+                         (latent_alignment_loss * text_align_weight))
+            
             snr = calc_snr(images, recon)
             
             loss_dict = {
@@ -623,6 +645,8 @@ class EnhancedLabelTrainer:
                 'recon': recon_loss.item(),
                 'kl': kl_loss.item(),
                 'diversity': diversity_loss.item(),
+                'cls': cls_loss.item(),
+                'align': latent_alignment_loss.item(),
                 'snr': snr,
                 'latent_std': latent_std,
                 'min_channel_std': min_channel_std,
@@ -1201,6 +1225,17 @@ class EnhancedLabelTrainer:
             def forward(self, z, labels=None, text_emb=None):
                 return self.vae.decode(z, labels, text_emb)
 
+        # New: Wrapper for VAE Encoder and Classifier
+        class VAEMultimodalEncoder(torch.nn.Module):
+            def __init__(self, vae):
+                super().__init__()
+                self.vae = vae
+            def forward(self, x, labels=None, text_emb=None):
+                mu, logvar = self.vae.encode(x, labels, text_emb)
+                # Also return predicted logits for Image-to-Text
+                _, logits = self.vae.context_decoder(mu)
+                return mu, logits
+
         try:
             # --- Set export mode for VAE and Drift ---
             self.vae.eval()
@@ -1208,11 +1243,35 @@ class EnhancedLabelTrainer:
             self.vae.apply(lambda m: set_export_mode(m, True))
             self.drift.apply(lambda m: set_export_mode(m, True))
             
-            # Export Generator (Decoder only)
             dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
+            dummy_img = torch.randn(1, 3, config.IMG_SIZE, config.IMG_SIZE, device=config.DEVICE)
             dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
             dummy_text = torch.zeros(1, config.TEXT_EMBEDDING_DIM, device=config.DEVICE)
-            
+
+            # Export Encoder
+            enc_path = config.DIRS["onnx"] / "encoder.onnx"
+            vae_enc = VAEMultimodalEncoder(self.vae)
+            with torch.no_grad():
+                torch.onnx.export(
+                    vae_enc,
+                    (dummy_img, dummy_label, dummy_text),
+                    str(enc_path),
+                    export_params=True,
+                    opset_version=18,
+                    do_constant_folding=True,
+                    input_names=['image', 'label', 'text_emb'],
+                    output_names=['mu', 'logits'],
+                    dynamic_axes={
+                        'image': {0: 'batch_size'},
+                        'label': {0: 'batch_size'},
+                        'text_emb': {0: 'batch_size'},
+                        'mu': {0: 'batch_size'},
+                        'logits': {0: 'batch_size'}
+                    }
+                )
+            config.logger.info(f"Encoder exported to {enc_path}")
+
+            # Export Generator (Decoder only)
             gen_path = config.DIRS["onnx"] / "generator.onnx"
             vae_gen = VAEMultimodalGenerator(self.vae)
             
@@ -1261,6 +1320,27 @@ class EnhancedLabelTrainer:
                 )
             merge_external_data(drift_path)
             config.logger.info(f"Drift exported to {drift_path}")
+
+            # Export Text Encoder
+            text_path = config.DIRS["onnx"] / "text_encoder.onnx"
+            dummy_tokens = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
+            
+            with torch.no_grad():
+                torch.onnx.export(
+                    self.text_encoder,
+                    (dummy_tokens,),
+                    str(text_path),
+                    export_params=True,
+                    opset_version=18,
+                    do_constant_folding=True,
+                    input_names=['tokens'],
+                    output_names=['text_emb'],
+                    dynamic_axes={
+                        'tokens': {0: 'batch_size'},
+                        'text_emb': {0: 'batch_size'}
+                    }
+                )
+            config.logger.info(f"Text Encoder exported to {text_path}")
 
             # --- Auto-configure the HTML file to match the current dimensions ---
             html_path = Path("onnx_generate_image.html")

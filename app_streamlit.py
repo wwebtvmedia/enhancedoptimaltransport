@@ -96,7 +96,7 @@ with st.sidebar:
 # Main UI
 # ============================================================
 st.title("Schrödinger Bridge Trainer")
-tab1, tab2, tab3, tab4 = st.tabs(["🎮 Training", "📚 Training Data", "🖼️ Gallery", "📊 Curves & Logs"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎮 Training", "📚 Training Data", "🔍 Inference", "🖼️ Gallery", "📊 Curves & Logs"])
 
 # --- TAB 1: Training (Engine Control) ---
 with tab1:
@@ -146,8 +146,79 @@ with tab2:
         if 'data_preview' in st.session_state:
             st.image(st.session_state.data_preview, caption="Training Data Batch (96x96)", width='stretch')
 
-# --- TAB 3: Gallery ---
-with tab3:
+    # --- TAB 3: Inference (Multimodal) ---
+    with tab3:
+    st.subheader("Multimodal Bridge Inference")
+
+    inf_col1, inf_col2 = st.columns([1, 2])
+
+    with inf_col1:
+        inf_mode = st.radio("Inference Mode", ["Text-to-Image", "Image-to-Image", "Image-to-Text", "Text-to-Text"])
+
+        if inf_mode == "Text-to-Image":
+            prompt = st.text_input("Text Prompt / Labels (comma-separated)", "airplane, bird, car, cat")
+            samples_per = st.slider("Samples per prompt", 1, 8, 1)
+            cfg = st.slider("CFG Scale", 1.0, 10.0, 1.5)
+            method = st.selectbox("Solver", ["heun", "euler"])
+
+            if st.button("✨ Generate", width='stretch'):
+                with st.spinner("Bridging concepts..."):
+                    import inference
+                    labels = [int(x.strip()) for x in prompt.split(',') if x.strip().isdigit()]
+                    texts = [x.strip() for x in prompt.split(',') if not x.strip().isdigit()]
+
+                    res_path = inference.run_inference(
+                        labels=labels if labels else None,
+                        text_prompts=texts if texts else None,
+                        samples_per_prompt=samples_per,
+                        cfg_scale=cfg,
+                        method=method
+                    )
+                    if res_path: st.session_state.inf_result = str(res_path)
+
+        elif inf_mode == "Image-to-Image":
+            uploaded_file = st.file_uploader("Source Image", type=['png', 'jpg', 'jpeg'])
+            target = st.text_input("Target Category/Label", "cat")
+            strength = st.slider("Transformation Strength", 0.1, 0.9, 0.5)
+
+            if uploaded_file and st.button("🎨 Translate Image", width='stretch'):
+                temp_path = Path("temp_i2i.png")
+                with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
+
+                import inference
+                res_path = inference.image_to_image(
+                    image_path=temp_path,
+                    target_text=target if not target.isdigit() else None,
+                    target_label=int(target) if target.isdigit() else None,
+                    strength=strength
+                )
+                if res_path: st.session_state.inf_result = str(res_path)
+
+        elif inf_mode == "Image-to-Text":
+            uploaded_file = st.file_uploader("Analyze Image", type=['png', 'jpg', 'jpeg'])
+            if uploaded_file and st.button("🔍 Predict Label", width='stretch'):
+                temp_path = Path("temp_predict.png")
+                with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
+                import inference
+                label = inference.image_to_text(temp_path)
+                st.success(f"Predicted Class: **{label}**")
+
+        elif inf_mode == "Text-to-Text":
+            src_t = st.text_input("Source Concept", "dog")
+            tgt_t = st.text_input("Target Concept", "cat")
+            if st.button("📝 Translate Concept", width='stretch'):
+                import inference
+                res = inference.text_to_text(src_t, tgt_t)
+                st.info(f"Latent Translation: {src_t} ➔ {tgt_t} = Result: **{res}**")
+
+    with inf_col2:
+        if 'inf_result' in st.session_state and os.path.exists(st.session_state.inf_result):
+            st.image(st.session_state.inf_result, caption="Inference Result", width='stretch')
+        else:
+            st.info("Results will appear here.")
+
+    # --- TAB 4: Gallery ---
+    with tab4:
     st.subheader("Latest Generated Samples")
     samples_dir = config.DIRS["samples"]
     png_files = sorted(list(samples_dir.glob("gen_*.png")), key=os.path.getmtime, reverse=True)
@@ -156,8 +227,9 @@ with tab3:
     else:
         st.warning("No samples generated yet.")
 
-# --- TAB 4: Curves & Logs (Restored) ---
-with tab4:
+    # --- TAB 5: Curves & Logs (Restored) ---
+    with tab5:
+
     st.subheader("Historical Training Curves")
     
     # Log File Selection

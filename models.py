@@ -198,7 +198,7 @@ class TextEncoder(nn.Module):
         return self.encoder(h) # [B, D]
 
 # ============================================================
-# CONTEXT ENCODER
+# CONTEXT ENCODER & DECODER
 # ============================================================
 class ContextEncoder(nn.Module):
     def __init__(self, label_dim=config.LABEL_EMB_DIM, text_dim=config.TEXT_EMBEDDING_DIM):
@@ -213,6 +213,25 @@ class ContextEncoder(nn.Module):
             return self.label_to_text(self.label_emb(labels))
         return None
 
+class ContextDecoder(nn.Module):
+    """Maps latent space back to text/label space."""
+    def __init__(self, latent_dim=512, text_dim=config.TEXT_EMBEDDING_DIM):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(latent_dim, text_dim),
+            nn.SiLU(),
+            nn.Linear(text_dim, text_dim)
+        )
+        self.classifier = nn.Linear(text_dim, config.NUM_CLASSES)
+        
+    def forward(self, z):
+        # z: [B, C, H, W] -> flatten to [B, D]
+        b = z.shape[0]
+        h = z.view(b, -1)
+        text_emb = self.proj(h)
+        logits = self.classifier(text_emb)
+        return text_emb, logits
+
 # ============================================================
 # MULTIMODAL VAE
 # ============================================================
@@ -221,6 +240,7 @@ class MultimodalVAE(nn.Module):
         super().__init__()
         self.free_bits = free_bits
         self.context_encoder = ContextEncoder()
+        self.context_decoder = ContextDecoder(latent_dim=config.LATENT_CHANNELS * config.LATENT_H * config.LATENT_W)
         self.current_epoch = 0
         self.mu_noise_scale = config.MU_NOISE_SCALE
         
@@ -257,6 +277,13 @@ class MultimodalVAE(nn.Module):
         ])
         self.dec_out = nn.Conv2d(64, 3, 3, 1, 1)
         self.diversity_loss = None
+        
+        # New: Text to Latent Projection
+        self.text_to_latent = nn.Sequential(
+            nn.Linear(config.TEXT_EMBEDDING_DIM, 512),
+            nn.SiLU(),
+            nn.Linear(512, config.LATENT_CHANNELS * config.LATENT_H * config.LATENT_W)
+        )
 
     def encode(self, x, labels=None, text_emb=None):
         context = self.context_encoder(labels, text_emb)
@@ -264,6 +291,12 @@ class MultimodalVAE(nn.Module):
         for block in self.enc_blocks:
             h = block(h, context) if isinstance(block, MultimodalConditionedBlock) else block(h)
         return self.z_mean(h) * config.LATENT_SCALE, torch.clamp(self.z_logvar(h), -4, 4)
+
+    def encode_text(self, text_emb):
+        """Directly maps a text embedding into the latent space z."""
+        h = self.text_to_latent(text_emb)
+        z = h.view(-1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W)
+        return z * config.LATENT_SCALE
 
     def decode(self, z, labels=None, text_emb=None):
         context = self.context_encoder(labels, text_emb)

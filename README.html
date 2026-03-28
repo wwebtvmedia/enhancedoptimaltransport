@@ -131,6 +131,7 @@
                 <li><a href="#drift-arch">2.2 LabelConditionedDrift</a></li>
                 <li><a href="#percentile">2.3 PercentileRescale</a></li>
                 <li><a href="#latent-onnx">2.4 Latent Space & ONNX Export</a></li>
+                <li><a href="#vector-sizes">2.5 Training Vector Dimensions</a></li>
             </ul>
         </li>
         <li><a href="#training-phases">3. Training Phases and Loss Functions</a>
@@ -297,6 +298,25 @@ dz_t = -\theta z_t\,dt + \sigma\,dw_t,
     <li><strong><code>drift.onnx</code>:</strong> Contains the Drift U-Net and Time-Embedding logic. It takes a latent tensor \((B, 8, 6, 6)\), a scalar time \(t\), and a label tensor \((B,)\) as input. It predicts the velocity field for the probability flow ODE.</li>
 </ul>
 <p>Both models use <strong>Symbolic Shapes</strong> where possible, allowing for flexible batch sizes during inference. Adaptive statistics (like PercentileRescale parameters and Drift clipping thresholds) are baked into the ONNX graph as constants or buffers to ensure consistency with the PyTorch training environment.</p>
+
+<h3 id="vector-sizes">2.5 Training Vector Dimensions</h3>
+<p>The model operates as a bridge between two high-dimensional "worlds" by forcing them to converge in a compact, shared manifold. The exact dimensions of these training vectors are:</p>
+
+<table>
+    <thead>
+        <tr><th>Feature</th><th>Dimensions</th><th>Calculation / Origin</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><strong>Raw Image Vector</strong></td><td><strong>27,648</strong></td><td>\(96 \times 96 \times 3\) (RGB Pixels)</td></tr>
+        <tr><td><strong>Text Embedding Vector</strong></td><td><strong>512</strong></td><td><code>TEXT_EMBEDDING_DIM</code> (Multimodal Context)</td></tr>
+        <tr><td><strong>Shared Latent Vector (\(z\))</strong></td><td><strong>288</strong></td><td>\(8 \text{ channels} \times 6 \times 6\) grid</td></tr>
+    </tbody>
+</table>
+
+<div class="note">
+    <strong>Dimensional Alignment:</strong>
+    The VAE Encoder compresses the 27,648-dim image into the 288-dim latent space. Simultaneously, the <code>text_to_latent</code> projection maps the 512-dim text embedding into that same 288-dim space. Training involves minimizing the distance between these two 288-dimensional vectors for matching samples.
+</div>
 
 <hr>
 

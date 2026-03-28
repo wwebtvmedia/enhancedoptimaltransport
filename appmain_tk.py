@@ -175,9 +175,266 @@ class SchrödingerBridgeGUI:
         self.notebook.pack(fill='both', expand=True, padx=20, pady=10)
         self.create_config_tab()
         self.create_training_tab()
+        self.create_inference_tab()
         self.create_training_data_tab()
         self.create_gallery_tab()
         self.create_visualization_tab()
+
+    def create_inference_tab(self):
+        self.inference_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.inference_tab, text="🔍 Inference")
+        
+        # Split into Left (Controls) and Right (Result)
+        left = ttk.Frame(self.inference_tab, width=400)
+        left.pack(side='left', fill='y', padx=10, pady=10)
+        
+        right = CardFrame(self.inference_tab, title="Generated Results")
+        right.pack(side='right', fill='both', expand=True, padx=10, pady=10)
+        
+        # --- Controls Card ---
+        ctrl = CardFrame(left, title="Generation Parameters")
+        ctrl.pack(fill='x', pady=5)
+        
+        # Mode Selection
+        mode_frame = ttk.Frame(ctrl.content, style="Card.TFrame")
+        mode_frame.pack(fill='x', pady=5)
+        ttk.Label(mode_frame, text="Input Mode:", width=15, background=Colors.BG_MEDIUM).pack(side='left')
+        self.inf_mode_var = tk.StringVar(value="Label")
+        ttk.OptionMenu(mode_frame, self.inf_mode_var, "Label", "Label", "Text").pack(side='left', fill='x', expand=True)
+        
+        # Input Field (Labels or Text)
+        input_frame = ttk.Frame(ctrl.content, style="Card.TFrame")
+        input_frame.pack(fill='x', pady=5)
+        self.inf_input_lbl = ttk.Label(input_frame, text="Labels (0-9):", width=15, background=Colors.BG_MEDIUM)
+        self.inf_input_lbl.pack(side='left')
+        self.inf_input_var = tk.StringVar(value="0, 1, 2, 3")
+        ttk.Entry(input_frame, textvariable=self.inf_input_var).pack(side='left', fill='x', expand=True)
+        
+        # Update label based on mode
+        self.inf_mode_var.trace_add("write", lambda *args: self.inf_input_lbl.config(
+            text="Text Prompts:" if self.inf_mode_var.get() == "Text" else "Labels (0-9):"
+        ))
+
+        # Samples per prompt
+        samples_frame = ttk.Frame(ctrl.content, style="Card.TFrame")
+        samples_frame.pack(fill='x', pady=5)
+        ttk.Label(samples_frame, text="Samples/Input:", width=15, background=Colors.BG_MEDIUM).pack(side='left')
+        self.inf_samples_var = tk.IntVar(value=1)
+        ttk.Spinbox(samples_frame, from_=1, to=16, textvariable=self.inf_samples_var).pack(side='left', fill='x', expand=True)
+
+        # Integration Method
+        method_frame = ttk.Frame(ctrl.content, style="Card.TFrame")
+        method_frame.pack(fill='x', pady=5)
+        ttk.Label(method_frame, text="Method:", width=15, background=Colors.BG_MEDIUM).pack(side='left')
+        self.inf_method_var = tk.StringVar(value="heun")
+        ttk.OptionMenu(method_frame, self.inf_method_var, "heun", "euler", "heun").pack(side='left', fill='x', expand=True)
+
+        # CFG Scale
+        cfg_frame = ttk.Frame(ctrl.content, style="Card.TFrame")
+        cfg_frame.pack(fill='x', pady=5)
+        ttk.Label(cfg_frame, text="CFG Scale:", width=15, background=Colors.BG_MEDIUM).pack(side='left')
+        self.inf_cfg_var = tk.DoubleVar(value=1.0)
+        ttk.Scale(cfg_frame, from_=1.0, to=10.0, variable=self.inf_cfg_var, orient='horizontal').pack(side='left', fill='x', expand=True)
+        
+        # Run Button
+        self.run_inf_btn = tk.Button(ctrl.content, text="✨ Generate Samples", command=self.run_inference, 
+                                     bg=Colors.ACCENT, fg="white", relief="flat", padx=20, pady=10)
+        self.run_inf_btn.pack(fill='x', pady=10)
+
+        # Image-to-Text Button
+        self.predict_btn = tk.Button(ctrl.content, text="🖼️ Predict Label from Image", command=self.run_prediction,
+                                      bg=Colors.BG_LIGHT, fg=Colors.ACCENT, relief="flat", padx=20, pady=5)
+        self.predict_btn.pack(fill='x', pady=5)
+
+        # Image-to-Image Button
+        i2i_frame = ttk.Frame(ctrl.content, style="Card.TFrame")
+        i2i_frame.pack(fill='x', pady=5)
+        ttk.Label(i2i_frame, text="I2I Strength:", width=15, background=Colors.BG_MEDIUM).pack(side='left')
+        self.i2i_strength_var = tk.DoubleVar(value=0.5)
+        ttk.Scale(i2i_frame, from_=0.1, to=0.9, variable=self.i2i_strength_var, orient='horizontal').pack(side='left', fill='x', expand=True)
+        
+        self.i2i_btn = tk.Button(ctrl.content, text="🎨 Image-to-Image", command=self.run_i2i,
+                                  bg=Colors.BG_LIGHT, fg=Colors.ACCENT, relief="flat", padx=20, pady=5)
+        self.i2i_btn.pack(fill='x', pady=5)
+
+        # Text-to-Text Button
+        self.t2t_btn = tk.Button(ctrl.content, text="📝 Text-to-Text (Latent)", command=self.run_t2t,
+                                  bg=Colors.BG_LIGHT, fg=Colors.ACCENT, relief="flat", padx=20, pady=5)
+        self.t2t_btn.pack(fill='x', pady=5)
+        
+        # Export ONNX Button
+...
+    def run_t2t(self):
+        source = tk.simpledialog.askstring("Text-to-Text", "Enter Source Concept (e.g. cat):")
+        if not source: return
+        target = self.inf_input_var.get() # Use current input as target
+        
+        self.t2t_btn.config(state='disabled', text="⏳ Translating...")
+        
+        def _thread_t2t():
+            try:
+                import inference
+                result = inference.text_to_text(source, target)
+                self.root.after(0, lambda: messagebox.showinfo("T2T Result", f"Source: {source}\nTarget Prompt: {target}\nPredicted Result: {result}"))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("T2T Error", str(e)))
+            finally:
+                self.root.after(0, lambda: self.t2t_btn.config(state='normal', text="📝 Text-to-Text (Latent)"))
+
+        threading.Thread(target=_thread_t2t, daemon=True).start()
+...
+    def run_i2i(self):
+        file_path = filedialog.askopenfilename(title="Select Source Image", 
+                                               filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp")])
+        if not file_path:
+            return
+            
+        self.i2i_btn.config(state='disabled', text="⏳ Translating...")
+        
+        def _thread_i2i():
+            try:
+                import inference
+                mode = self.inf_mode_var.get()
+                input_str = self.inf_input_var.get()
+                strength = self.i2i_strength_var.get()
+                
+                target_label = None
+                target_text = None
+                
+                if mode == "Label":
+                    labels = [int(x.strip()) for x in input_str.split(',') if x.strip().isdigit()]
+                    target_label = labels[0] if labels else 0
+                else:
+                    target_text = input_str
+                
+                result_path = inference.image_to_image(
+                    image_path=file_path,
+                    target_label=target_label,
+                    target_text=target_text,
+                    strength=strength
+                )
+                
+                if result_path:
+                    self.root.after(0, lambda: self.display_inference_result(result_path))
+                else:
+                    self.root.after(0, lambda: messagebox.showerror("Error", "I2I failed."))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("I2I Error", str(e)))
+            finally:
+                self.root.after(0, lambda: self.i2i_btn.config(state='normal', text="🎨 Image-to-Image"))
+
+        threading.Thread(target=_thread_i2i, daemon=True).start()
+...
+    def run_prediction(self):
+        file_path = filedialog.askopenfilename(title="Select Image for Prediction", 
+                                               filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp")])
+        if not file_path:
+            return
+            
+        self.predict_btn.config(state='disabled', text="⏳ Predicting...")
+        
+        def _thread_predict():
+            try:
+                import inference
+                label = inference.image_to_text(file_path)
+                self.root.after(0, lambda: messagebox.showinfo("Prediction Result", f"Predicted Class: {label}"))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Prediction Error", str(e)))
+            finally:
+                self.root.after(0, lambda: self.predict_btn.config(state='normal', text="🖼️ Predict Label from Image"))
+
+        threading.Thread(target=_thread_predict, daemon=True).start()
+        self.export_onnx_btn = tk.Button(ctrl.content, text="📦 Export to ONNX", command=self.export_onnx,
+                                          bg=Colors.BG_LIGHT, fg=Colors.ACCENT, relief="flat", padx=20, pady=5)
+        self.export_onnx_btn.pack(fill='x', pady=5)
+
+        # --- Result Display ---
+        self.inf_result_canvas = tk.Canvas(right.content, bg=Colors.BG_DARK, highlightthickness=0)
+        self.inf_result_canvas.pack(fill='both', expand=True)
+        self.inf_image_on_canvas = None
+
+    def run_inference(self):
+        self.run_inf_btn.config(state='disabled', text="⏳ Generating...")
+        
+        def _thread_inference():
+            try:
+                import inference
+                mode = self.inf_mode_var.get()
+                input_str = self.inf_input_var.get()
+                samples = self.inf_samples_var.get()
+                method = self.inf_method_var.get()
+                cfg = self.inf_cfg_var.get()
+                
+                labels = None
+                prompts = None
+                
+                if mode == "Label":
+                    labels = [int(x.strip()) for x in input_str.split(',') if x.strip().isdigit()]
+                else:
+                    prompts = [x.strip() for x in input_str.split(',') if x.strip()]
+                
+                result_path = inference.run_inference(
+                    labels=labels,
+                    text_prompts=prompts,
+                    samples_per_prompt=samples,
+                    method=method,
+                    cfg_scale=cfg
+                )
+                
+                if result_path and os.path.exists(result_path):
+                    self.root.after(0, lambda: self.display_inference_result(result_path))
+                else:
+                    self.root.after(0, lambda: messagebox.showerror("Error", "Inference failed or produced no result."))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Inference Error", str(e)))
+            finally:
+                self.root.after(0, lambda: self.run_inf_btn.config(state='normal', text="✨ Generate Samples"))
+
+        threading.Thread(target=_thread_inference, daemon=True).start()
+
+    def display_inference_result(self, path):
+        try:
+            pil_img = Image.open(path)
+            # Resize if too large for canvas
+            w, h = pil_img.size
+            max_w, max_h = 800, 800
+            if w > max_w or h > max_h:
+                ratio = min(max_w/w, max_h/h)
+                pil_img = pil_img.resize((int(w*ratio), int(h*ratio)), Image.LANCZOS)
+            
+            self.inf_photo = ImageTk.PhotoImage(pil_img)
+            self.inf_result_canvas.delete("all")
+            self.inf_image_on_canvas = self.inf_result_canvas.create_image(
+                self.inf_result_canvas.winfo_width()//2, 
+                self.inf_result_canvas.winfo_height()//2, 
+                image=self.inf_photo, anchor='center'
+            )
+            self.status_var.set(f"✅ Samples generated: {os.path.basename(path)}")
+        except Exception as e:
+            messagebox.showerror("Display Error", str(e))
+
+    def export_onnx(self):
+        self.export_onnx_btn.config(state='disabled', text="⏳ Exporting...")
+        
+        def _thread_export():
+            try:
+                # Load trainer to access export method
+                from torch.utils.data import DataLoader, TensorDataset
+                dummy_dataset = TensorDataset(torch.randn(1, 3, config.IMG_SIZE, config.IMG_SIZE))
+                dummy_loader = DataLoader(dummy_dataset, batch_size=1)
+                trainer = training.EnhancedLabelTrainer(dummy_loader)
+                
+                if trainer.load_for_inference():
+                    trainer.export_onnx()
+                    self.root.after(0, lambda: messagebox.showinfo("Success", "ONNX models exported successfully to " + str(config.DIRS['onnx'])))
+                else:
+                    self.root.after(0, lambda: messagebox.showerror("Error", "Failed to load model for ONNX export."))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Export Error", str(e)))
+            finally:
+                self.root.after(0, lambda: self.export_onnx_btn.config(state='normal', text="📦 Export to ONNX"))
+
+        threading.Thread(target=_thread_export, daemon=True).start()
 
     def create_status_bar(self):
         status_frame = ttk.Frame(self.root)

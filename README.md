@@ -2,7 +2,10 @@
 
 This project implements a state-of-the-art generative model based on the **Latent Schrödinger Bridge (LSB)** problem. It enables high-quality, category-specific image generation by learning the optimal stochastic transport between a Gaussian prior and a learned latent data distribution.
 
-## 🚀 Key Advancements in v2.0
+## 🚀 Key Advancements in v2.1 (Multimodal)
+- **Bidirectional Multimodal Engine:** Supports **Text-to-Image**, **Image-to-Text**, **Image-to-Image**, and **Text-to-Text** translation.
+- **ContextEncoder/Decoder:** Maps latent image vectors to a 512-dim text embedding space, enabling classification and captioning.
+- **Interactive I2I & T2T:** New GUI controls for translation "strength" and cross-concept latent bridging.
 - **Theoretically Correct OU Bridge:** Uses the exact time-derivative of the OU bridge mean as the training target, replacing linear approximations.
 - **Classifier-Free Guidance (CFG):** Integrated label dropout and guidance scaling for superior prompt/label alignment.
 - **Three-Phase Lifecycle:** Robust progression from VAE training → Drift Matching → Joint Fine-tuning.
