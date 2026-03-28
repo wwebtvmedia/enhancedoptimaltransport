@@ -247,6 +247,14 @@ HW_INFO = initialize_hardware()
 # ============================================================================
 # LOGGER SETUP
 # ============================================================================
+# ============================================================================
+# LOGGING & MONITORING
+# ============================================================================
+WANDB_ENABLE = True            # Enable Weights & Biases logging
+WANDB_PROJECT = "enhanced-schrodinger-bridge"
+WANDB_ENTITY = None            # Your W&B username or team name
+WANDB_RUN_NAME = f"run_{int(time.time())}"
+
 def setup_logger():
     """Setup logger with file and console handlers."""
     logger = logging.getLogger("EnhancedTrainer")

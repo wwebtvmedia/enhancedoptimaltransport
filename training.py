@@ -36,6 +36,12 @@ try:
 except ImportError:
     ONNX_AVAILABLE = False
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
 # Import modules
 import config
 import data_management as dm
@@ -367,6 +373,33 @@ class EnhancedLabelTrainer:
         window = window[None, None, :, :]
         # Cache it for the 3 channels
         self.ssim_window = window.expand(3, -1, -1, -1).contiguous()
+
+        # Initialize Weights & Biases
+        if WANDB_AVAILABLE and getattr(config, 'WANDB_ENABLE', False):
+            try:
+                wandb.init(
+                    project=config.WANDB_PROJECT,
+                    entity=config.WANDB_ENTITY,
+                    name=config.WANDB_RUN_NAME,
+                    config={
+                        "learning_rate": config.LR,
+                        "epochs": config.EPOCHS,
+                        "batch_size": config.BATCH_SIZE,
+                        "img_size": config.IMG_SIZE,
+                        "latent_channels": config.LATENT_CHANNELS,
+                        "dataset": config.DATASET_NAME,
+                        "architecture": "Schrödinger Bridge v2.1",
+                    }
+                )
+                # Watch models for gradients/params
+                wandb.watch(self.vae, log_freq=100)
+                wandb.watch(self.drift, log_freq=100)
+                config.logger.info("🚀 Weights & Biases initialized!")
+            except Exception as e:
+                config.logger.warning(f"Failed to initialize W&B: {e}")
+                self.wandb_run = None
+        else:
+            self.wandb_run = None
 
 
     def diagnose_latent_collapse(self, mu, logvar, epoch):
@@ -993,6 +1026,20 @@ class EnhancedLabelTrainer:
                     )
             config.logger.info(f"  Drift loss: {avg_losses.get('drift', 0):.4f}")
         
+        # Log to wandb
+        if WANDB_AVAILABLE and getattr(config, 'WANDB_ENABLE', False):
+            try:
+                wandb_log = {f"epoch/{k}": v for k, v in avg_losses.items()}
+                wandb_log.update({
+                    "epoch/phase": phase,
+                    "epoch/epoch": current_epoch,
+                    "epoch/lr_vae": self.opt_vae.param_groups[0]['lr'],
+                    "epoch/lr_drift": self.opt_drift.param_groups[0]['lr']
+                })
+                wandb.log(wandb_log, step=self.step)
+            except Exception as e:
+                config.logger.warning(f"Failed to log to W&B: {e}")
+
         return avg_losses
 
     def _debug_training_loop(self, batch: Dict, loss_dict: Dict) -> None:
@@ -1157,6 +1204,13 @@ class EnhancedLabelTrainer:
             grid_path = config.DIRS["samples"] / f"gen_multimodal_{timestamp}.png"
             vutils.save_image(grid, grid_path)
             
+            # Log to wandb
+            if WANDB_AVAILABLE and getattr(config, 'WANDB_ENABLE', False):
+                try:
+                    wandb.log({"samples/generated": [wandb.Image(grid_path, caption=f"Epoch {self.epoch+1}")]}, step=self.step)
+                except Exception as e:
+                    config.logger.warning(f"Failed to log images to W&B: {e}")
+
             config.logger.info(f"Saved multimodal samples to: {grid_path}")
             return grid_path
 

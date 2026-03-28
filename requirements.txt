@@ -20,5 +20,8 @@ Pillow>=9.5.0
 onnx>=1.14.0
 onnxruntime>=1.15.0
 
+# Remote Monitoring
+wandb>=0.15.0
+
 # Optional: better tkinter SVG
 tkinterweb>=3.0.0
