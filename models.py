@@ -30,18 +30,24 @@ class ResidualBlock(nn.Module):
         return F.silu(out)
 
 class SelfAttention(nn.Module):
-    def __init__(self, in_channels):
+    """Enhanced Multi-Head Self-Attention for 2D feature maps."""
+    def __init__(self, in_channels, num_heads=4):
         super().__init__()
-        self.mha = nn.MultiheadAttention(in_channels, num_heads=4, batch_first=True)
+        self.num_heads = num_heads
+        self.mha = nn.MultiheadAttention(in_channels, num_heads=num_heads, batch_first=True)
         self.ln = nn.LayerNorm(in_channels)
+        
     def forward(self, x):
         b, c, h, w = x.shape
-        # Ensure contiguous before reshape
-        res = x.reshape(b, c, -1).permute(0, 2, 1).contiguous()
+        # Flatten spatial dims and transpose for MHA: [B, Pixels, C]
+        res = x.view(b, c, -1).permute(0, 2, 1).contiguous()
+        
+        # Self-attention
         attn_out, _ = self.mha(res, res, res)
         out = self.ln(res + attn_out)
-        # Ensure contiguous before reshape
-        return out.permute(0, 2, 1).contiguous().reshape(b, c, h, w)
+        
+        # Reshape back to 2D: [B, C, H, W]
+        return out.permute(0, 2, 1).contiguous().view(b, c, h, w)
 
 # ============================================================
 # PERCENTILE RESCALING
@@ -80,12 +86,14 @@ class PercentileRescale(nn.Module):
         return torch.tanh((x - shift) / scale)
 
 # ============================================================
-# LABEL-CONDITIONED BLOCK
+# MULTIMODAL CONDITIONING BLOCK
 # ============================================================
-class LabelConditionedBlock(nn.Module):
-    """Residual block with label conditioning via scale-shift modulation."""
-    
-    def __init__(self, c_in, c_out, label_dim=config.LABEL_EMB_DIM, use_spectral_norm=False):
+class MultimodalConditionedBlock(nn.Module):
+    """
+    Enhanced block that accepts either a discrete label or a high-dimensional context vector.
+    Integrates both Multi-Head Self-Attention and Cross-Attention.
+    """
+    def __init__(self, c_in, c_out, context_dim=config.TEXT_EMBEDDING_DIM, use_spectral_norm=False, use_self_attn=True):
         super().__init__()
         groups = min(8, c_in)
         self.norm1 = nn.GroupNorm(groups, c_in)
@@ -95,12 +103,23 @@ class LabelConditionedBlock(nn.Module):
         else:
             self.conv1 = nn.Conv2d(c_in, c_out, 3, 1, 1)
         
-        self.label_proj = nn.Sequential(
-            nn.Linear(label_dim, c_out * 2),
+        # Context projection for scale/shift (FiLM-style)
+        self.context_proj = nn.Sequential(
+            nn.Linear(context_dim, c_out * 2),
             nn.SiLU(),
             nn.Linear(c_out * 2, c_out * 2)
         )
         
+        # Self-Attention
+        self.self_attn = SelfAttention(c_out) if use_self_attn else nn.Identity()
+
+        # Optional Cross-Attention for deeper fusion if configured
+        if config.MULTIMODAL_FUSION == "cross_attention":
+            self.cross_attn = nn.MultiheadAttention(c_out, num_heads=4, batch_first=True)
+            self.ln_cross = nn.LayerNorm(c_out)
+        else:
+            self.cross_attn = None
+
         groups_out = min(8, c_out)
         self.norm2 = nn.GroupNorm(groups_out, c_out)
         
@@ -118,18 +137,33 @@ class LabelConditionedBlock(nn.Module):
         else:
             self.skip = nn.Identity()
 
-    def forward(self, x, labels=None):
+    def forward(self, x, context=None):
         h = F.silu(self.norm1(x))
         h = self.conv1(h)
         
-        if labels is not None:
-            # Stronger FiLM-like modulation
-            scale_shift = self.label_proj(labels)
+        if context is not None:
+            # 1. Apply FiLM-style modulation
+            if context.dim() == 3:
+                global_ctx = context.mean(dim=1)
+            else:
+                global_ctx = context
+                
+            scale_shift = self.context_proj(global_ctx)
             scale, shift = scale_shift.chunk(2, dim=1)
-            # Reshape for broadcasting - added .contiguous() for MPS stability
-            scale = scale.reshape(-1, scale.shape[1], 1, 1).contiguous()
-            shift = shift.reshape(-1, shift.shape[1], 1, 1).contiguous()
+            scale = scale.view(-1, scale.shape[1], 1, 1).contiguous()
+            shift = shift.view(-1, shift.shape[1], 1, 1).contiguous()
             h = h * (1 + scale) + shift
+            
+            # 2. Apply Cross-Attention if context is sequential
+            if self.cross_attn is not None and context.dim() == 3:
+                b, c, hh, ww = h.shape
+                h_flat = h.view(b, c, -1).permute(0, 2, 1).contiguous()
+                attn_out, _ = self.cross_attn(h_flat, context, context)
+                h_flat = self.ln_cross(h_flat + attn_out)
+                h = h_flat.permute(0, 2, 1).contiguous().view(b, c, hh, ww)
+        
+        # 3. Apply Multi-Head Self-Attention
+        h = self.self_attn(h)
         
         h = F.silu(self.norm2(h))
         h = self.conv2(h)
@@ -137,353 +171,208 @@ class LabelConditionedBlock(nn.Module):
         return self.rescale(self.skip(x) + h)
 
 # ============================================================
-# LABEL-CONDITIONED VAE
+# TEXT ENCODER
 # ============================================================
-class LabelConditionedVAE(nn.Module):
-    """VAE with label conditioning for latent space encoding."""
+class TextEncoder(nn.Module):
+    """
+    Maps text strings (via pre-tokenized IDs or class names) to embeddings.
+    For this prototype, it uses a small MLP over a vocabulary.
+    """
+    def __init__(self, vocab_size=1000, embed_dim=config.TEXT_EMBEDDING_DIM):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.encoder = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.SiLU(),
+            nn.Linear(embed_dim, embed_dim)
+        )
+        
+    def forward(self, x):
+        """
+        Args:
+            x: Token IDs [B] or [B, S]
+        """
+        h = self.embedding(x)
+        if h.dim() == 3: # [B, S, D]
+            return self.encoder(h)
+        return self.encoder(h) # [B, D]
+
+# ============================================================
+# CONTEXT ENCODER
+# ============================================================
+class ContextEncoder(nn.Module):
+    def __init__(self, label_dim=config.LABEL_EMB_DIM, text_dim=config.TEXT_EMBEDDING_DIM):
+        super().__init__()
+        self.label_emb = nn.Embedding(config.NUM_CLASSES, label_dim)
+        self.label_to_text = nn.Linear(label_dim, text_dim)
+        
+    def forward(self, labels=None, text_emb=None):
+        if text_emb is not None:
+            return text_emb
+        if labels is not None:
+            return self.label_to_text(self.label_emb(labels))
+        return None
+
+# ============================================================
+# MULTIMODAL VAE
+# ============================================================
+class MultimodalVAE(nn.Module):
     def __init__(self, free_bits=config.FREE_BITS):
         super().__init__()
         self.free_bits = free_bits
-        self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
+        self.context_encoder = ContextEncoder()
         self.current_epoch = 0
         self.mu_noise_scale = config.MU_NOISE_SCALE
         
-        # Fourier feature channels
-        if config.USE_FOURIER_FEATURES:
-            self.fourier_channels = len(config.FOURIER_FREQS) * 4
-        else:
-            self.fourier_channels = 0
+        self.fourier_channels = len(config.FOURIER_FREQS) * 4 if config.USE_FOURIER_FEATURES else 0
         
-        # Encoder with 4 stages (96 -> 48 -> 24 -> 12 -> 6)
+        # Encoder: 96 -> 48 -> 24 -> 12 -> 6
         self.enc_in = nn.Conv2d(3 + self.fourier_channels, 64, 3, 1, 1)
         self.enc_blocks = nn.ModuleList([
-            ResidualBlock(64, 128, stride=2),           # 96 -> 48
-            LabelConditionedBlock(128, 128),
-            ResidualBlock(128, 256, stride=2),          # 48 -> 24
+            ResidualBlock(64, 128, stride=2),
+            MultimodalConditionedBlock(128, 128),
+            ResidualBlock(128, 256, stride=2),
             SelfAttention(256),
-            LabelConditionedBlock(256, 512),
-            ResidualBlock(512, 512, stride=2),          # 24 -> 12
-            nn.Conv2d(512, 512, 4, 2, 1),               # 12 -> 6
+            MultimodalConditionedBlock(256, 512),
+            ResidualBlock(512, 512, stride=2),
+            SelfAttention(512),
+            nn.Conv2d(512, 512, 4, 2, 1),
         ])
         self.z_mean = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
         self.z_logvar = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
 
-        # ========== ENHANCED DECODER (4 symmetric upsample stages) ==========
+        # Decoder: 6 -> 12 -> 24 -> 48 -> 96
         self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
         self.dec_blocks = nn.ModuleList([
-            # Stage 1: 6x6 -> 12x12
-            nn.Sequential(
-                nn.Upsample(scale_factor=2, mode='nearest'),
-                nn.Conv2d(512, 512, 3, 1, 1),
-                nn.SiLU()
-            ),
-            LabelConditionedBlock(512, 512),
+            nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(512, 512, 3, 1, 1), nn.SiLU()),
+            MultimodalConditionedBlock(512, 512),
             SelfAttention(512),
-
-            # Stage 2: 12x12 -> 24x24
-            nn.Sequential(
-                nn.Upsample(scale_factor=2, mode='nearest'),
-                nn.Conv2d(512, 256, 3, 1, 1),
-                nn.SiLU()
-            ),
-            LabelConditionedBlock(256, 256),
+            nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(512, 256, 3, 1, 1), nn.SiLU()),
+            MultimodalConditionedBlock(256, 256),
             SelfAttention(256),
-
-            # Stage 3: 24x24 -> 48x48
-            nn.Sequential(
-                nn.Upsample(scale_factor=2, mode='nearest'),
-                nn.Conv2d(256, 128, 3, 1, 1),
-                nn.SiLU()
-            ),
-            LabelConditionedBlock(128, 128),
-
-            # Stage 4: 48x48 -> 96x96
-            nn.Sequential(
-                nn.Upsample(scale_factor=2, mode='nearest'),
-                nn.Conv2d(128, 64, 3, 1, 1),
-                nn.SiLU()
-            ),
-            LabelConditionedBlock(64, 64),
+            nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(256, 128, 3, 1, 1), nn.SiLU()),
+            MultimodalConditionedBlock(128, 128),
+            nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(128, 64, 3, 1, 1), nn.SiLU()),
+            MultimodalConditionedBlock(64, 64),
         ])
-
         self.dec_out = nn.Conv2d(64, 3, 3, 1, 1)
         self.diversity_loss = None
-    
-    def _get_fourier_features(self, x):
-        """Generate Fourier features for spatial coordinates."""
-        if not config.USE_FOURIER_FEATURES:
-            return None
-        B, C, H, W = x.shape
-        y_coords = torch.linspace(-1, 1, H, device=x.device).reshape(1, 1, H, 1)
-        x_coords = torch.linspace(-1, 1, W, device=x.device).reshape(1, 1, 1, W)
-        y_grid = y_coords.expand(B, 1, H, W)
-        x_grid = x_coords.expand(B, 1, H, W)
-        feats = []
-        for f in config.FOURIER_FREQS:
-            feats.append(torch.sin(np.pi * f * x_grid))
-            feats.append(torch.cos(np.pi * f * x_grid))
-            feats.append(torch.sin(np.pi * f * y_grid))
-            feats.append(torch.cos(np.pi * f * y_grid))
-        return torch.cat(feats, dim=1)
-    
-    def _channel_diversity_loss(self, mu):
-        """Compute diversity loss to encourage all channels to be used."""
-        channel_stds = mu.std(dim=[0, 2, 3])
-        if config.DIVERSITY_ADAPTIVE and hasattr(self, 'current_epoch'):
-            progress = min(1.0, self.current_epoch / config.DIVERSITY_ADAPT_EPOCHS)
-            target_std = config.DIVERSITY_TARGET_START + progress * (
-                config.DIVERSITY_TARGET_END - config.DIVERSITY_TARGET_START
-            )
-        else:
-            target_std = config.DIVERSITY_TARGET_STD
-        
-        low_penalty = torch.mean(F.relu(target_std - channel_stds)) * config.DIVERSITY_LOW_PENALTY
-        high_penalty = torch.mean(F.relu(channel_stds - config.DIVERSITY_MAX_STD)) * config.DIVERSITY_HIGH_PENALTY
-        balance_loss = channel_stds.std() * config.DIVERSITY_BALANCE_WEIGHT
-        
-        if self.training:
-            self.diversity_stats = {
-                'channel_stds': channel_stds.detach().cpu(),
-                'target_std': target_std,
-                'low_penalty': low_penalty.item(),
-                'high_penalty': high_penalty.item() if isinstance(high_penalty, torch.Tensor) else 0,
-                'balance_loss': balance_loss.item()
-            }
-        return low_penalty + high_penalty + balance_loss
-    
-    def encode(self, x, labels):
-        """Encode images to latent distribution parameters."""
-        label_emb = self.label_emb(labels)
-        if config.USE_FOURIER_FEATURES:
-            fourier = self._get_fourier_features(x)
-            x = torch.cat([x, fourier], dim=1)
+
+    def encode(self, x, labels=None, text_emb=None):
+        context = self.context_encoder(labels, text_emb)
         h = self.enc_in(x)
         for block in self.enc_blocks:
-            if isinstance(block, LabelConditionedBlock):
-                h = block(h, label_emb)
-            else:
-                h = block(h)
-        mu = self.z_mean(h) * config.LATENT_SCALE
-        if self.training:
-            mu = mu + torch.randn_like(mu) * self.mu_noise_scale
-        if self.training and torch.rand(1).item() < config.CHANNEL_DROPOUT_PROB:
-            channel_mask = torch.bernoulli(
-                torch.full((mu.shape[0], mu.shape[1], 1, 1), 
-                          config.CHANNEL_DROPOUT_SURVIVAL, device=mu.device)
-            )
-            mu = (mu * channel_mask) / config.CHANNEL_DROPOUT_SURVIVAL
-        logvar = torch.clamp(self.z_logvar(h), min=config.LOGVAR_CLAMP_MIN, max=config.LOGVAR_CLAMP_MAX)
-        if self.training:
-            self.diversity_loss = self._channel_diversity_loss(mu)
-        return mu, logvar
-    
-    def decode(self, z, labels):
-        """Decode latents to images with enhanced architecture."""
-        label_emb = self.label_emb(labels)
+            h = block(h, context) if isinstance(block, MultimodalConditionedBlock) else block(h)
+        return self.z_mean(h) * config.LATENT_SCALE, torch.clamp(self.z_logvar(h), -4, 4)
+
+    def decode(self, z, labels=None, text_emb=None):
+        context = self.context_encoder(labels, text_emb)
         h = self.dec_in(z)
         for block in self.dec_blocks:
-            if isinstance(block, LabelConditionedBlock):
-                h = block(h, label_emb)
-            else:
-                h = block(h)
+            h = block(h, context) if isinstance(block, MultimodalConditionedBlock) else block(h)
         return torch.tanh(self.dec_out(h))
-    
-    def forward(self, x, labels):
-        """Forward pass with reparameterization."""
-        mu, logvar = self.encode(x, labels)
-        if self.training:
-            std = torch.exp(0.5 * logvar)
-            z = mu + std * torch.randn_like(std)
-        else:
-            z = mu
-        return self.decode(z, labels), mu, logvar
-    
-    def reparameterize(self, mu, logvar):
-        """Reparameterization trick for sampling."""
-        if self.training:
-            std = torch.exp(0.5 * logvar)
-            eps = torch.randn_like(std)
-            return mu + eps * std
-        else:
-            return mu
+
+    def forward(self, x, labels=None, text_emb=None):
+        mu, logvar = self.encode(x, labels, text_emb)
+        z = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) if self.training else mu
+        return self.decode(z, labels, text_emb), mu, logvar
 
 # ============================================================================
-# FOURIER TIME EMBEDDING (NEW)
+# FOURIER TIME EMBEDDING
 # ============================================================================
 class FourierTimeEmbed(nn.Module):
-    """Fourier features for time conditioning - captures complex temporal dynamics."""
     def __init__(self, dim=128, max_freq=64):
         super().__init__()
-        self.dim = dim
         self.register_buffer('freqs', torch.linspace(1, max_freq, dim//2))
-    
     def forward(self, t):
-        """
-        Args:
-            t: Time tensor of shape (B, 1) in range [0, 1]
-        Returns:
-            Time embedding of shape (B, dim)
-        """
-        t = t * 2 * math.pi  # Scale to [0, 2π]
-        sin_emb = torch.sin(t * self.freqs)
-        cos_emb = torch.cos(t * self.freqs)
-        return torch.cat([sin_emb, cos_emb], dim=-1)
-
+        t = t * 2 * math.pi
+        return torch.cat([torch.sin(t * self.freqs), torch.cos(t * self.freqs)], dim=-1)
 
 # ============================================================
-# LABEL-CONDITIONED DRIFT
+# MULTIMODAL DRIFT
 # ============================================================
-class LabelConditionedDrift(nn.Module):
-    """Drift network for probability flow ODE."""
+class MultimodalDrift(nn.Module):
     def __init__(self):
         super().__init__()
-        # ========== ENHANCED TIME EMBEDDING WITH FOURIER FEATURES ==========
-        self.time_mlp = nn.Sequential(
-            FourierTimeEmbed(dim=128),
-            nn.Linear(128, 256),
-            nn.SiLU(),
-            nn.Linear(256, 256)
-        )
-        # Rest of initialization remains the same...
-        # Label conditioning
-        self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
-        self.cond_proj = nn.Sequential(
-            nn.Linear(256 + config.LABEL_EMB_DIM, 128),
-            nn.SiLU(),
-            nn.Linear(128, 128)
-        )
-
-        # Time-adaptive scaling
-        self.time_weight_net = nn.Sequential(
-            nn.Linear(1, 32),
-            nn.SiLU(),
-            nn.Linear(32, 1),
-            nn.Sigmoid()
-        )
+        self.time_mlp = nn.Sequential(FourierTimeEmbed(dim=128), nn.Linear(128, 256), nn.SiLU(), nn.Linear(256, 256))
+        self.context_encoder = ContextEncoder()
+        self.cond_proj = nn.Sequential(nn.Linear(256 + config.TEXT_EMBEDDING_DIM, 256), nn.SiLU(), nn.Linear(256, 256))
+        self.time_weight_net = nn.Sequential(nn.Linear(1, 32), nn.SiLU(), nn.Linear(32, 1), nn.Sigmoid())
         
-        # U-Net like architecture
         self.head = nn.utils.spectral_norm(nn.Conv2d(config.LATENT_CHANNELS, 64, 3, 1, 1))
         
-        self.down1 = LabelConditionedBlock(64, 128, label_dim=128, use_spectral_norm=True)
+        # U-Net structure with widespread Self-Attention
+        self.down1 = MultimodalConditionedBlock(64, 128, context_dim=256, use_spectral_norm=True)
         self.down2_conv = nn.utils.spectral_norm(nn.Conv2d(128, 256, 4, 2, 1))
-        self.down2_block = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
+        self.down2_block = MultimodalConditionedBlock(256, 256, context_dim=256, use_spectral_norm=True)
+        self.down2_attn = SelfAttention(256)
         
-        self.mid1 = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
+        self.mid1 = MultimodalConditionedBlock(256, 256, context_dim=256, use_spectral_norm=True)
         self.mid_attn = SelfAttention(256)
-        self.mid2 = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
+        self.mid2 = MultimodalConditionedBlock(256, 256, context_dim=256, use_spectral_norm=True)
         
         self.up2_conv = nn.ConvTranspose2d(256, 128, 4, 2, 1)
-        self.up2_block = LabelConditionedBlock(128, 128, label_dim=128, use_spectral_norm=True)
-        self.up1 = LabelConditionedBlock(128, 64, label_dim=128, use_spectral_norm=True)
+        self.up2_block = MultimodalConditionedBlock(128, 128, context_dim=256, use_spectral_norm=True)
+        self.up2_attn = SelfAttention(128)
+        self.up1 = MultimodalConditionedBlock(128, 64, context_dim=256, use_spectral_norm=True)
         
         self.tail = nn.utils.spectral_norm(nn.Conv2d(64, config.LATENT_CHANNELS, 3, 1, 1))
-        
-        # Learnable output scaling
         self.output_scale = nn.Parameter(torch.tensor(0.1))
         self.time_scales = nn.Parameter(torch.ones(4) * 0.1)
-        
-        # Running statistics for adaptive clipping
         self.register_buffer('drift_mean', torch.zeros(1))
         self.register_buffer('drift_std', torch.ones(1))
         self.register_buffer('n_samples', torch.zeros(1))
         self.momentum = 0.99
         self._is_exporting = False
 
-    def _set_export_mode(self, is_exporting=True):
-        self._is_exporting = is_exporting
-
-    def forward(self, z, t, labels, cfg_scale=1.0):
-        """Forward pass - predict drift at time t with CFG support."""
-        # Time embedding
-        if t.dim() == 1:
-            t = t.unsqueeze(-1)
-        t_emb = self.time_mlp(t)
-
-        # Handle Classifier-Free Guidance during inference
+    def forward(self, z, t, labels=None, text_emb=None, cfg_scale=1.0):
+        t_emb = self.time_mlp(t.unsqueeze(-1) if t.dim() == 1 else t)
         if cfg_scale != 1.0 and not self.training:
-            # Predict with conditional labels
-            cond_drift = self._forward_internal(z, t, labels, t_emb)
-            
-            # Predict with unconditional labels (using class index 0 as placeholder for 'null')
-            uncond_labels = torch.zeros_like(labels) 
-            uncond_drift = self._forward_internal(z, t, uncond_labels, t_emb)
-            
+            cond_drift = self._forward_internal(z, t, labels, text_emb, t_emb)
+            uncond_drift = self._forward_internal(z, t, None, None, t_emb)
             return uncond_drift + cfg_scale * (cond_drift - uncond_drift)
-            
-        return self._forward_internal(z, t, labels, t_emb)
+        return self._forward_internal(z, t, labels, text_emb, t_emb)
 
-    def _forward_internal(self, z, t, labels, t_emb):
-        """Internal forward pass for a single label set."""
-        # Label embedding
-        label_emb = self.label_emb(labels)
-
-        # Combine embeddings
-        cond = torch.cat([t_emb, label_emb], dim=-1)
-        cond = self.cond_proj(cond)
+    def _forward_internal(self, z, t, labels, text_emb, t_emb):
+        context = self.context_encoder(labels, text_emb)
+        global_context = context.mean(dim=1) if (context is not None and context.dim() == 3) else (context if context is not None else torch.zeros(z.shape[0], config.TEXT_EMBEDDING_DIM, device=z.device))
+        cond = self.cond_proj(torch.cat([t_emb, global_context], dim=-1))
         
-        # Time-adaptive scaling
-        time_weight = self.time_weight_net(t)
-       
-        # t shape: (batch, 1)
-        t_scaled = t * 3.0                     # (batch, 1) in [0, 3]
-        idx_floor = torch.floor(t_scaled).long()          # 0,1,2
-        idx_ceil = (idx_floor + 1).clamp(max=3)           # 1,2,3
-        frac = (t_scaled - idx_floor.float())             # fractional part in [0,1)
-
-        # Gather scales (time_scales is a 1‑D tensor of length 4)
-        # Added .contiguous() to index and result for MPS stability
-        idx_f_flat = idx_floor.reshape(-1).contiguous()
-        idx_c_flat = idx_ceil.reshape(-1).contiguous()
-        scale_floor = self.time_scales[idx_f_flat]   # (batch,)
-        scale_ceil  = self.time_scales[idx_c_flat]    # (batch,)
-
-        # Linear blend
-        blended = scale_floor * (1 - frac.reshape(-1)) + scale_ceil * frac.reshape(-1)
-        time_scale = blended.reshape(-1, 1, 1, 1).contiguous()                # (batch, 1, 1, 1)
-                
-        # Gentle clamping instead of tanh
-        z = torch.clamp(z, -10, 10)
+        h = self.head(torch.clamp(z, -10, 10))
         
-        # U-Net forward
-        h = self.head(z)
-        d1 = self.down1(h, cond)
-        d2 = self.down2_conv(d1)
-        d2 = self.down2_block(d2, cond)
-        m = self.mid1(d2, cond)
-        m = self.mid_attn(m)
-        m = self.mid2(m, cond)
-        u2 = self.up2_conv(m)
-        u2 = self.up2_block(u2, cond)
-        u1 = self.up1(u2 + d1, cond)
-        out = self.tail(u1)
+        d1 = self.down1(h, cond if context is None or context.dim() == 2 else context)
+        d2 = self.down2_attn(self.down2_block(self.down2_conv(d1), cond if context is None or context.dim() == 2 else context))
         
-        # Scale output (removed tanh to prevent capping drift values)
-        out = out * self.output_scale * (1.0 + time_weight.reshape(-1, 1, 1, 1).contiguous())
-        out = out * (1.0 + time_scale)
+        m = self.mid2(self.mid_attn(self.mid1(d2, cond if context is None or context.dim() == 2 else context)), cond if context is None or context.dim() == 2 else context)
         
-        # Update running statistics for adaptive clipping (only in training)
+        u2 = self.up2_attn(self.up2_block(self.up2_conv(m), cond if context is None or context.dim() == 2 else context))
+        u1 = self.up1(u2 + d1, cond if context is None or context.dim() == 2 else context)
+        
+        out = self.tail(u1) * self.output_scale * (1.0 + self.time_weight_net(t).view(-1, 1, 1, 1))
+        
         if self.training and not self._is_exporting:
             with torch.no_grad():
-                # Avoid .item() to keep it symbolic/onnx-friendly
-                batch_mean = out.mean()
-                batch_std = out.std()
-                
-                # Update running statistics
-                self.drift_mean.mul_(self.momentum).add_(batch_mean, alpha=1 - self.momentum)
-                self.drift_std.mul_(self.momentum).add_(batch_std, alpha=1 - self.momentum)
+                self.drift_mean.mul_(self.momentum).add_(out.mean(), alpha=1 - self.momentum)
+                self.drift_std.mul_(self.momentum).add_(out.std(), alpha=1 - self.momentum)
                 self.n_samples.add_(out.shape[0])
         
-        # Apply adaptive clipping during inference only
         if not self.training or self._is_exporting:
-            threshold = self.get_adaptive_threshold(num_std=3.0)
-            # Use out.clamp with tensor threshold
-            out = torch.clamp(out, -threshold, threshold)
-
+            thresh = torch.abs(self.drift_mean) + 3.0 * self.drift_std
+            out = torch.clamp(out, -thresh, thresh)
         return out
 
-    def get_adaptive_threshold(self, num_std=3.0):
-        """Get adaptive clipping threshold based on running statistics."""
-        # Use torch.where to avoid data-dependent control flow during export
-        threshold = torch.abs(self.drift_mean) + num_std * self.drift_std
-        default_threshold = torch.tensor(5.0, device=self.n_samples.device)
-        return torch.where(self.n_samples < 100, default_threshold, threshold)
+# ============================================================
+# TEXT DRIFT (LLM COMPONENT)
+# ============================================================
+class TextDrift(nn.Module):
+    def __init__(self, vocab_size=50257, embed_dim=512, nhead=8, num_layers=6):
+        super().__init__()
+        self.time_mlp = nn.Sequential(FourierTimeEmbed(dim=128), nn.Linear(128, embed_dim), nn.SiLU(), nn.Linear(embed_dim, embed_dim))
+        self.transformer = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=embed_dim, nhead=nhead, dim_feedforward=embed_dim*4, batch_first=True, norm_first=True), num_layers=num_layers)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        
+    def forward(self, z, t, context_emb=None):
+        h = z + self.time_mlp(t).unsqueeze(1)
+        if context_emb is not None:
+            h = h + (context_emb.unsqueeze(1) if context_emb.dim() == 2 else context_emb)
+        return self.out_proj(self.transformer(h))

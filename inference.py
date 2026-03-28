@@ -10,7 +10,8 @@ import data_management as dm
 import config
 
 def run_inference(labels: Optional[List[int]] = None,
-                  samples_per_label: Optional[int] = None,
+                  text_prompts: Optional[List[str]] = None,
+                  samples_per_prompt: Optional[int] = None,
                   temperature: Optional[float] = None,
                   method: str = 'rk4',
                   langevin_steps: Optional[int] = None,
@@ -18,12 +19,13 @@ def run_inference(labels: Optional[List[int]] = None,
                   langevin_score_scale: Optional[float] = None,
                   cfg_scale: Optional[float] = None) -> None:
     """
-    Run inference with label conditioning.
+    Run inference with multimodal conditioning.
     
     Args:
-        labels: List of class labels. If None, prompts user.
-        samples_per_label: Number of samples per label. If None, prompts user.
-        temperature: Sampling temperature. If None, prompts user.
+        labels: List of class labels.
+        text_prompts: List of text prompts.
+        samples_per_prompt: Number of samples per prompt/label.
+        temperature: Sampling temperature.
         method: Integration method ('euler', 'heun', or 'rk4').
         langevin_steps: Number of Langevin refinement steps.
         langevin_step_size: Step size for Langevin dynamics.
@@ -46,90 +48,63 @@ def run_inference(labels: Optional[List[int]] = None,
         return
     
     config.logger.info("\n" + "="*50)
-    config.logger.info("LABEL-CONDITIONED INFERENCE")
+    config.logger.info("MULTIMODAL INFERENCE")
     config.logger.info("="*50)
     
-    # Interactive input if parameters not provided
-    if labels is None:
-        print("\nAvailable labels: 0-9 for STL-10 classes")
-        print("(0: airplane, 1: bird, 2: car, 3: cat, 4: deer,")
-        print(" 5: dog, 6: horse, 7: monkey, 8: ship, 9: truck)")
-        label_input = input("\nEnter labels (comma-separated, e.g., 0,1,2,3) [default: 0,1,2,3]: ").strip()
-        if label_input:
-            labels = [int(x.strip()) for x in label_input.split(',')]
+    # Interactive selection of mode
+    if labels is None and text_prompts is None:
+        print("\nChoose input mode:")
+        print("  1. Discrete Labels (0-9)")
+        print("  2. Text Prompts")
+        mode = input("\nSelect mode [1]: ").strip()
+        
+        if mode == '2':
+            prompt_input = input("\nEnter text prompts (comma-separated): ").strip()
+            if prompt_input:
+                text_prompts = [x.strip() for x in prompt_input.split(',')]
+            else:
+                text_prompts = ["a small cat", "a fast airplane"]
         else:
-            labels = [0, 1, 2, 3]
+            print("\nAvailable labels: 0-9 for STL-10 classes")
+            label_input = input("\nEnter labels (comma-separated) [default: 0,1,2,3]: ").strip()
+            if label_input:
+                labels = [int(x.strip()) for x in label_input.split(',')]
+            else:
+                labels = [0, 1, 2, 3]
     
-    if samples_per_label is None:
-        samples_input = input(f"Samples per label [default: 2]: ").strip()
-        samples_per_label = int(samples_input) if samples_input else 2
+    if samples_per_prompt is None:
+        samples_input = input(f"Samples per prompt/label [default: 2]: ").strip()
+        samples_per_prompt = int(samples_input) if samples_input else 2
     
     if temperature is None:
-        temp_input = input(f"Temperature [default: {config.INFERENCE_TEMPERATURE}] (0.3-1.2): ").strip()
-        temperature = float(temp_input) if temp_input else config.INFERENCE_TEMPERATURE
-    
-    # CFG Option
-    if cfg_scale is None:
-        default_cfg = getattr(config, 'CFG_SCALE', 1.0)
-        cfg_input = input(f"CFG Scale [default: {default_cfg}] (1.0=disabled): ").strip()
-        cfg_scale = float(cfg_input) if cfg_input else default_cfg
+        temperature = config.INFERENCE_TEMPERATURE
 
-    # Langevin refinement options
-    if langevin_steps is None:
-        default_l_steps = getattr(config, 'DEFAULT_LANGEVIN_STEPS', 0)
-        langevin_input = input(f"Langevin refinement steps [default: {default_l_steps}]: ").strip()
-        langevin_steps = int(langevin_input) if langevin_input else default_l_steps
+    # Build context
+    all_labels = None
+    text_emb = None
     
-    if langevin_step_size is None:
-        if langevin_steps > 0:
-            step_input = input("Langevin step size [default: 0.1]: ").strip()
-            langevin_step_size = float(step_input) if step_input else 0.1
-        else:
-            langevin_step_size = 0.1  # placeholder, not used
-    
-    if langevin_score_scale is None:
-        if langevin_steps > 0:
-            scale_input = input("Langevin score scale [default: 1.0]: ").strip()
-            langevin_score_scale = float(scale_input) if scale_input else 1.0
-        else:
-            langevin_score_scale = 1.0
-    
-    # Ensure method is valid
-    method = method if method in ['euler', 'heun', 'rk4'] else 'heun'
-    
-    # Build list of labels
-    all_labels = []
-    for label in labels:
-        all_labels.extend([label] * samples_per_label)
-    
-    print(f"\n Generating {len(all_labels)} samples with temperature {temperature} using {method.upper()}...")
-    print(f"  CFG Scale: {cfg_scale}")
-    if langevin_steps > 0:
-        print(f"  + {langevin_steps} Langevin refinement steps (step_size={langevin_step_size}, scale={langevin_score_scale})")
+    if text_prompts:
+        print(f"\nEncoding text prompts: {text_prompts}")
+        # Placeholder for real text encoding (e.g. CLIP)
+        # For now, we use zero embeddings as we haven't integrated a pre-trained encoder yet
+        # in this turn. In a real setup, you'd call a CLIP model here.
+        text_emb = torch.zeros(len(text_prompts) * samples_per_prompt, config.TEXT_EMBEDDING_DIM)
+        print("⚠️ Using zero embeddings (Text Encoder not yet integrated).")
+    else:
+        all_labels = []
+        for label in labels:
+            all_labels.extend([label] * samples_per_prompt)
     
     # Generate samples
     grid_path = trainer.generate_samples(
         labels=all_labels,
+        text_emb=text_emb,
         temperature=temperature,
         method=method,
-        langevin_steps=langevin_steps,
-        langevin_step_size=langevin_step_size,
-        langevin_score_scale=langevin_score_scale,
-        cfg_scale=cfg_scale
+        cfg_scale=cfg_scale or 1.0
     )
     
-    print(f"\n Generated {len(all_labels)} samples")
-    print(f" Saved to: {grid_path}")
-    print(f" Individual images in: {config.DIRS['samples']}")
-    
-    # Print summary
-    print("\n Sample Summary:")
-    class_names = ["airplane", "bird", "car", "cat", "deer", 
-                  "dog", "horse", "monkey", "ship", "truck"]
-    for label in sorted(set(labels)):
-        count = labels.count(label) * samples_per_label
-        name = class_names[label] if label < 10 else f"class_{label}"
-        print(f"   Class {label} ({name}): {count} images")
+    print(f"\n Generated samples saved to: {grid_path}")
 
 if __name__ == "__main__":
     run_inference()

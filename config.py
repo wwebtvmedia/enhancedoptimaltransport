@@ -48,6 +48,15 @@ NUM_CLASSES = 10
 LABEL_EMB_DIM = 128
 
 # ============================================================================
+# MULTIMODAL CONFIGURATION (NEW)
+# ============================================================================
+USE_MULTIMODAL = True
+TEXT_EMBEDDING_DIM = 512        # e.g., CLIP-ViT-B/32 or similar
+TEXT_PROJECTION_DIM = 256       # Intermediate projection for fusion
+MULTIMODAL_FUSION = "cross_attention"  # Options: "add", "concat", "cross_attention"
+MAX_TEXT_LENGTH = 77            # Standard for CLIP-based models
+
+# ============================================================================
 # TRAINING HYPERPARAMETERS (base values, may be adjusted per device)
 # ============================================================================
 LR = 2e-4
@@ -202,17 +211,17 @@ def initialize_hardware():
         DEVICE = torch.device("cuda")
         AMP_AVAILABLE = True
         info = f"🎮 CUDA: {torch.cuda.get_device_name(0)}"
-        BATCH_SIZE = 64
+        BATCH_SIZE = 4
     elif hasattr(torch, 'xpu') and torch.xpu.is_available():
         DEVICE = torch.device("xpu")
         AMP_AVAILABLE = True
         info = f"🔵 Intel Arc: {torch.xpu.get_device_name(0)}"
-        BATCH_SIZE = 64
+        BATCH_SIZE = 4
     elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         DEVICE = torch.device("mps")
         AMP_AVAILABLE = False
         info = "🍎 Apple Silicon (MPS)"
-        BATCH_SIZE = 32
+        BATCH_SIZE = 4
     else:
         try:
             import torch_directml
@@ -220,16 +229,19 @@ def initialize_hardware():
                 DEVICE = torch_directml.device()
                 AMP_AVAILABLE = False
                 info = "🎮 DirectML (AMD/Intel)"
-                BATCH_SIZE = 32
+                BATCH_SIZE = 4
             else:
                 raise ImportError
         except ImportError:
             DEVICE = torch.device("cpu")
             AMP_AVAILABLE = False
             info = "💻 CPU (Slow)"
-            BATCH_SIZE = 16
+            BATCH_SIZE = 2
             
     return info
+
+# Initialize hardware on import
+HW_INFO = initialize_hardware()
 
 # ============================================================================
 # LOGGER SETUP

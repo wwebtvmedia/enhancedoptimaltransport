@@ -119,8 +119,10 @@ def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = Fals
         'phase2_start_epoch': getattr(trainer, 'phase2_start_epoch', None),
         'vae_state': trainer.vae.state_dict(),
         'drift_state': trainer.drift.state_dict(),
+        'text_encoder_state': trainer.text_encoder.state_dict() if hasattr(trainer, 'text_encoder') else None,
         'opt_vae_state': trainer.opt_vae.state_dict(),
         'opt_drift_state': trainer.opt_drift.state_dict(),
+        'opt_text_state': trainer.opt_text.state_dict() if hasattr(trainer, 'opt_text') else None,
         'scheduler_vae_state': trainer.scheduler_vae.state_dict(),
         'scheduler_drift_state': trainer.scheduler_drift.state_dict(),
         'best_loss': trainer.best_loss,
@@ -177,8 +179,13 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         
         trainer.vae.load_state_dict(checkpoint['vae_state'])
         trainer.drift.load_state_dict(checkpoint['drift_state'])
+        if 'text_encoder_state' in checkpoint and hasattr(trainer, 'text_encoder') and checkpoint['text_encoder_state'] is not None:
+            trainer.text_encoder.load_state_dict(checkpoint['text_encoder_state'])
+        
         trainer.opt_vae.load_state_dict(checkpoint['opt_vae_state'])
         trainer.opt_drift.load_state_dict(checkpoint['opt_drift_state'])
+        if 'opt_text_state' in checkpoint and hasattr(trainer, 'opt_text') and checkpoint['opt_text_state'] is not None:
+            trainer.opt_text.load_state_dict(checkpoint['opt_text_state'])
         trainer.scheduler_vae.load_state_dict(checkpoint['scheduler_vae_state'])
         trainer.scheduler_drift.load_state_dict(checkpoint['scheduler_drift_state'])
         
@@ -338,12 +345,18 @@ class LabeledImageDataset(Dataset):
         if self.transform:
             img = self.transform(img)
         
-        return {
+        data = {
             'image': img,
             'label': torch.tensor(label_idx, dtype=torch.long),
             'label_text': label_text,
             'index': idx
         }
+        
+        # In this prototype, we use the label index as a token ID for the TextEncoder
+        if config.USE_MULTIMODAL:
+            data['text_tokens'] = torch.tensor(label_idx, dtype=torch.long)
+            
+        return data
 
 # ============================================================
 # config.DEVICE-COMPATIBLE DATALOADER SETTINGS
