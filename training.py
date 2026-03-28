@@ -389,6 +389,8 @@ class EnhancedLabelTrainer:
                         "latent_channels": config.LATENT_CHANNELS,
                         "dataset": config.DATASET_NAME,
                         "architecture": "Schrödinger Bridge v2.1",
+                        "device": str(config.DEVICE),
+                        "hardware": config.HW_INFO
                     }
                 )
                 # Watch models for gradients/params
