@@ -303,10 +303,47 @@ class EnhancedLabelTrainer:
 
         self.vae = models.MultimodalVAE().to(config.DEVICE)
         self.drift = models.MultimodalDrift().to(config.DEVICE)
-        self.text_encoder = models.TextEncoder(vocab_size=config.NUM_CLASSES).to(config.DEVICE)
         
+        # Initialize text encoder based on configuration
+        if config.USE_CLIP_STYLE:
+            self.text_encoder = models.CLIPTextEncoder(
+                vocab_size=config.CLIP_VOCAB_SIZE,
+                embed_dim=config.TEXT_EMBEDDING_DIM,
+                max_length=config.MAX_TEXT_LENGTH,
+                num_layers=config.CLIP_TEXT_ENCODER_LAYERS,
+                num_heads=config.CLIP_TEXT_ENCODER_HEADS,
+                use_clip_style=True
+            ).to(config.DEVICE)
+        else:
+            self.text_encoder = models.TextEncoder(vocab_size=config.NUM_CLASSES).to(config.DEVICE)
+        
+        # Initialize image projection head if enabled
+        if config.USE_IMAGE_PROJECTION:
+            self.image_projection = models.ImageProjection(
+                latent_dim=config.LATENT_CHANNELS * config.LATENT_H * config.LATENT_W,
+                embed_dim=config.IMAGE_PROJECTION_DIM
+            ).to(config.DEVICE)
+        else:
+            self.image_projection = None
+        
+        # Initialize contrastive loss if enabled
+        if config.USE_CONTRASTIVE_LOSS:
+            self.contrastive_loss = models.CLIPContrastiveLoss(
+                temperature=config.CONTRASTIVE_TEMPERATURE,
+                learnable_temperature=config.LEARNABLE_TEMPERATURE
+            ).to(config.DEVICE)
+        else:
+            self.contrastive_loss = None
+        
+        # Optimizers
         self.opt_vae = optim.AdamW(self.vae.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY)
         self.opt_text = optim.AdamW(self.text_encoder.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY)
+        
+        # Add image projection optimizer if enabled
+        if self.image_projection is not None:
+            self.opt_image_proj = optim.AdamW(self.image_projection.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY)
+        else:
+            self.opt_image_proj = None
 
         # Drift optimizer with multiplier from config
         self.opt_drift = optim.AdamW(
@@ -625,6 +662,31 @@ class EnhancedLabelTrainer:
         if config.USE_MULTIMODAL and 'text_tokens' in batch:
             tokens = batch['text_tokens'].to(config.DEVICE)
             text_emb = self.text_encoder(tokens)
+        
+        # CLIP-style contrastive loss calculation
+        contrastive_loss_val = torch.tensor(0.0, device=config.DEVICE)
+        if (config.USE_CONTRASTIVE_LOSS and self.contrastive_loss is not None and
+            text_emb is not None and phase == 1):
+            
+            # Get VAE latent for images
+            with torch.no_grad():
+                mu, _ = self.vae.encode(images, labels, text_emb)
+            
+            # Project image latent to shared embedding space
+            if self.image_projection is not None:
+                image_emb = self.image_projection(mu)
+            else:
+                # Use flattened mu as image embedding
+                image_emb = mu.flatten(1)
+                # Project to same dimension as text embedding if needed
+                if image_emb.size(1) != text_emb.size(1):
+                    # Simple linear projection if dimensions don't match
+                    if not hasattr(self, 'temp_projection'):
+                        self.temp_projection = nn.Linear(image_emb.size(1), text_emb.size(1)).to(config.DEVICE)
+                    image_emb = self.temp_projection(image_emb)
+            
+            # Compute contrastive loss
+            contrastive_loss_val = self.contrastive_loss(image_emb, text_emb)
 
         if phase == 1:
             # Phase 1: Train VAE + Text Encoder + Context Decoder
@@ -666,12 +728,15 @@ class EnhancedLabelTrainer:
             recon_loss = (raw_l1 * config.RECON_WEIGHT + 
                          config.PERCEPTUAL_WEIGHT * self.perceptual_loss(recon, images))
             
-            # Total Loss with Classification and Text-Alignment
+            # Total Loss with Classification, Text-Alignment, and Contrastive Loss
             text_align_weight = getattr(config, 'TEXT_ALIGN_WEIGHT', 1.0)
-            total_loss = (recon_loss + kl_loss + 
-                         (diversity_loss * config.DIVERSITY_WEIGHT) + 
-                         (cls_loss * 0.5) + 
-                         (latent_alignment_loss * text_align_weight))
+            contrastive_weight = getattr(config, 'CONTRASTIVE_WEIGHT', 0.1)
+            
+            total_loss = (recon_loss + kl_loss +
+                         (diversity_loss * config.DIVERSITY_WEIGHT) +
+                         (cls_loss * 0.5) +
+                         (latent_alignment_loss * text_align_weight) +
+                         (contrastive_loss_val * contrastive_weight))
             
             snr = calc_snr(images, recon)
             
@@ -682,6 +747,7 @@ class EnhancedLabelTrainer:
                 'diversity': diversity_loss.item(),
                 'cls': cls_loss.item(),
                 'align': latent_alignment_loss.item(),
+                'contrastive': contrastive_loss_val.item() if contrastive_loss_val > 0 else 0.0,
                 'snr': snr,
                 'latent_std': latent_std,
                 'min_channel_std': min_channel_std,
@@ -867,13 +933,26 @@ class EnhancedLabelTrainer:
 
                 # Backward pass
                 if phase == 1:
+                    # Zero gradients for all optimizers
                     self.opt_vae.zero_grad()
                     self.opt_text.zero_grad()
+                    if self.opt_image_proj is not None:
+                        self.opt_image_proj.zero_grad()
+                    
+                    # Backward pass
                     loss_dict['total'].backward()
+                    
+                    # Gradient clipping
                     torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
                     torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), config.GRAD_CLIP)
+                    if self.image_projection is not None:
+                        torch.nn.utils.clip_grad_norm_(self.image_projection.parameters(), config.GRAD_CLIP)
+                    
+                    # Optimizer steps
                     self.opt_vae.step()
                     self.opt_text.step()
+                    if self.opt_image_proj is not None:
+                        self.opt_image_proj.step()
                     
                     if 'snr' in loss_dict:
                         snr_values.append(loss_dict['snr'])
@@ -897,30 +976,46 @@ class EnhancedLabelTrainer:
                         self.opt_drift.step()
                 elif phase == 3:
                     # In Phase 3, we update EVERYTHING
+                    # Zero gradients for all optimizers
                     self.opt_vae.zero_grad()
                     self.opt_drift.zero_grad()
                     self.opt_text.zero_grad()
+                    if self.opt_image_proj is not None:
+                        self.opt_image_proj.zero_grad()
                     
                     if self.scaler is not None:
                         self.scaler.scale(loss_dict['total']).backward()
                         self.scaler.unscale_(self.opt_vae)
                         self.scaler.unscale_(self.opt_drift)
                         self.scaler.unscale_(self.opt_text)
+                        if self.opt_image_proj is not None:
+                            self.scaler.unscale_(self.opt_image_proj)
+                        
                         torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
                         torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR)
                         torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), config.GRAD_CLIP)
+                        if self.image_projection is not None:
+                            torch.nn.utils.clip_grad_norm_(self.image_projection.parameters(), config.GRAD_CLIP)
+                        
                         self.scaler.step(self.opt_vae)
                         self.scaler.step(self.opt_drift)
                         self.scaler.step(self.opt_text)
+                        if self.opt_image_proj is not None:
+                            self.scaler.step(self.opt_image_proj)
                         self.scaler.update()
                     else:
                         loss_dict['total'].backward()
                         torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
                         torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR)
                         torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), config.GRAD_CLIP)
+                        if self.image_projection is not None:
+                            torch.nn.utils.clip_grad_norm_(self.image_projection.parameters(), config.GRAD_CLIP)
+                        
                         self.opt_vae.step()
                         self.opt_drift.step()
                         self.opt_text.step()
+                        if self.opt_image_proj is not None:
+                            self.opt_image_proj.step()
                 
                 # Accumulate losses
                 for key, value in loss_dict.items():

@@ -51,10 +51,29 @@ LABEL_EMB_DIM = 128
 # MULTIMODAL CONFIGURATION (NEW)
 # ============================================================================
 USE_MULTIMODAL = True
+
+# Text Encoder Configuration
 TEXT_EMBEDDING_DIM = 512        # e.g., CLIP-ViT-B/32 or similar
 TEXT_PROJECTION_DIM = 256       # Intermediate projection for fusion
 MULTIMODAL_FUSION = "cross_attention"  # Options: "add", "concat", "cross_attention"
-MAX_TEXT_LENGTH = 77            # Standard for CLIP-based models
+
+# CLIP-Style Configuration
+USE_CLIP_STYLE = True           # Use CLIP-style text encoder instead of simple MLP
+CLIP_VOCAB_SIZE = 10000         # BPE vocabulary size for CLIP-style encoder
+MAX_TEXT_LENGTH = 77            # Standard for CLIP-based models (77 tokens)
+CLIP_TEXT_ENCODER_LAYERS = 6    # Number of transformer layers in CLIP text encoder
+CLIP_TEXT_ENCODER_HEADS = 8     # Number of attention heads
+CLIP_TEXT_ENCODER_DROPOUT = 0.1 # Dropout rate in transformer
+
+# Contrastive Learning Configuration
+USE_CONTRASTIVE_LOSS = True     # Enable CLIP-style contrastive learning
+CONTRASTIVE_WEIGHT = 0.1        # Weight for contrastive loss in total loss
+CONTRASTIVE_TEMPERATURE = 0.07  # Initial temperature for contrastive loss
+LEARNABLE_TEMPERATURE = True    # Whether temperature is learnable
+
+# Image Projection Configuration
+USE_IMAGE_PROJECTION = True     # Project VAE latent to shared embedding space
+IMAGE_PROJECTION_DIM = 512      # Dimension of projected image embeddings
 
 # ============================================================================
 # TRAINING HYPERPARAMETERS (base values, may be adjusted per device)

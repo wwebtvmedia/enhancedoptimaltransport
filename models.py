@@ -197,6 +197,199 @@ class TextEncoder(nn.Module):
             return self.encoder(h)
         return self.encoder(h) # [B, D]
 
+
+# ============================================================
+# CLIP-STYLE TEXT ENCODER WITH POSITIONAL ENCODING
+# ============================================================
+class CLIPTextEncoder(nn.Module):
+    """
+    CLIP-style text encoder with BPE tokenization and positional encoding.
+    Similar to OpenAI CLIP text encoder architecture.
+    """
+    def __init__(self, vocab_size=10000, embed_dim=512, max_length=77,
+                 num_layers=6, num_heads=8, use_clip_style=True):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.embed_dim = embed_dim
+        self.max_length = max_length
+        self.use_clip_style = use_clip_style
+        
+        # Token embedding
+        self.token_embedding = nn.Embedding(vocab_size, embed_dim)
+        
+        # Positional encoding (learned, not sinusoidal like CLIP)
+        self.positional_embedding = nn.Embedding(max_length, embed_dim)
+        
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=embed_dim * 4,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True,
+            norm_first=True  # Pre-LN architecture like CLIP
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Final layer norm
+        self.ln_final = nn.LayerNorm(embed_dim)
+        
+        # Text projection (to match image embedding dim)
+        self.text_projection = nn.Linear(embed_dim, config.TEXT_EMBEDDING_DIM)
+        
+        # [EOS] token ID (assuming last token in vocabulary)
+        self.eos_token_id = vocab_size - 1
+        
+        # Logit scale parameter for contrastive loss (like CLIP)
+        if use_clip_style:
+            self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        
+    def forward(self, text_tokens):
+        """
+        Args:
+            text_tokens: [B, L] token IDs (padded to max_length)
+        Returns:
+            text_embeddings: [B, TEXT_EMBEDDING_DIM]
+        """
+        batch_size = text_tokens.size(0)
+        seq_length = text_tokens.size(1)
+        
+        # Create token embeddings
+        x = self.token_embedding(text_tokens)  # [B, L, D]
+        
+        # Add positional embeddings
+        positions = torch.arange(seq_length, device=text_tokens.device).unsqueeze(0)
+        pos_emb = self.positional_embedding(positions)  # [1, L, D]
+        x = x + pos_emb  # [B, L, D]
+        
+        # Create attention mask (ignore padding tokens, assuming pad_id=0)
+        attention_mask = (text_tokens != 0)  # [B, L], True for non-padding tokens
+        
+        # Transformer encoder with padding mask
+        # Note: src_key_padding_mask expects True for padding positions to be masked
+        x = self.transformer(x, src_key_padding_mask=~attention_mask)
+        
+        # Take features from the [EOS] token position
+        # Find [EOS] token positions
+        eos_mask = (text_tokens == self.eos_token_id)  # [B, L]
+        
+        if eos_mask.any():
+            # Use first [EOS] token in each sequence
+            eos_positions = eos_mask.int().argmax(dim=1)  # [B]
+        else:
+            # If no [EOS], use last non-padding token
+            # Get last non-padding position for each sequence
+            seq_lengths = attention_mask.sum(dim=1)  # [B]
+            eos_positions = seq_lengths - 1  # [B]
+        
+        # Gather [EOS] token features
+        batch_indices = torch.arange(batch_size, device=text_tokens.device)
+        eos_features = x[batch_indices, eos_positions]  # [B, D]
+        
+        # Layer norm and projection
+        eos_features = self.ln_final(eos_features)
+        text_emb = self.text_projection(eos_features)  # [B, TEXT_EMBEDDING_DIM]
+        
+        return text_emb
+    
+    def get_logit_scale(self):
+        """Get the logit scale parameter for contrastive loss."""
+        if self.use_clip_style:
+            return self.logit_scale.exp()
+        else:
+            return torch.tensor(1.0, device=self.logit_scale.device)
+
+
+# ============================================================
+# IMAGE PROJECTION HEAD FOR SHARED EMBEDDING SPACE
+# ============================================================
+class ImageProjection(nn.Module):
+    """
+    Projects VAE latent features to shared embedding space for contrastive learning.
+    Similar to CLIP's image projection head.
+    """
+    def __init__(self, latent_dim=288, embed_dim=512):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.embed_dim = embed_dim
+        
+        self.projection = nn.Sequential(
+            nn.Linear(latent_dim, embed_dim * 2),
+            nn.GELU(),
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.LayerNorm(embed_dim)
+        )
+        
+    def forward(self, latent):
+        """
+        Args:
+            latent: VAE latent features [B, 8, 6, 6] or flattened [B, 288]
+        Returns:
+            image_embeddings: [B, embed_dim]
+        """
+        # Flatten if 4D tensor
+        if latent.dim() == 4:
+            latent = latent.flatten(1)  # [B, 288]
+        
+        # Ensure correct dimension
+        if latent.size(1) != self.latent_dim:
+            raise ValueError(f"Expected latent dimension {self.latent_dim}, got {latent.size(1)}")
+        
+        return self.projection(latent)  # [B, embed_dim]
+
+
+# ============================================================
+# CLIP CONTRASTIVE LOSS
+# ============================================================
+class CLIPContrastiveLoss(nn.Module):
+    """
+    CLIP-style contrastive loss for image-text alignment.
+    Uses symmetric cross-entropy loss with learned temperature.
+    """
+    def __init__(self, temperature=0.07, learnable_temperature=True):
+        super().__init__()
+        if learnable_temperature:
+            self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / temperature))
+        else:
+            self.register_buffer('logit_scale', torch.tensor(1 / temperature))
+        self.learnable_temperature = learnable_temperature
+        
+    def forward(self, image_emb, text_emb):
+        """
+        Args:
+            image_emb: [B, D] normalized image embeddings
+            text_emb: [B, D] normalized text embeddings
+        Returns:
+            loss: scalar contrastive loss
+        """
+        # Normalize embeddings (safety check)
+        image_emb = F.normalize(image_emb, dim=-1)
+        text_emb = F.normalize(text_emb, dim=-1)
+        
+        # Cosine similarity with temperature scaling
+        logit_scale = self.logit_scale.exp() if self.learnable_temperature else self.logit_scale
+        logits_per_image = logit_scale * image_emb @ text_emb.T  # [B, B]
+        logits_per_text = logits_per_image.T  # [B, B]
+        
+        # Labels are diagonal (matching pairs)
+        batch_size = image_emb.size(0)
+        labels = torch.arange(batch_size, device=image_emb.device)
+        
+        # Symmetric cross-entropy loss
+        loss_i = F.cross_entropy(logits_per_image, labels)
+        loss_t = F.cross_entropy(logits_per_text, labels)
+        
+        return (loss_i + loss_t) / 2
+    
+    def get_temperature(self):
+        """Get the current temperature value."""
+        if self.learnable_temperature:
+            return 1 / self.logit_scale.exp().item()
+        else:
+            return 1 / self.logit_scale.item()
+
+
 # ============================================================
 # CONTEXT ENCODER & DECODER
 # ============================================================
