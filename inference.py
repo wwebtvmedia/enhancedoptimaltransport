@@ -137,8 +137,8 @@ def image_to_image(image_path: Union[str, Path],
     out_path = config.DIRS["samples"] / f"i2i_{timestamp}.png"
     vutils.save_image(grid, out_path)
     return out_path
-...
 
+def run_inference(labels: Optional[List[int]] = None,
                   text_prompts: Optional[List[str]] = None,
                   samples_per_prompt: int = 1,
                   temperature: float = config.INFERENCE_TEMPERATURE,
@@ -216,7 +216,13 @@ def image_to_image(image_path: Union[str, Path],
             indices_expanded.extend([idx] * samples_per_prompt)
             
         with torch.no_grad():
-            tokens = torch.tensor(indices_expanded, dtype=torch.long, device=config.DEVICE)
+            # Build padded tokens [B, MAX_TEXT_LENGTH]
+            batch_size = len(indices_expanded)
+            tokens = torch.zeros(batch_size, config.MAX_TEXT_LENGTH, dtype=torch.long, device=config.DEVICE)
+            for i, idx in enumerate(indices_expanded):
+                tokens[i, 0] = min(idx + 1, config.CLIP_VOCAB_SIZE - 2)
+                tokens[i, 1] = config.CLIP_VOCAB_SIZE - 1 # EOS
+            
             text_emb = trainer.text_encoder(tokens)
     else:
         all_labels = []
@@ -235,7 +241,7 @@ def image_to_image(image_path: Union[str, Path],
     config.logger.info(f"Generated samples saved to: {grid_path}")
     return grid_path
 
-    def text_to_text(source_text: str, 
+def text_to_text(source_text: str, 
                  target_text: str, 
                  steps: int = 50) -> str:
     """
@@ -287,5 +293,5 @@ def image_to_image(image_path: Union[str, Path],
 
     return class_names[pred_idx] if pred_idx < len(class_names) else f"class_{pred_idx}"
 
-    if __name__ == "__main__":
+if __name__ == "__main__":
     run_inference()

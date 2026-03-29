@@ -177,17 +177,21 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
             if saved_cfg.get('IMG_SIZE') != config.IMG_SIZE:
                 config.logger.warning(f"IMG_SIZE mismatch: checkpoint={saved_cfg.get('IMG_SIZE')}, current={config.IMG_SIZE}")
         
-        trainer.vae.load_state_dict(checkpoint['vae_state'])
-        trainer.drift.load_state_dict(checkpoint['drift_state'])
+        trainer.vae.load_state_dict(checkpoint['vae_state'], strict=False)
+        trainer.drift.load_state_dict(checkpoint['drift_state'], strict=False)
         if 'text_encoder_state' in checkpoint and hasattr(trainer, 'text_encoder') and checkpoint['text_encoder_state'] is not None:
-            trainer.text_encoder.load_state_dict(checkpoint['text_encoder_state'])
+            trainer.text_encoder.load_state_dict(checkpoint['text_encoder_state'], strict=False)
         
-        trainer.opt_vae.load_state_dict(checkpoint['opt_vae_state'])
-        trainer.opt_drift.load_state_dict(checkpoint['opt_drift_state'])
-        if 'opt_text_state' in checkpoint and hasattr(trainer, 'opt_text') and checkpoint['opt_text_state'] is not None:
-            trainer.opt_text.load_state_dict(checkpoint['opt_text_state'])
-        trainer.scheduler_vae.load_state_dict(checkpoint['scheduler_vae_state'])
-        trainer.scheduler_drift.load_state_dict(checkpoint['scheduler_drift_state'])
+        try:
+            trainer.opt_vae.load_state_dict(checkpoint['opt_vae_state'])
+            trainer.opt_drift.load_state_dict(checkpoint['opt_drift_state'])
+            if 'opt_text_state' in checkpoint and hasattr(trainer, 'opt_text') and checkpoint['opt_text_state'] is not None:
+                trainer.opt_text.load_state_dict(checkpoint['opt_text_state'])
+            trainer.scheduler_vae.load_state_dict(checkpoint['scheduler_vae_state'])
+            trainer.scheduler_drift.load_state_dict(checkpoint['scheduler_drift_state'])
+        except Exception as opt_e:
+            config.logger.warning(f"Failed to load optimizer/scheduler states (likely due to architecture change): {opt_e}")
+            config.logger.info("Continuing with fresh optimizer states.")
         
         trainer.epoch = checkpoint['epoch']
         trainer.step = checkpoint['step']
@@ -354,7 +358,13 @@ class LabeledImageDataset(Dataset):
         
         # In this prototype, we use the label index as a token ID for the TextEncoder
         if config.USE_MULTIMODAL:
-            data['text_tokens'] = torch.tensor(label_idx, dtype=torch.long)
+            # Shift labels by 1 so 0 is padding, 1-10 are labels, VOCAB_SIZE-1 is EOS
+            tokens = torch.zeros(config.MAX_TEXT_LENGTH, dtype=torch.long)
+            # Ensure label fits within vocab (minus EOS)
+            safe_label = min(label_idx + 1, config.CLIP_VOCAB_SIZE - 2)
+            tokens[0] = safe_label
+            tokens[1] = config.CLIP_VOCAB_SIZE - 1 # EOS token
+            data['text_tokens'] = tokens
             
         return data
 

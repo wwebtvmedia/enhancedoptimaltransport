@@ -148,123 +148,122 @@ with tab2:
 
     # --- TAB 3: Inference (Multimodal) ---
     with tab3:
-    st.subheader("Multimodal Bridge Inference")
+        st.subheader("Multimodal Bridge Inference")
 
-    inf_col1, inf_col2 = st.columns([1, 2])
+        inf_col1, inf_col2 = st.columns([1, 2])
 
-    with inf_col1:
-        inf_mode = st.radio("Inference Mode", ["Text-to-Image", "Image-to-Image", "Image-to-Text", "Text-to-Text"])
+        with inf_col1:
+            inf_mode = st.radio("Inference Mode", ["Text-to-Image", "Image-to-Image", "Image-to-Text", "Text-to-Text"])
 
-        if inf_mode == "Text-to-Image":
-            prompt = st.text_input("Text Prompt / Labels (comma-separated)", "airplane, bird, car, cat")
-            samples_per = st.slider("Samples per prompt", 1, 8, 1)
-            cfg = st.slider("CFG Scale", 1.0, 10.0, 1.5)
-            method = st.selectbox("Solver", ["heun", "euler"])
+            if inf_mode == "Text-to-Image":
+                prompt = st.text_input("Text Prompt / Labels (comma-separated)", "airplane, bird, car, cat")
+                samples_per = st.slider("Samples per prompt", 1, 8, 1)
+                cfg = st.slider("CFG Scale", 1.0, 10.0, 1.5)
+                method = st.selectbox("Solver", ["heun", "euler"])
 
-            if st.button("✨ Generate", width='stretch'):
-                with st.spinner("Bridging concepts..."):
+                if st.button("✨ Generate", width='stretch'):
+                    with st.spinner("Bridging concepts..."):
+                        import inference
+                        labels = [int(x.strip()) for x in prompt.split(',') if x.strip().isdigit()]
+                        texts = [x.strip() for x in prompt.split(',') if not x.strip().isdigit()]
+
+                        res_path = inference.run_inference(
+                            labels=labels if labels else None,
+                            text_prompts=texts if texts else None,
+                            samples_per_prompt=samples_per,
+                            cfg_scale=cfg,
+                            method=method
+                        )
+                        if res_path: st.session_state.inf_result = str(res_path)
+
+            elif inf_mode == "Image-to-Image":
+                uploaded_file = st.file_uploader("Source Image", type=['png', 'jpg', 'jpeg'])
+                target = st.text_input("Target Category/Label", "cat")
+                strength = st.slider("Transformation Strength", 0.1, 0.9, 0.5)
+
+                if uploaded_file and st.button("🎨 Translate Image", width='stretch'):
+                    temp_path = Path("temp_i2i.png")
+                    with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
+
                     import inference
-                    labels = [int(x.strip()) for x in prompt.split(',') if x.strip().isdigit()]
-                    texts = [x.strip() for x in prompt.split(',') if not x.strip().isdigit()]
-
-                    res_path = inference.run_inference(
-                        labels=labels if labels else None,
-                        text_prompts=texts if texts else None,
-                        samples_per_prompt=samples_per,
-                        cfg_scale=cfg,
-                        method=method
+                    res_path = inference.image_to_image(
+                        image_path=temp_path,
+                        target_text=target if not target.isdigit() else None,
+                        target_label=int(target) if target.isdigit() else None,
+                        strength=strength
                     )
                     if res_path: st.session_state.inf_result = str(res_path)
 
-        elif inf_mode == "Image-to-Image":
-            uploaded_file = st.file_uploader("Source Image", type=['png', 'jpg', 'jpeg'])
-            target = st.text_input("Target Category/Label", "cat")
-            strength = st.slider("Transformation Strength", 0.1, 0.9, 0.5)
+            elif inf_mode == "Image-to-Text":
+                uploaded_file = st.file_uploader("Analyze Image", type=['png', 'jpg', 'jpeg'])
+                if uploaded_file and st.button("🔍 Predict Label", width='stretch'):
+                    temp_path = Path("temp_predict.png")
+                    with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
+                    import inference
+                    label = inference.image_to_text(temp_path)
+                    st.success(f"Predicted Class: **{label}**")
 
-            if uploaded_file and st.button("🎨 Translate Image", width='stretch'):
-                temp_path = Path("temp_i2i.png")
-                with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
+            elif inf_mode == "Text-to-Text":
+                src_t = st.text_input("Source Concept", "dog")
+                tgt_t = st.text_input("Target Concept", "cat")
+                if st.button("📝 Translate Concept", width='stretch'):
+                    import inference
+                    res = inference.text_to_text(src_t, tgt_t)
+                    st.info(f"Latent Translation: {src_t} ➔ {tgt_t} = Result: **{res}**")
 
-                import inference
-                res_path = inference.image_to_image(
-                    image_path=temp_path,
-                    target_text=target if not target.isdigit() else None,
-                    target_label=int(target) if target.isdigit() else None,
-                    strength=strength
-                )
-                if res_path: st.session_state.inf_result = str(res_path)
-
-        elif inf_mode == "Image-to-Text":
-            uploaded_file = st.file_uploader("Analyze Image", type=['png', 'jpg', 'jpeg'])
-            if uploaded_file and st.button("🔍 Predict Label", width='stretch'):
-                temp_path = Path("temp_predict.png")
-                with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
-                import inference
-                label = inference.image_to_text(temp_path)
-                st.success(f"Predicted Class: **{label}**")
-
-        elif inf_mode == "Text-to-Text":
-            src_t = st.text_input("Source Concept", "dog")
-            tgt_t = st.text_input("Target Concept", "cat")
-            if st.button("📝 Translate Concept", width='stretch'):
-                import inference
-                res = inference.text_to_text(src_t, tgt_t)
-                st.info(f"Latent Translation: {src_t} ➔ {tgt_t} = Result: **{res}**")
-
-    with inf_col2:
-        if 'inf_result' in st.session_state and os.path.exists(st.session_state.inf_result):
-            st.image(st.session_state.inf_result, caption="Inference Result", width='stretch')
-        else:
-            st.info("Results will appear here.")
+        with inf_col2:
+            if 'inf_result' in st.session_state and os.path.exists(st.session_state.inf_result):
+                st.image(st.session_state.inf_result, caption="Inference Result", width='stretch')
+            else:
+                st.info("Results will appear here.")
 
     # --- TAB 4: Gallery ---
     with tab4:
-    st.subheader("Latest Generated Samples")
-    samples_dir = config.DIRS["samples"]
-    png_files = sorted(list(samples_dir.glob("gen_*.png")), key=os.path.getmtime, reverse=True)
-    if png_files:
-        st.image(str(png_files[0]), caption=f"Latest Result: {png_files[0].name}", width='stretch')
-    else:
-        st.warning("No samples generated yet.")
+        st.subheader("Latest Generated Samples")
+        samples_dir = config.DIRS["samples"]
+        png_files = sorted(list(samples_dir.glob("gen_*.png")), key=os.path.getmtime, reverse=True)
+        if png_files:
+            st.image(str(png_files[0]), caption=f"Latest Result: {png_files[0].name}", width='stretch')
+        else:
+            st.warning("No samples generated yet.")
 
     # --- TAB 5: Curves & Logs (Restored) ---
     with tab5:
-
-    st.subheader("Historical Training Curves")
-    
-    # Log File Selection
-    log_dir = config.DIRS["logs"]
-    log_files = sorted(list(log_dir.glob("train_*.log")), key=os.path.getmtime, reverse=True)
-    
-    if log_files:
-        log_names = [f.name for f in log_files]
-        selected_log_name = st.selectbox("Select Log File to Analyze", log_names, index=0)
-        selected_log_path = log_dir / selected_log_name
+        st.subheader("Historical Training Curves")
         
-        st.caption(f"Analyzing log: {selected_log_path.name}")
-        metrics = parse_training_log(str(selected_log_path))
+        # Log File Selection
+        log_dir = config.DIRS["logs"]
+        log_files = sorted(list(log_dir.glob("train_*.log")), key=os.path.getmtime, reverse=True)
         
-        if metrics:
-            df = pd.DataFrame.from_dict(metrics, orient='index')
+        if log_files:
+            log_names = [f.name for f in log_files]
+            selected_log_name = st.selectbox("Select Log File to Analyze", log_names, index=0)
+            selected_log_path = log_dir / selected_log_name
             
-            c1, c2 = st.columns(2)
-            with c1:
-                st.write("### Loss Convergence")
-                # Filter to show main losses
-                loss_cols = [c for c in ['total', 'recon', 'kl', 'diversity'] if c in df.columns]
-                st.line_chart(df[loss_cols])
+            st.caption(f"Analyzing log: {selected_log_path.name}")
+            metrics = parse_training_log(str(selected_log_path))
             
-            with c2:
-                st.write("### Quality Metrics (SNR)")
-                if 'snr' in df.columns:
-                    st.line_chart(df[['snr']])
+            if metrics:
+                df = pd.DataFrame.from_dict(metrics, orient='index')
                 
-            st.write("### Raw Epoch Data")
-            st.dataframe(df.tail(10), width='stretch')
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write("### Loss Convergence")
+                    # Filter to show main losses
+                    loss_cols = [c for c in ['total', 'recon', 'kl', 'diversity'] if c in df.columns]
+                    st.line_chart(df[loss_cols])
+                
+                with c2:
+                    st.write("### Quality Metrics (SNR)")
+                    if 'snr' in df.columns:
+                        st.line_chart(df[['snr']])
+                    
+                st.write("### Raw Epoch Data")
+                st.dataframe(df.tail(10), width='stretch')
+            else:
+                st.error("Could not parse metrics from the latest log.")
         else:
-            st.error("Could not parse metrics from the latest log.")
-    else:
-        st.info("No log files found to visualize.")
+            st.info("No log files found to visualize.")
 
 # Auto-refresh loop
 if ctx.is_training:

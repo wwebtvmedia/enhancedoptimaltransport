@@ -263,7 +263,10 @@ class SchrödingerBridgeGUI:
         self.t2t_btn.pack(fill='x', pady=5)
         
         # Export ONNX Button
-...
+        self.export_onnx_btn = tk.Button(ctrl.content, text="📦 Export to ONNX", command=self.export_onnx,
+                                          bg=Colors.BG_LIGHT, fg=Colors.ACCENT, relief="flat", padx=20, pady=5)
+        self.export_onnx_btn.pack(fill='x', pady=5)
+
     def run_t2t(self):
         source = tk.simpledialog.askstring("Text-to-Text", "Enter Source Concept (e.g. cat):")
         if not source: return
@@ -282,7 +285,7 @@ class SchrödingerBridgeGUI:
                 self.root.after(0, lambda: self.t2t_btn.config(state='normal', text="📝 Text-to-Text (Latent)"))
 
         threading.Thread(target=_thread_t2t, daemon=True).start()
-...
+
     def run_i2i(self):
         file_path = filedialog.askopenfilename(title="Select Source Image", 
                                                filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp")])
@@ -324,7 +327,7 @@ class SchrödingerBridgeGUI:
                 self.root.after(0, lambda: self.i2i_btn.config(state='normal', text="🎨 Image-to-Image"))
 
         threading.Thread(target=_thread_i2i, daemon=True).start()
-...
+
     def run_prediction(self):
         file_path = filedialog.askopenfilename(title="Select Image for Prediction", 
                                                filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp")])
@@ -344,9 +347,7 @@ class SchrödingerBridgeGUI:
                 self.root.after(0, lambda: self.predict_btn.config(state='normal', text="🖼️ Predict Label from Image"))
 
         threading.Thread(target=_thread_predict, daemon=True).start()
-        self.export_onnx_btn = tk.Button(ctrl.content, text="📦 Export to ONNX", command=self.export_onnx,
-                                          bg=Colors.BG_LIGHT, fg=Colors.ACCENT, relief="flat", padx=20, pady=5)
-        self.export_onnx_btn.pack(fill='x', pady=5)
+
 
         # --- Result Display ---
         self.inf_result_canvas = tk.Canvas(right.content, bg=Colors.BG_DARK, highlightthickness=0)
