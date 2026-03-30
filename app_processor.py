@@ -29,28 +29,37 @@ class TrainingProcessor:
         self.ctx.device_info = info
         return info
 
-    def start_training(self, on_epoch_done: Optional[Callable] = None):
+    def start_training(self, on_epoch_done: Optional[Callable] = None, fresh_start: bool = False):
         """Launches the training thread."""
         if self.ctx.is_training:
             return
             
         self.ctx.is_training = True
         self.ctx.stop_signal = False
-        self._thread = threading.Thread(target=self._run_loop, args=(on_epoch_done,), daemon=True)
+        self._thread = threading.Thread(target=self._run_loop, args=(on_epoch_done, fresh_start), daemon=True)
         self._thread.start()
 
     def stop_training(self):
         self.ctx.stop_signal = True
 
-    def _run_loop(self, on_epoch_done):
+    def _run_loop(self, on_epoch_done, fresh_start=False):
         try:
             loader = dm.load_data()
             self.trainer = training.EnhancedLabelTrainer(loader)
             
-            # Auto-resume from checkpoint
-            latest = self.ctx.config.DIRS["ckpt"] / "latest.pt"
-            if latest.exists():
-                self.trainer.load_checkpoint()
+            # Auto-resume from checkpoint if not fresh start
+            if not fresh_start:
+                latest = self.ctx.config.DIRS["ckpt"] / "latest.pt"
+                if latest.exists():
+                    success = self.trainer.load_checkpoint()
+                    if not success:
+                        logging.warning("Failed to load checkpoint. Starting from scratch.")
+                        self.trainer.epoch = 0
+                        self.trainer.phase = 1
+            else:
+                logging.info("Fresh start requested. Ignoring existing checkpoints.")
+                self.trainer.epoch = 0
+                self.trainer.phase = 1
 
             for epoch in range(self.trainer.epoch, self.ctx.config.EPOCHS):
                 if self.ctx.stop_signal:

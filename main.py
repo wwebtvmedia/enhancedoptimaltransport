@@ -27,7 +27,7 @@ def setup_terminal_logging(context):
     config.logger.addHandler(ch)
     config.logger.setLevel(logging.INFO)
 
-def run_headless_training():
+def run_headless_training(fresh_start: bool = False):
     """Run training in the terminal without a GUI."""
     ctx = AppContext()
     engine = TrainingProcessor(ctx)
@@ -46,7 +46,7 @@ def run_headless_training():
         print(f"\n✅ Epoch {epoch+1} complete!")
         print(f"   Total Loss: {losses.get('total', 0):.4f} | SNR: {losses.get('snr', 0):.2f}dB")
 
-    engine.start_training(on_epoch_done=on_epoch_done)
+    engine.start_training(on_epoch_done=on_epoch_done, fresh_start=fresh_start)
     
     # Wait for training thread
     try:
@@ -95,7 +95,7 @@ def run_menu():
             epochs_input = input(f"Enter TOTAL number of epochs [default {config.EPOCHS}]: ").strip()
             if epochs_input:
                 config.EPOCHS = int(epochs_input)
-            run_headless_training()
+            run_headless_training(fresh_start=True)
             break
             
         elif choice == '2':

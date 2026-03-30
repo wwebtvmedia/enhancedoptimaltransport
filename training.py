@@ -1147,7 +1147,7 @@ class EnhancedLabelTrainer:
                     config.logger.warning("No Drift state found in snapshot")
             
             if phase is not None and phase >= 2 and (not hasattr(self, 'vae_ref') or self.vae_ref is None):
-                self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
+                self.vae_ref = models.MultimodalVAE().to(config.DEVICE)
                 self.vae_ref.load_state_dict(self.vae.state_dict())
                 self.vae_ref.eval()
                 for param in self.vae_ref.parameters():

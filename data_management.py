@@ -200,8 +200,8 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         
         # Load or recreate reference VAE
         if trainer.phase >= 2:
-            from models import LabelConditionedVAE
-            trainer.vae_ref = LabelConditionedVAE().to(config.DEVICE)
+            from models import MultimodalVAE
+            trainer.vae_ref = MultimodalVAE().to(config.DEVICE)
             
             if 'vae_ref_state' in checkpoint:
                 trainer.vae_ref.load_state_dict(checkpoint['vae_ref_state'])
