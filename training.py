@@ -123,8 +123,14 @@ def calc_snr(real: torch.Tensor, recon: torch.Tensor) -> float:
     return 10 * torch.log10(1.0 / (mse + 1e-8)).item()
     
 def kl_divergence_spatial(mu, logvar):
-    kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+    # Clamp mu squared to prevent overflow in KL calculation
+    mu_sq = torch.clamp(mu.pow(2), max=100.0)
+    # Clamp logvar.exp() to prevent overflow
+    exp_logvar = torch.clamp(logvar.exp(), max=100.0)
+    
+    kl = -0.5 * (1 + logvar - mu_sq - exp_logvar)
     kl = torch.sum(kl, dim=[1, 2, 3])
+    # Apply free bits to prevent KL vanishing
     kl = torch.max(kl, torch.full_like(kl, config.FREE_BITS))
     return torch.mean(kl)
 
@@ -134,19 +140,24 @@ def composite_score(loss_dict: Dict, phase: int) -> float:
     if phase == 1:
         # VAE phase: higher SNR, lower KL, higher diversity are good
         if 'snr' in loss_dict:
-            score += loss_dict['snr'] / config.TARGET_SNR
+            # Clip SNR to a reasonable range for scoring
+            snr_val = min(loss_dict['snr'], 40.0)
+            score += snr_val / config.TARGET_SNR
         if 'kl' in loss_dict:
-            score -= loss_dict['kl'] * 10
+            # Use log-scale for KL to avoid extreme values dominating
+            kl_val = math.log10(max(loss_dict['kl'], 1e-6) + 1.0)
+            score -= kl_val * 2
         if 'diversity' in loss_dict:
-            score += loss_dict['diversity'] * 100
+            score += loss_dict['diversity'] * 10
         if 'min_channel_std' in loss_dict:
-            score += loss_dict['min_channel_std'] * 20
+            # Reward spreading activations
+            score += min(loss_dict['min_channel_std'], 2.0) * 5
     else:
         # Drift phase: lower drift error is better
         if 'drift' in loss_dict:
-            score -= loss_dict['drift'] * 10
+            score -= math.log10(max(loss_dict['drift'], 1e-6) + 1.0) * 10
         if 'consistency' in loss_dict:
-            score -= loss_dict['consistency'] * 10
+            score -= math.log10(max(loss_dict['consistency'], 1e-6) + 1.0) * 5
     return score
 
 def set_training_phase(epoch: int) -> int:
@@ -416,13 +427,13 @@ class EnhancedLabelTrainer:
             channel_stds = mu.std(dim=[0, 2, 3])
             
             # Check for collapse
-            if epoch > 10 and latent_std < 0.3:
+            if epoch > 15 and latent_std < 0.2:
                 config.logger.warning(f"⚠️ Latent collapse detected! std={latent_std:.3f}")
                 
-                # Option 1: Increase KL weight temporarily
+                # Option 1: Increase KL weight slightly
                 old_kl = config.KL_WEIGHT
-                config.KL_WEIGHT = min(0.05, config.KL_WEIGHT * 2)  # Double but cap at 0.05
-                config.logger.info(f"  Temporarily increasing KL weight: {old_kl} -> {config.KL_WEIGHT}")
+                config.KL_WEIGHT = min(0.02, config.KL_WEIGHT * 1.5) 
+                config.logger.info(f"  Adjusting base KL weight: {old_kl:.6f} -> {config.KL_WEIGHT:.6f}")
                 
                 # Option 2: Add noise to encourage exploration
                 if hasattr(self, 'vae') and hasattr(self.vae, 'z_logvar'):
@@ -630,8 +641,11 @@ class EnhancedLabelTrainer:
         
         # Phase 1: Train VAE + Text Encoder + Context Decoder
         if phase == 1:
-            # Full forward pass (Replaces the redundant separate encode call)
+            # Full forward pass
             recon, mu, logvar = self.vae(images, labels, text_emb)
+            
+            # Safety clamp for mu to prevent extreme values and instability
+            mu = torch.clamp(mu, -30.0, 30.0)
             
             # CLIP-style contrastive loss calculation (using 'mu' from VAE pass)
             contrastive_loss_val = torch.tensor(0.0, device=config.DEVICE)
@@ -684,7 +698,11 @@ class EnhancedLabelTrainer:
             raw_mse = F.mse_loss(recon, images)
             raw_kl = kl_divergence_spatial(mu, logvar)
             
-            current_kl_weight = config.KL_WEIGHT * 10.0 if latent_std < 0.3 else config.KL_WEIGHT
+            # Smoother KL weight scaling: increase weight if std is too low
+            # Targeted range: 0.3 to 1.0. If std < 0.4, increase weight smoothly.
+            std_boost = 1.0 + max(0, (0.4 - latent_std) * 15.0) 
+            current_kl_weight = config.KL_WEIGHT * std_boost
+            
             diversity_loss = self.vae.diversity_loss if self.vae.diversity_loss is not None else torch.tensor(0.0, device=config.DEVICE)
             kl_annealing = min(1.0, self.epoch / config.KL_ANNEALING_EPOCHS)
             kl_loss = raw_kl * current_kl_weight * kl_annealing
@@ -1017,22 +1035,40 @@ class EnhancedLabelTrainer:
                 if self._initialize_vgg():
                     # Collect more samples for more stable FID
                     with torch.no_grad():
-                        fid_samples = 32 # Increased from 16
-                        batch = next(iter(self.loader))
-                        real_images = batch['image'][:fid_samples].to(config.DEVICE)
-                        real_labels = batch['label'][:fid_samples].to(config.DEVICE)
+                        fid_samples = 64 # Increased from 32
+                        # Use multiple batches to get enough samples if loader batch size is small
+                        real_feats_list = []
+                        gen_feats_list = []
                         
-                        # Correct VGG normalization
-                        real_norm = ((real_images + 1) / 2 - self.vgg_mean) / self.vgg_std
-                        real_feat = self.vgg(real_norm)
+                        # Get a few batches
+                        data_iter = iter(self.loader)
+                        for _ in range(max(1, fid_samples // config.BATCH_SIZE)):
+                            try:
+                                batch = next(data_iter)
+                                real_images = batch['image'].to(config.DEVICE)
+                                real_labels = batch['label'].to(config.DEVICE)
+                                
+                                # Correct VGG normalization
+                                real_norm = ((real_images + 1) / 2 - self.vgg_mean) / self.vgg_std
+                                # Use adaptive_avg_pool2d to reduce spatial dimensions to 1x1
+                                # This reduces features from [B, 256, H, W] to [B, 256]
+                                real_feat = F.adaptive_avg_pool2d(self.vgg(real_norm), (1, 1)).flatten(1)
+                                real_feats_list.append(real_feat)
+                                
+                                gen_images, _, _ = self.vae(real_images, real_labels)
+                                gen_norm = ((gen_images + 1) / 2 - self.vgg_mean) / self.vgg_std
+                                gen_feat = F.adaptive_avg_pool2d(self.vgg(gen_norm), (1, 1)).flatten(1)
+                                gen_feats_list.append(gen_feat)
+                            except StopIteration:
+                                break
                         
-                        gen_images, _, _ = self.vae(real_images, real_labels)
-                        gen_norm = ((gen_images + 1) / 2 - self.vgg_mean) / self.vgg_std
-                        gen_feat = self.vgg(gen_norm)
-                        
-                        fid_score = self.calculate_fid_batch(real_feat.flatten(1), gen_feat.flatten(1))
-                        losses['fid'] = fid_score
-                        config.logger.info(f"FID Score (approx): {fid_score:.2f}")
+                        if real_feats_list:
+                            real_feat_all = torch.cat(real_feats_list, dim=0)
+                            gen_feat_all = torch.cat(gen_feats_list, dim=0)
+                            
+                            fid_score = self.calculate_fid_batch(real_feat_all, gen_feat_all)
+                            losses['fid'] = fid_score
+                            config.logger.info(f"FID Score (approx): {fid_score:.2f}")
             except Exception as e:
                 config.logger.warning(f"FID calculation failed: {e}")
 
@@ -1063,7 +1099,9 @@ class EnhancedLabelTrainer:
         
         if phase == 1:
             self.scheduler_vae.step()
-            if self.snapshot_vae and self.snapshot_vae.should_save(self.epoch):
+            # Save more frequently at the beginning (every 5 epochs for first 20)
+            is_early = (self.epoch + 1) <= 20 and (self.epoch + 1) % 5 == 0
+            if self.snapshot_vae and (self.snapshot_vae.should_save(self.epoch) or is_early or self.epoch == 0):
                 loss_value = avg_losses.get('total', float('inf'))
                 if loss_value != float('inf'):
                     self.snapshot_vae.save_snapshot(
@@ -1078,7 +1116,10 @@ class EnhancedLabelTrainer:
                 config.logger.info(f"  SNR: {avg_losses['snr']:.2f}dB")
         else:
             self.scheduler_drift.step()
-            if self.snapshot_drift and self.snapshot_drift.should_save(self.epoch):
+            # Save more frequently at the beginning of drift training
+            drift_epoch = self.epoch - getattr(self, 'phase2_start_epoch', 50)
+            is_early_drift = drift_epoch <= 20 and drift_epoch % 5 == 0
+            if self.snapshot_drift and (self.snapshot_drift.should_save(self.epoch) or is_early_drift):
                 loss_value = avg_losses.get('drift', avg_losses.get('total', float('inf')))
                 if loss_value != float('inf'):
                     self.snapshot_drift.save_snapshot(
