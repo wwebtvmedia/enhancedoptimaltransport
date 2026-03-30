@@ -190,30 +190,7 @@ EARLY_STOP_PATIENCE = 15
 USE_OU_BRIDGE = False
 OU_THETA = 1.0
 OU_SIGMA = np.sqrt(2)
-USE_AMP = False
-
-# ============================================================================
-# THREE-PHASE TRAINING SCHEDULE
-# ============================================================================
-# Adaptive switch points based on total epochs
-PHASE1_EPOCHS = max(50, int(EPOCHS / 6))    # End of Phase 1 (VAE only)
-PHASE2_EPOCHS = max(50, int(EPOCHS / 2))    # End of Phase 2 (Drift only)
-# Phase 3 runs from PHASE2_EPOCHS to EPOCHS (Both train)
-
-# ============================================================================
-# TRAINING SCHEDULE DICTIONARY
-# ============================================================================
-TRAINING_SCHEDULE = {
-    'mode': 'auto',                          # 'auto', 'manual', 'custom', 'alternate', 'three_phase'
-    'force_phase': None,                      # 1 (VAE), 2 (Drift), 3 (Both) for manual mode
-    'custom_schedule': {},                    # {epoch: phase}
-    'switch_epoch': 50,                       # For auto mode (single switch)
-    'switch_epoch_1': PHASE1_EPOCHS,           # For three_phase mode
-    'switch_epoch_2': PHASE2_EPOCHS,           # For three_phase mode
-    'vae_epochs': list(range(0, 50)),
-    'drift_epochs': list(range(50, 200)),
-    'alternate_freq': 5,
-}
+USE_AMP = True
 
 # ============================================================================
 # DEVICE CONFIGURATION
@@ -227,11 +204,15 @@ def initialize_hardware():
     """Determines best available hardware and updates global config."""
     global DEVICE, AMP_AVAILABLE, BATCH_SIZE
     
+    # CUDA Memory Optimization
+    if torch.cuda.is_available():
+        os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+    
     if torch.cuda.is_available():
         DEVICE = torch.device("cuda")
         AMP_AVAILABLE = True
         info = f"🎮 CUDA: {torch.cuda.get_device_name(0)}"
-        BATCH_SIZE = 2
+        BATCH_SIZE = 4
     elif hasattr(torch, 'xpu') and torch.xpu.is_available():
         DEVICE = torch.device("xpu")
         AMP_AVAILABLE = True

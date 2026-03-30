@@ -663,41 +663,40 @@ class EnhancedLabelTrainer:
             tokens = batch['text_tokens'].to(config.DEVICE)
             text_emb = self.text_encoder(tokens)
         
-        # CLIP-style contrastive loss calculation
-        contrastive_loss_val = torch.tensor(0.0, device=config.DEVICE)
-        if (config.USE_CONTRASTIVE_LOSS and self.contrastive_loss is not None and
-            text_emb is not None and phase == 1):
-            
-            # Get VAE latent for images
-            with torch.no_grad():
-                mu, _ = self.vae.encode(images, labels, text_emb)
-            
-            # Project image latent to shared embedding space
-            if self.image_projection is not None:
-                image_emb = self.image_projection(mu)
-            else:
-                # Use flattened mu as image embedding
-                image_emb = mu.flatten(1)
-                # Project to same dimension as text embedding if needed
-                if image_emb.size(1) != text_emb.size(1):
-                    # Simple linear projection if dimensions don't match
-                    if not hasattr(self, 'temp_projection'):
-                        self.temp_projection = nn.Linear(image_emb.size(1), text_emb.size(1)).to(config.DEVICE)
-                    image_emb = self.temp_projection(image_emb)
-            
-            # Compute contrastive loss
-            contrastive_loss_val = self.contrastive_loss(image_emb, text_emb)
-
+        # Phase 1: Train VAE + Text Encoder + Context Decoder
         if phase == 1:
-            # Phase 1: Train VAE + Text Encoder + Context Decoder
+            # Full forward pass (Replaces the redundant separate encode call)
             recon, mu, logvar = self.vae(images, labels, text_emb)
             
+            # CLIP-style contrastive loss calculation (using 'mu' from VAE pass)
+            contrastive_loss_val = torch.tensor(0.0, device=config.DEVICE)
+            if (config.USE_CONTRASTIVE_LOSS and self.contrastive_loss is not None and
+                text_emb is not None):
+                
+                # Project image latent to shared embedding space
+                # We detach 'mu' to keep VAE encoding gradient-isolated from contrastive loss
+                # (matching previous behavior) unless we want them to learn together.
+                mu_for_contrastive = mu.detach()
+                
+                if self.image_projection is not None:
+                    image_emb = self.image_projection(mu_for_contrastive)
+                else:
+                    # Use flattened mu as image embedding
+                    image_emb = mu_for_contrastive.flatten(1)
+                    # Project to same dimension as text embedding if needed
+                    if image_emb.size(1) != text_emb.size(1):
+                        if not hasattr(self, 'temp_projection'):
+                            self.temp_projection = nn.Linear(image_emb.size(1), text_emb.size(1)).to(config.DEVICE)
+                        image_emb = self.temp_projection(image_emb)
+                
+                # Compute contrastive loss
+                contrastive_loss_val = self.contrastive_loss(image_emb, text_emb)
+
             # 1. Classification & Text Branch
             pred_text_emb, pred_logits = self.vae.context_decoder(mu)
             cls_loss = F.cross_entropy(pred_logits, labels) if labels is not None else torch.tensor(0.0, device=config.DEVICE)
             
             # 2. Text Alignment (Mapping text vectors to the same latent space)
-            # This makes the "Text Training Vector" a first-class citizen.
             latent_alignment_loss = torch.tensor(0.0, device=config.DEVICE)
             if text_emb is not None:
                 z_txt = self.vae.encode_text(text_emb)
@@ -887,7 +886,7 @@ class EnhancedLabelTrainer:
                     continue
                 
                 # Forward pass with AMP if enabled
-                if self.scaler is not None and phase in (2,3):
+                if self.scaler is not None:
                     with torch.cuda.amp.autocast():
                         loss_dict = self.compute_loss(batch_dict, phase=phase, batch_idx=batch_idx)
                 else:

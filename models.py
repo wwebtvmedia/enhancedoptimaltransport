@@ -443,30 +443,38 @@ class MultimodalVAE(nn.Module):
         self.enc_in = nn.Conv2d(3 + self.fourier_channels, 64, 3, 1, 1)
         self.enc_blocks = nn.ModuleList([
             ResidualBlock(64, 128, stride=2),
-            MultimodalConditionedBlock(128, 128),
+            MultimodalConditionedBlock(128, 128, use_self_attn=False), # 48x48: too big for full attn
             ResidualBlock(128, 256, stride=2),
-            SelfAttention(256),
-            MultimodalConditionedBlock(256, 512),
+            MultimodalConditionedBlock(256, 512, use_self_attn=True), # 24x24: manageable
             ResidualBlock(512, 512, stride=2),
-            SelfAttention(512),
+            SelfAttention(512), # 12x12: small
             nn.Conv2d(512, 512, 4, 2, 1),
         ])
         self.z_mean = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
         self.z_logvar = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
 
         # Decoder: 6 -> 12 -> 24 -> 48 -> 96
+        # Attention is only applied at resolutions in DECODER_ATTENTION_LAYERS (e.g., [16, 32])
         self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
+        
+        attn_layers = getattr(config, 'DECODER_ATTENTION_LAYERS', [16, 32])
+        
         self.dec_blocks = nn.ModuleList([
+            # Stage 1: 6 -> 12
             nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(512, 512, 3, 1, 1), nn.SiLU()),
-            MultimodalConditionedBlock(512, 512),
-            SelfAttention(512),
+            MultimodalConditionedBlock(512, 512, use_self_attn=12 in attn_layers or 16 in attn_layers),
+            
+            # Stage 2: 12 -> 24
             nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(512, 256, 3, 1, 1), nn.SiLU()),
-            MultimodalConditionedBlock(256, 256),
-            SelfAttention(256),
+            MultimodalConditionedBlock(256, 256, use_self_attn=24 in attn_layers or 32 in attn_layers),
+            
+            # Stage 3: 24 -> 48
             nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(256, 128, 3, 1, 1), nn.SiLU()),
-            MultimodalConditionedBlock(128, 128),
+            MultimodalConditionedBlock(128, 128, use_self_attn=48 in attn_layers),
+            
+            # Stage 4: 48 -> 96
             nn.Sequential(nn.Upsample(scale_factor=2, mode='nearest'), nn.Conv2d(128, 64, 3, 1, 1), nn.SiLU()),
-            MultimodalConditionedBlock(64, 64),
+            MultimodalConditionedBlock(64, 64, use_self_attn=96 in attn_layers),
         ])
         self.dec_out = nn.Conv2d(64, 3, 3, 1, 1)
         self.diversity_loss = None
