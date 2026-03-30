@@ -84,6 +84,21 @@ WEIGHT_DECAY = 1e-4
 GRAD_CLIP = 1.0
 
 # ============================================================================
+# TRAINING SCHEDULE
+# ============================================================================
+PHASE1_EPOCHS = 50             # VAE only phase
+PHASE2_EPOCHS = 100            # Drift training phase
+TRAINING_SCHEDULE = {
+    'mode': 'auto',
+    'switch_epoch': 50,
+    'alternate_freq': 5,
+    'force_phase': None,
+    'custom_schedule': {},
+    'switch_epoch_1': 50,
+    'switch_epoch_2': 150,
+}
+
+# ============================================================================
 # LOSS WEIGHTS (ENHANCED FOR QUALITY)
 # ============================================================================
 KL_WEIGHT = 0.001              # Increased from 0.0005 for better latent structure

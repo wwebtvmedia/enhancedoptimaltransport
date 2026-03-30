@@ -1045,8 +1045,9 @@ class SchrödingerBridgeGUI:
             ("KL_WEIGHT", config.KL_WEIGHT),
             ("RECON_WEIGHT", config.RECON_WEIGHT),
             ("DIVERSITY_WEIGHT", config.DIVERSITY_WEIGHT),
-            ("SIM_LOST_FACTOR", config.SIM_LOST_FACTOR),
-            ("PERSP_LOST_FACTOR", config.PERSP_LOST_FACTOR)
+            ("DRIFT_WEIGHT", config.DRIFT_WEIGHT),
+            ("PERCEPTUAL_WEIGHT", config.PERCEPTUAL_WEIGHT),
+            ("TEXT_ALIGN_WEIGHT", config.TEXT_ALIGN_WEIGHT)
         ]
         
         vars_dict = {}
