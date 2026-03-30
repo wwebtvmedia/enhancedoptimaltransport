@@ -1355,6 +1355,20 @@ class EnhancedLabelTrainer:
             if hasattr(module, '_set_export_mode'):
                 module._set_export_mode(mode)
         
+        # Helper to bake spectral norm into weights for quantization
+        def bake_spectral_norm(model):
+            import copy
+            from torch.nn.utils import remove_spectral_norm
+            
+            # Use deepcopy to avoid modifying the live model
+            model_copy = copy.deepcopy(model)
+            for m in model_copy.modules():
+                try:
+                    remove_spectral_norm(m)
+                except (ValueError, AttributeError):
+                    pass
+            return model_copy
+
         # Helper to merge .onnx.data files back into the .onnx file
         def merge_external_data(model_path):
             try:
@@ -1392,12 +1406,16 @@ class EnhancedLabelTrainer:
             self.vae.apply(lambda m: set_export_mode(m, True))
             self.drift.apply(lambda m: set_export_mode(m, True))
             
+            # Create baked copies for export to ensure static weights (essential for quantization)
+            vae_for_export = bake_spectral_norm(self.vae)
+            drift_for_export = bake_spectral_norm(self.drift)
+
             # Export Generator (Decoder only)
             dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
             dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
             
             gen_path = config.DIRS["onnx"] / "generator.onnx"
-            vae_gen = VAEGenerator(self.vae)
+            vae_gen = VAEGenerator(vae_for_export)
             
             with torch.no_grad():
                 torch.onnx.export(
@@ -1425,7 +1443,7 @@ class EnhancedLabelTrainer:
             
             with torch.no_grad():
                 torch.onnx.export(
-                    self.drift,
+                    drift_for_export,
                     (dummy_z, dummy_t, dummy_label),
                     str(drift_path),
                     export_params=True,

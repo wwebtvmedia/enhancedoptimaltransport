@@ -8,6 +8,11 @@ def fix_batch_size(model_path, output_path, batch_size=1):
     """
     print(f"Fixing batch_size for {model_path}...")
     model = onnx.load(model_path)
+    
+    # Clear value_info to allow re-inference with new shapes
+    while(len(model.graph.value_info) > 0):
+        model.graph.value_info.pop()
+        
     for input in model.graph.input:
         for dim in input.type.tensor_type.shape.dim:
             if dim.dim_param == 'batch_size':

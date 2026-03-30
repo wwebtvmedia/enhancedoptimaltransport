@@ -128,6 +128,34 @@
 
         <div class="controls">
             <div class="control-group">
+                <label>FP32 Drift (.onnx)</label>
+                <input type="file" id="file_fp32_drift" accept=".onnx">
+            </div>
+            <div class="control-group">
+                <label>FP32 Generator (.onnx)</label>
+                <input type="file" id="file_fp32_gen" accept=".onnx">
+            </div>
+            <div class="control-group">
+                <label>INT8 Drift (.onnx)</label>
+                <input type="file" id="file_int8_drift" accept=".onnx">
+            </div>
+            <div class="control-group">
+                <label>INT8 Generator (.onnx)</label>
+                <input type="file" id="file_int8_gen" accept=".onnx">
+            </div>
+            <div class="control-group" style="justify-content: flex-end; grid-column: 1 / -1;">
+                <button id="loadModelsBtn" style="background: var(--warning); color: black; width: 100%;">📁 Load Models from Files</button>
+            </div>
+            <div class="control-group" style="grid-column: 1 / -1; display: flex; gap: 10px;">
+                <button onclick="downloadModel('fp32_drift')" style="flex: 1; background: #475569;">💾 Save FP32 Drift</button>
+                <button onclick="downloadModel('fp32_gen')" style="flex: 1; background: #475569;">💾 Save FP32 Gen</button>
+                <button onclick="downloadModel('int8_drift')" style="flex: 1; background: var(--success);">💾 Save INT8 Drift</button>
+                <button onclick="downloadModel('int8_gen')" style="flex: 1; background: var(--success);">💾 Save INT8 Gen</button>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
                 <label>Category</label>
                 <select id="labelSelect">
                     <option value="0">Airplane</option>
@@ -197,6 +225,13 @@
             int8_gen: null
         };
 
+        let modelBuffers = {
+            fp32_drift: null,
+            fp32_gen: null,
+            int8_drift: null,
+            int8_gen: null
+        };
+
         const logEl = document.getElementById('log');
         function log(msg, type = 'info') {
             const colors = { info: '#10b981', error: '#ef4444', warn: '#eab308' };
@@ -204,21 +239,96 @@
             logEl.scrollTop = logEl.scrollHeight;
         }
 
+        async function loadModelFromFile(file) {
+            if (!file) return null;
+            const buffer = await file.arrayBuffer();
+            const session = await ort.InferenceSession.create(buffer);
+            return { session, buffer };
+        }
+
+        function downloadModel(key) {
+            const buffer = modelBuffers[key];
+            if (!buffer) {
+                log(`No model data for ${key} to save.`, 'warn');
+                return;
+            }
+            const blob = new Blob([buffer], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${key}.onnx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            log(`Downloaded ${key}.onnx`);
+        }
+
+        document.getElementById('loadModelsBtn').addEventListener('click', async () => {
+            const status = document.getElementById('globalStatus');
+            const btn = document.getElementById('loadModelsBtn');
+            btn.disabled = true;
+            status.className = 'status-badge badge-loading';
+            status.textContent = 'Loading...';
+
+            try {
+                const files = {
+                    fp32_drift: document.getElementById('file_fp32_drift').files[0],
+                    fp32_gen: document.getElementById('file_fp32_gen').files[0],
+                    int8_drift: document.getElementById('file_int8_drift').files[0],
+                    int8_gen: document.getElementById('file_int8_gen').files[0]
+                };
+
+                let loadedCount = 0;
+                for (const [key, file] of Object.entries(files)) {
+                    if (file) {
+                        log(`Loading ${key}: ${file.name}...`);
+                        const { session, buffer } = await loadModelFromFile(file);
+                        sessions[key] = session;
+                        modelBuffers[key] = buffer;
+                        log(`${key} loaded successfully.`);
+                        loadedCount++;
+                    }
+                }
+
+                if (loadedCount > 0) {
+                    status.className = 'status-badge badge-ready';
+                    status.textContent = 'Models Updated';
+                } else {
+                    log("No files selected.", 'warn');
+                    status.className = 'status-badge badge-ready';
+                    status.textContent = 'Models Ready (Existing)';
+                }
+            } catch (e) {
+                log(`Error loading models: ${e.message}`, 'error');
+                status.className = 'status-badge badge-error';
+                status.textContent = 'Load Error';
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
         async function initModels() {
             const status = document.getElementById('globalStatus');
             try {
-                log("Loading FP32 models...");
-                sessions.fp32_drift = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift.onnx');
-                sessions.fp32_gen = await ort.InferenceSession.create('./enhanced_label_sb/onnx/generator.onnx');
-                
-                log("Attempting to load INT8 models...");
-                try {
-                    sessions.int8_drift = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift_int8.onnx');
-                    sessions.int8_gen = await ort.InferenceSession.create('./enhanced_label_sb/onnx/generator_int8.onnx');
-                    log("INT8 models loaded successfully.", 'info');
-                } catch (e) {
-                    log("INT8 models not found. Please run quantization script.", 'warn');
-                }
+                log("Loading default FP32 models...");
+                const loadDefault = async (key, path) => {
+                    try {
+                        const response = await fetch(path);
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        const buffer = await response.arrayBuffer();
+                        sessions[key] = await ort.InferenceSession.create(buffer);
+                        modelBuffers[key] = buffer;
+                        log(`Default ${key} loaded.`);
+                    } catch (e) {
+                        log(`Could not load default ${key}: ${e.message}`, 'warn');
+                    }
+                };
+
+                await loadDefault('fp32_drift', './enhanced_label_sb/onnx/drift.onnx');
+                await loadDefault('fp32_gen', './enhanced_label_sb/onnx/generator.onnx');
+                await loadDefault('int8_drift', './enhanced_label_sb/onnx/drift_int8.onnx');
+                await loadDefault('int8_gen', './enhanced_label_sb/onnx/generator_int8.onnx');
 
                 status.className = 'status-badge badge-ready';
                 status.textContent = 'Models Ready';
