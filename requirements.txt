@@ -22,6 +22,3 @@ tkinterweb>=3.0.0
 # Model Export & Edge Inference
 onnx>=1.14.0
 onnxruntime>=1.15.0
-
-# Remote Monitoring
-wandb>=0.15.0

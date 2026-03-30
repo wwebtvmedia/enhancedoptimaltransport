@@ -29,10 +29,6 @@ For Schrödinger Bridge training, you need at least **16GB VRAM** (RTX 3090/4090
 - **Vast.ai:** Use the `pytorch/pytorch` image. Remember to install system dependencies (`apt-get install git tmux libgl1-mesa-glx`) inside the container.
 - **AWS/GCP:** Use a "Deep Learning AMI" (Ubuntu 22.04) to have CUDA drivers pre-installed.
 
-### Weights & Biases (Mandatory for Remote Monitoring)
-1. Create a free account at [wandb.ai](https://wandb.ai).
-2. Get your API Key from: `https://wandb.ai/authorize`
-
 ### Server Setup
 On your remote server, run:
 ```bash
@@ -47,16 +43,11 @@ cd enhancedoptimaltransport
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
-# Login to W&B
-wandb login  # Paste your API key when prompted
 ```
 
 ---
 
-## 2. GPU & WandB Configuration
-
-To ensure WandB correctly monitors your GPU:
+## 2. GPU Configuration
 
 1. **Verify GPU Availability:**
    Run this command in your environment to ensure PyTorch sees the GPU:
@@ -64,11 +55,8 @@ To ensure WandB correctly monitors your GPU:
    python -c "import torch; print(f'GPU Available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"None\"}')"
    ```
 
-2. **WandB System Metrics:**
-   WandB automatically collects GPU usage, memory, and temperature if `nvidia-smi` is installed and the GPU is detected by PyTorch. You can view these under the **"System"** tab in your WandB run dashboard.
-
-3. **Troubleshooting "No GPU" in WandB:**
-   If WandB shows "CPU" but you have a GPU:
+2. **Troubleshooting "No GPU":**
+   If PyTorch shows "None" but you have a GPU:
    - Ensure `nvidia-smi` is accessible in the terminal.
    - Re-install the correct version of PyTorch for your CUDA version:
      `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121` (adjust `cu121` to your CUDA version).
@@ -99,19 +87,17 @@ Use `tmux` to ensure your training continues even if your SSH connection drops.
 
 ---
 
-## 3. Real-Time Monitoring
+## 4. Monitoring Progress
 
-Once training starts, you don't need the terminal to see progress.
+Once training starts, you can monitor progress through the logs.
 
-1. Open [wandb.ai](https://wandb.ai) in your browser.
-2. Select the project: `enhanced-schrodinger-bridge`.
-3. **Live Curves:** View Recon Loss, KL, Alignment Loss, and SNR in real-time.
-4. **Visual Gallery:** Every 10 epochs, a grid of generated samples is uploaded to the "Media" section of your W&B dashboard.
-5. **System Health:** Monitor remote GPU temperature, memory usage, and CPU load.
+1. **Live Curves:** View Recon Loss, KL, Alignment Loss, and SNR in the console output.
+2. **Visual Gallery:** Every 10 epochs, a grid of generated samples is saved to the `enhanced_label_sb/samples` directory.
+3. **System Health:** Use `nvidia-smi -l 1` in another terminal to monitor GPU usage.
 
 ---
 
-## 4. Vast.ai: Advanced Persistence & Setup
+## 5. Vast.ai: Advanced Persistence & Setup
 
 Vast.ai runs inside Docker. If your instance is interrupted or destroyed, you might lose your progress unless you use `/workspace` or a backup mechanism.
 
@@ -137,7 +123,6 @@ I have included a mechanism to automatically mirror your latest checkpoint to `/
 2.  **Monitoring Progress:**
     - **Training Logs:** `tmux attach -t sb_train`
     - **Backup Status:** `tail -f backup.log`
-    - **WandB:** Check your dashboard as usual.
 
 3.  **Restoring from Backup:**
     If your main training folder is corrupted or deleted:
@@ -147,7 +132,7 @@ I have included a mechanism to automatically mirror your latest checkpoint to `/
 
 ---
 
-## 5. Transferring Results
+## 6. Transferring Results
 
 After training is complete (or you have a "best" model), download the weights back to your local machine for GUI inference:
 
@@ -158,10 +143,9 @@ scp user@remote-ip:~/enhancedoptimaltransport/enhanced_label_sb/checkpoints/best
 
 ---
 
-## 5. Troubleshooting Remote Training
+## 7. Troubleshooting Remote Training
 - **OOM (Out of Memory):** If the GPU runs out of memory, reduce `BATCH_SIZE` in `config.py`.
 - **No GPU found:** Ensure `nvidia-smi` works on the remote server and that PyTorch is installed with CUDA support.
-- **WandB Logs "CPU":** See Section 2 above to verify PyTorch and CUDA versions.
 - **Multiple GPUs:** To use a specific GPU, prepend your command with:
   `CUDA_VISIBLE_DEVICES=0 python main.py`
 - **Dataset missing:** If training doesn't start, ensure the `data/` directory is present or set `download=True` in `data_management.py`.
