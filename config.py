@@ -231,7 +231,7 @@ def initialize_hardware():
         DEVICE = torch.device("cuda")
         AMP_AVAILABLE = True
         info = f"🎮 CUDA: {torch.cuda.get_device_name(0)}"
-        BATCH_SIZE = 4
+        BATCH_SIZE = 2
     elif hasattr(torch, 'xpu') and torch.xpu.is_available():
         DEVICE = torch.device("xpu")
         AMP_AVAILABLE = True
