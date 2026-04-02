@@ -51,17 +51,17 @@ LABEL_EMB_DIM = 128
 # TRAINING HYPERPARAMETERS (base values, may be adjusted per device)
 # ============================================================================
 LR = 2e-4
-EPOCHS = 200
+EPOCHS = 500
 WEIGHT_DECAY = 1e-4
 GRAD_CLIP = 1.0
 
 # ============================================================================
 # LOSS WEIGHTS (ENHANCED FOR QUALITY)
 # ============================================================================
-KL_WEIGHT = 0.001              # Increased from 0.0005 for better latent structure
+KL_WEIGHT = 0.003              # Increased from 0.001 for better latent structure
 RECON_WEIGHT = 3.0             # Increased from 2.5 for sharper reconstruction
 DRIFT_WEIGHT = 1.0             # Increased from 0.5 for better trajectory learning
-DIVERSITY_WEIGHT = 1.0         # Increased from 0.5 to prevent channel collapse
+DIVERSITY_WEIGHT = 1.5         # Increased from 1.0 to prevent channel collapse
 CONSISTENCY_WEIGHT = 1.0       # Increased from 0.5 for better anchor stability
 PHASE3_RECON_SCALE = 0.5       # Keep decoder sharp in Phase 3
 

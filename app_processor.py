@@ -28,28 +28,35 @@ class TrainingProcessor:
         self.ctx.device_info = info
         return info
 
-    def start_training(self, on_epoch_done: Optional[Callable] = None):
+    def start_training(self, on_epoch_done: Optional[Callable] = None, force_fresh: bool = False):
         """Launches the training thread."""
         if self.ctx.is_training:
             return
             
         self.ctx.is_training = True
         self.ctx.stop_signal = False
-        self._thread = threading.Thread(target=self._run_loop, args=(on_epoch_done,), daemon=True)
+        self._thread = threading.Thread(target=self._run_loop, args=(on_epoch_done, force_fresh), daemon=True)
         self._thread.start()
 
     def stop_training(self):
         self.ctx.stop_signal = True
 
-    def _run_loop(self, on_epoch_done):
+    def _run_loop(self, on_epoch_done, force_fresh=False):
         try:
             loader = dm.load_data()
             self.trainer = training.EnhancedLabelTrainer(loader)
             
-            # Auto-resume from checkpoint
-            latest = self.ctx.config.DIRS["ckpt"] / "latest.pt"
-            if latest.exists():
-                self.trainer.load_checkpoint()
+            # Auto-resume from checkpoint unless force_fresh is True
+            if not force_fresh:
+                latest = self.ctx.config.DIRS["ckpt"] / "latest.pt"
+                if latest.exists():
+                    try:
+                        self.trainer.load_checkpoint()
+                    except Exception as e:
+                        config.logger.error(f"Failed to auto-resume from checkpoint: {e}")
+                        config.logger.info("Starting fresh training instead.")
+            else:
+                config.logger.info("Force fresh start requested. Skipping checkpoint load.")
 
             for epoch in range(self.trainer.epoch, self.ctx.config.EPOCHS):
                 if self.ctx.stop_signal:
