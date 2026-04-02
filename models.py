@@ -26,7 +26,12 @@ class ResidualBlock(nn.Module):
     def forward(self, x):
         out = F.silu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
+        
+        shortcut = self.shortcut(x)
+        if out.shape[2:] != shortcut.shape[2:]:
+            shortcut = F.interpolate(shortcut, size=out.shape[2:], mode='nearest')
+            
+        out += shortcut
         return F.silu(out)
 
 class SelfAttention(nn.Module):
@@ -134,7 +139,11 @@ class LabelConditionedBlock(nn.Module):
         h = F.silu(self.norm2(h))
         h = self.conv2(h)
         
-        return self.rescale(self.skip(x) + h)
+        skip = self.skip(x)
+        if h.shape[2:] != skip.shape[2:]:
+            skip = F.interpolate(skip, size=h.shape[2:], mode='nearest')
+            
+        return self.rescale(skip + h)
 
 # ============================================================
 # LABEL-CONDITIONED VAE

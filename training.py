@@ -709,7 +709,12 @@ class EnhancedLabelTrainer:
 
             # Temperature annealing using config values
             temperature = config.TEMPERATURE_START + (config.TEMPERATURE_END - config.TEMPERATURE_START) * (self.epoch / config.EPOCHS)
-            z1 = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * temperature
+            
+            # Use z_mean (mu) but ensure logvar matches mu shape (which it should)
+            z1_noise = torch.exp(0.5 * logvar) * torch.randn_like(logvar) * temperature
+            if z1_noise.shape[2:] != mu.shape[2:]:
+                 z1_noise = F.interpolate(z1_noise, size=mu.shape[2:], mode='bilinear', align_corners=False)
+            z1 = mu + z1_noise
             z_global_std = z1.std().item()
             
             # Sample time with beta distribution after sufficient training
@@ -729,8 +734,15 @@ class EnhancedLabelTrainer:
                 target = self.ou_ref.bridge_velocity(z0, z1, t)
             else:
                 t_reshaped = t.reshape(-1, 1, 1, 1).contiguous()
+                # Ensure t_reshaped broadcasts correctly to z0/z1 shape
                 zt = (1 - t_reshaped) * z0 + t_reshaped * z1
                 target = z1 - z0
+            
+            # Double check all bridge shapes match
+            if zt.shape[2:] != z0.shape[2:]:
+                 zt = F.interpolate(zt, size=z0.shape[2:], mode='bilinear', align_corners=False)
+            if target.shape[2:] != z0.shape[2:]:
+                 target = F.interpolate(target, size=z0.shape[2:], mode='bilinear', align_corners=False)
             
             # Add noise to targets only (not to state) – scale from config
             if self.drift.training:
