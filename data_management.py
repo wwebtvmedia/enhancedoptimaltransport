@@ -212,11 +212,42 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         # Use flexible load for the drift network
         flexible_load(trainer.drift, checkpoint['drift_state'])
         
-        trainer.opt_vae.load_state_dict(checkpoint['opt_vae_state'])
-        
-        # For drift optimizer, if the architecture changed significantly, we might need to skip loading
+        # --- SANITIZE VAE OPTIMIZER ---
         try:
+            trainer.opt_vae.load_state_dict(checkpoint['opt_vae_state'])
+            with torch.no_grad():
+                for group in trainer.opt_vae.param_groups:
+                    for p in group['params']:
+                        if p in trainer.opt_vae.state:
+                            state = trainer.opt_vae.state[p]
+                            for key in ['exp_avg', 'exp_avg_sq']:
+                                if key in state and state[key].shape != p.shape:
+                                    config.logger.warning(f"⚠️ VAE optimizer state shape mismatch for parameter. Resetting {key}.")
+                                    del trainer.opt_vae.state[p]
+                                    break
+        except Exception as e:
+            config.logger.warning(f"Could not load VAE optimizer state: {e}")
+            config.logger.info("VAE optimizer will be re-initialized.")
+        
+        # --- SANITIZE DRIFT OPTIMIZER ---
+        try:
+            # First, try to load the state dict normally
             trainer.opt_drift.load_state_dict(checkpoint['opt_drift_state'])
+            
+            # SANITIZE OPTIMIZER: Check for shape mismatches in moments vs parameters
+            # If any are found, we reset the optimizer state for those specific parameters
+            with torch.no_grad():
+                for group in trainer.opt_drift.param_groups:
+                    for p in group['params']:
+                        if p in trainer.opt_drift.state:
+                            state = trainer.opt_drift.state[p]
+                            # Check exp_avg (m) and exp_avg_sq (v)
+                            for key in ['exp_avg', 'exp_avg_sq']:
+                                if key in state and state[key].shape != p.shape:
+                                    config.logger.warning(f"⚠️ Drift optimizer state shape mismatch for parameter. Resetting {key}.")
+                                    # Delete the state for this parameter to force re-initialization
+                                    del trainer.opt_drift.state[p]
+                                    break
         except Exception as e:
             config.logger.warning(f"Could not load drift optimizer state (likely due to architecture change): {e}")
             config.logger.info("Drift optimizer will be re-initialized.")
