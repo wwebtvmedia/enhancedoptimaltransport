@@ -699,9 +699,13 @@ class EnhancedLabelTrainer:
                 mu_ref, _ = self.vae_ref.encode(images, labels)   # always use frozen anchor
             mu, logvar = self.vae.encode(images, labels)
             
-            # Robust alignment for consistency loss
-            if mu.shape[2:] != mu_ref.shape[2:]:
-                mu_ref = F.interpolate(mu_ref, size=mu.shape[2:], mode='bilinear', align_corners=False)
+            # --- GLOBAL SPATIAL HARMONIZER ---
+            # Use 'mu' as the reference spatial shape
+            target_shape = mu.shape[2:]
+            if mu_ref.shape[2:] != target_shape:
+                mu_ref = F.interpolate(mu_ref, size=target_shape, mode='bilinear', align_corners=False)
+            if logvar.shape[2:] != target_shape:
+                logvar = F.interpolate(logvar, size=target_shape, mode='bilinear', align_corners=False)
                 
             std_from_logvar = torch.exp(0.5 * logvar).mean().item()
             consistency_loss = F.mse_loss(mu, mu_ref)
@@ -710,10 +714,8 @@ class EnhancedLabelTrainer:
             # Temperature annealing using config values
             temperature = config.TEMPERATURE_START + (config.TEMPERATURE_END - config.TEMPERATURE_START) * (self.epoch / config.EPOCHS)
             
-            # Use z_mean (mu) but ensure logvar matches mu shape (which it should)
+            # Ensure logvar/mu match exactly for z1
             z1_noise = torch.exp(0.5 * logvar) * torch.randn_like(logvar) * temperature
-            if z1_noise.shape[2:] != mu.shape[2:]:
-                 z1_noise = F.interpolate(z1_noise, size=mu.shape[2:], mode='bilinear', align_corners=False)
             z1 = mu + z1_noise
             z_global_std = z1.std().item()
             
@@ -730,19 +732,23 @@ class EnhancedLabelTrainer:
             # Sample intermediate latent using either linear interpolation or OU bridge
             if config.USE_OU_BRIDGE and self.ou_ref is not None:
                 mean, var = self.ou_ref.bridge_sample(z0, z1, t)
+                # Harmonize bridge outputs
+                if mean.shape[2:] != target_shape:
+                    mean = F.interpolate(mean, size=target_shape, mode='bilinear', align_corners=False)
+                if var.shape[2:] != target_shape:
+                    var = F.interpolate(var, size=target_shape, mode='bilinear', align_corners=False)
                 zt = mean + torch.sqrt(var + 1e-8) * torch.randn_like(mean)
                 target = self.ou_ref.bridge_velocity(z0, z1, t)
             else:
                 t_reshaped = t.reshape(-1, 1, 1, 1).contiguous()
-                # Ensure t_reshaped broadcasts correctly to z0/z1 shape
                 zt = (1 - t_reshaped) * z0 + t_reshaped * z1
                 target = z1 - z0
             
-            # Double check all bridge shapes match
-            if zt.shape[2:] != z0.shape[2:]:
-                 zt = F.interpolate(zt, size=z0.shape[2:], mode='bilinear', align_corners=False)
-            if target.shape[2:] != z0.shape[2:]:
-                 target = F.interpolate(target, size=z0.shape[2:], mode='bilinear', align_corners=False)
+            # Final verification of bridge output alignment
+            if zt.shape[2:] != target_shape:
+                 zt = F.interpolate(zt, size=target_shape, mode='bilinear', align_corners=False)
+            if target.shape[2:] != target_shape:
+                 target = F.interpolate(target, size=target_shape, mode='bilinear', align_corners=False)
             
             # Add noise to targets only (not to state) – scale from config
             if self.drift.training:
@@ -758,9 +764,11 @@ class EnhancedLabelTrainer:
 
             pred = self.drift(zt, t, train_labels)
             
-            # Robust alignment for Huber loss
-            if pred.shape[2:] != target.shape[2:]:
-                target = F.interpolate(target, size=pred.shape[2:], mode='nearest')
+            # Ensure prediction and target match perfectly for loss
+            if pred.shape[2:] != target_shape:
+                pred = F.interpolate(pred, size=target_shape, mode='bilinear', align_corners=False)
+            if target.shape[2:] != target_shape:
+                target = F.interpolate(target, size=target_shape, mode='bilinear', align_corners=False)
 
             # Time-weighted loss using config factor
             t_reshaped = t.reshape(-1, 1, 1, 1).contiguous()
@@ -1001,7 +1009,9 @@ class EnhancedLabelTrainer:
                     pbar.set_postfix(postfix)
                     
             except Exception as e:
+                import traceback
                 config.logger.error(f"Error processing batch {batch_idx}: {e}")
+                config.logger.error(traceback.format_exc())
                 continue
                         
                         
