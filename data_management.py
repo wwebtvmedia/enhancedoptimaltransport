@@ -158,7 +158,7 @@ def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = Fals
     return latest_path
 
 def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
-    """Load training checkpoint into trainer."""
+    """Load training checkpoint into trainer with flexible architecture mapping."""
     if path is None:
         path = config.DIRS["ckpt"] / "latest.pt"
     
@@ -166,6 +166,34 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         config.logger.warning(f"No checkpoint found at {path}")
         return False
     
+    def flexible_load(model, state_dict, prefix=""):
+        """Helper to load state_dict with architecture-aware mapping."""
+        model_state = model.state_dict()
+        new_state_dict = {}
+        
+        # Mapping for ConvTranspose2d -> Sequential(Upsample, Conv2d)
+        # up2_conv.weight (old) -> up2_conv.1.weight (new)
+        # up2_conv.bias (old) -> up2_conv.1.bias (new)
+        
+        for k, v in state_dict.items():
+            if "up2_conv.weight" in k:
+                new_key = k.replace("up2_conv.weight", "up2_conv.1.weight")
+                if new_key in model_state:
+                    new_state_dict[new_key] = v
+                    continue
+            elif "up2_conv.bias" in k:
+                new_key = k.replace("up2_conv.bias", "up2_conv.1.bias")
+                if new_key in model_state:
+                    new_state_dict[new_key] = v
+                    continue
+            
+            if k in model_state:
+                new_state_dict[k] = v
+            else:
+                config.logger.debug(f"Skipping key {k} (not in model)")
+                
+        return model.load_state_dict(new_state_dict, strict=False)
+
     try:
         checkpoint = torch.load(path, map_location=config.DEVICE, weights_only=False)
         
@@ -176,9 +204,19 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
                 config.logger.warning(f"IMG_SIZE mismatch: checkpoint={saved_cfg.get('IMG_SIZE')}, current={config.IMG_SIZE}")
         
         trainer.vae.load_state_dict(checkpoint['vae_state'])
-        trainer.drift.load_state_dict(checkpoint['drift_state'])
+        
+        # Use flexible load for the drift network
+        flexible_load(trainer.drift, checkpoint['drift_state'])
+        
         trainer.opt_vae.load_state_dict(checkpoint['opt_vae_state'])
-        trainer.opt_drift.load_state_dict(checkpoint['opt_drift_state'])
+        
+        # For drift optimizer, if the architecture changed significantly, we might need to skip loading
+        try:
+            trainer.opt_drift.load_state_dict(checkpoint['opt_drift_state'])
+        except Exception as e:
+            config.logger.warning(f"Could not load drift optimizer state (likely due to architecture change): {e}")
+            config.logger.info("Drift optimizer will be re-initialized.")
+            
         trainer.scheduler_vae.load_state_dict(checkpoint['scheduler_vae_state'])
         trainer.scheduler_drift.load_state_dict(checkpoint['scheduler_drift_state'])
         
@@ -217,6 +255,8 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         
     except Exception as e:
         config.logger.error(f"Failed to load checkpoint: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
