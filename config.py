@@ -76,9 +76,9 @@ EDGE_WEIGHT = 0.2              # Edge preservation loss
 DEFAULT_STEPS = 100            # Increased from 50 for smoother trajectories
 DEFAULT_SEED = 42
 INFERENCE_TEMPERATURE = 0.6    # Lower from 0.8 for sharper samples
-DEFAULT_LANGEVIN_STEPS = 20    # Enabled from 0 for refinement
+DEFAULT_LANGEVIN_STEPS = 0     # Disabled by default (was causing instability)
 LANGEVIN_STEP_SIZE = 0.02      # Smaller from 0.05 for stability
-LANGEVIN_SCORE_SCALE = 1.5     # Increased from 1.2 for stronger guidance
+LANGEVIN_SCORE_SCALE = 1.2     # Reset from 1.5 to safer value
 LANGEVIN_DECAY = 0.95          # Slower decay for better convergence
 
 # ============================================================================
@@ -99,6 +99,7 @@ KL_ANNEALING_EPOCHS = 30
 LOGVAR_CLAMP_MIN = -4
 LOGVAR_CLAMP_MAX = 4
 MU_NOISE_SCALE = 0.01
+CST_COEF_GAUSSIAN_PRIO = 0.8        # Standard deviation for the Gaussian prior in latent space
 
 # NEW: Enhanced decoder settings
 DECODER_ATTENTION_LAYERS = [16, 32]  # Resolutions to add self-attention

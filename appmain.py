@@ -802,7 +802,7 @@ class SchrödingerBridgeGUI:
             ("📁 Paths", ["BASE_DIR"]),
             ("📐 Model Dimensions", ["IMG_SIZE", "LATENT_CHANNELS", "LATENT_H", "LATENT_W", "LATENT_DIM"]),
             ("🏷️ Label Conditioning", ["NUM_CLASSES", "LABEL_EMB_DIM"]),
-            ("⚡ Training Hyperparameters", ["LR", "EPOCHS", "WEIGHT_DECAY", "GRAD_CLIP", "BATCH_SIZE"]),
+            ("⚡ Training Hyperparameters", ["LR", "EPOCHS", "WEIGHT_DECAY", "GRAD_CLIP", "BATCH_SIZE", "CST_COEF_GAUSSIAN_PRIO"]),
             ("⚖️ Loss Weights", ["KL_WEIGHT", "RECON_WEIGHT", "DRIFT_WEIGHT", "DIVERSITY_WEIGHT", "CONSISTENCY_WEIGHT"]),
             ("🎨 VAE Specific", ["LATENT_SCALE", "FREE_BITS", "DIVERSITY_TARGET_STD", "DIVERSITY_BALANCE_WEIGHT",
                                 "KL_ANNEALING_EPOCHS", "LOGVAR_CLAMP_MIN", "LOGVAR_CLAMP_MAX", "MU_NOISE_SCALE"]),

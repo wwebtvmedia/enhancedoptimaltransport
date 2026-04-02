@@ -51,6 +51,7 @@ def get_param_description(param: str) -> str:
         "TARGET_SNR": "Target Signal-to-Noise ratio for quality tracking.",
         "LATENT_SCALE": "Multiplier for latent space range.",
         "FREE_BITS": "KL divergence threshold per sample to avoid collapse.",
+        "CST_COEF_GAUSSIAN_PRIO": "Standard deviation for the Gaussian prior in latent space (default 0.8).",
     }
     return descriptions.get(param, f"Configuration parameter: {param}")
 

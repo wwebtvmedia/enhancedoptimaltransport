@@ -19,17 +19,10 @@ def run_inference(labels: Optional[List[int]] = None,
                   cfg_scale: Optional[float] = None) -> None:
     """
     Run inference with label conditioning.
-    
-    Args:
-        labels: List of class labels. If None, prompts user.
-        samples_per_label: Number of samples per label. If None, prompts user.
-        temperature: Sampling temperature. If None, prompts user.
-        method: Integration method ('euler', 'heun', or 'rk4').
-        langevin_steps: Number of Langevin refinement steps.
-        langevin_step_size: Step size for Langevin dynamics.
-        langevin_score_scale: Scaling factor for the approximate score.
-        cfg_scale: Scale for classifier-free guidance.
     """
+    # Ensure hardware is initialized
+    config.initialize_hardware()
+    
     checkpoint_path = config.DIRS["ckpt"] / "latest.pt"
     if not checkpoint_path.exists():
         config.logger.error("No trained model found! Train a model first.")

@@ -83,6 +83,7 @@ with st.sidebar:
         config.LR = st.number_input("Learning Rate", value=config.LR, format="%.6f", help=get_param_description("LR"))
         config.EPOCHS = st.number_input("Epochs", value=config.EPOCHS, help=get_param_description("EPOCHS"))
         config.BATCH_SIZE = st.number_input("Batch Size", value=config.BATCH_SIZE, help=get_param_description("BATCH_SIZE"))
+        config.CST_COEF_GAUSSIAN_PRIO = st.number_input("Gaussian Prior Std", value=config.CST_COEF_GAUSSIAN_PRIO, format="%.2f", help=get_param_description("CST_COEF_GAUSSIAN_PRIO"))
             
     with st.expander("⚖️ Loss Weights", expanded=False):
         config.KL_WEIGHT = st.number_input("KL Weight", value=config.KL_WEIGHT, format="%.6f", help=get_param_description("KL_WEIGHT"))

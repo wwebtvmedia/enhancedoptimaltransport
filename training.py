@@ -714,8 +714,8 @@ class EnhancedLabelTrainer:
             else:
                 t = torch.rand(images.shape[0], 1, device=config.DEVICE)
             
-            # Start from noise with std=0.8 to match training
-            z0 = torch.randn_like(z1) * 0.8
+            # Start from noise with std defined in config
+            z0 = torch.randn_like(z1) * config.CST_COEF_GAUSSIAN_PRIO
             
             # Sample intermediate latent using either linear interpolation or OU bridge
             if config.USE_OU_BRIDGE and self.ou_ref is not None:
@@ -1171,7 +1171,9 @@ class EnhancedLabelTrainer:
         self.vae.eval()
         self.drift.eval()
         
-        if labels is None:
+        if labels is not None:
+            num_samples = len(labels)
+        else:
             labels = [i % 10 for i in range(num_samples)]
         
         with torch.no_grad():
@@ -1189,8 +1191,8 @@ class EnhancedLabelTrainer:
                 
                 with torch.no_grad():
                     mu, logvar = self.vae.encode(images, bash_labels)
-                    # Start with a bit more variance (0.8 instead of 0.3) to give the drift more signal
-                    z_init = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * 0.8
+                    # Start with a bit more variance to give the drift more signal
+                    z_init = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * config.CST_COEF_GAUSSIAN_PRIO
                     
                     # If we need more samples than we have, repeat
                     if num_samples > z_init.shape[0]:
@@ -1200,8 +1202,8 @@ class EnhancedLabelTrainer:
                         z = z_init[:num_samples]
             except Exception as e:
                 config.logger.warning(f"Could not estimate latent distribution, using random noise: {e}")
-                # Use std=1.0 for pure noise to match standard diffusion/bridge priors
-                z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * 1.0
+                # Use std defined in config
+                z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
 
 
 
@@ -1262,12 +1264,7 @@ class EnhancedLabelTrainer:
                 for step in range(langevin_steps):
                     # 1. Compute Score Proxy 
                     # Using drift at t=1 is theoretically the 'terminal' velocity
-                    # We add a small guidance factor to emphasize structural adherence
-                    with torch.enable_grad():
-                        z.requires_grad_(True)
-                        # Optional: If you had a discriminator or classifier, 
-                        # you would add that gradient here.
-                        drift_at_end = self.drift(z, t_one, labels_tensor)
+                    drift_at_end = self.drift(z, t_one, labels_tensor)
                     
                     # 2. Add Annealed Noise
                     # We decay the noise scale as we converge to the manifold
