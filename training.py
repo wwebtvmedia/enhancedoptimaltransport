@@ -698,6 +698,11 @@ class EnhancedLabelTrainer:
             with torch.no_grad():
                 mu_ref, _ = self.vae_ref.encode(images, labels)   # always use frozen anchor
             mu, logvar = self.vae.encode(images, labels)
+            
+            # Robust alignment for consistency loss
+            if mu.shape[2:] != mu_ref.shape[2:]:
+                mu_ref = F.interpolate(mu_ref, size=mu.shape[2:], mode='bilinear', align_corners=False)
+                
             std_from_logvar = torch.exp(0.5 * logvar).mean().item()
             consistency_loss = F.mse_loss(mu, mu_ref)
             mu_global_std = mu.std().item()
@@ -741,6 +746,10 @@ class EnhancedLabelTrainer:
 
             pred = self.drift(zt, t, train_labels)
             
+            # Robust alignment for Huber loss
+            if pred.shape[2:] != target.shape[2:]:
+                target = F.interpolate(target, size=pred.shape[2:], mode='nearest')
+
             # Time-weighted loss using config factor
             t_reshaped = t.reshape(-1, 1, 1, 1).contiguous()
             time_weights = 1.0 + config.TIME_WEIGHT_FACTOR * t_reshaped
