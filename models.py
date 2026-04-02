@@ -286,7 +286,13 @@ class LabelConditionedVAE(nn.Module):
                 h = block(h, label_emb)
             else:
                 h = block(h)
-        return torch.tanh(self.dec_out(h))
+        h = self.dec_out(h)
+        
+        # Robust final upsampling to match target image size
+        if h.shape[2:] != (config.IMG_SIZE, config.IMG_SIZE):
+            h = F.interpolate(h, size=(config.IMG_SIZE, config.IMG_SIZE), mode='bilinear', align_corners=False)
+            
+        return torch.tanh(h)
     
     def forward(self, x, labels):
         """Forward pass with reparameterization."""
@@ -457,6 +463,11 @@ class LabelConditionedDrift(nn.Module):
         m = self.mid2(m, cond)
         u2 = self.up2_conv(m)
         u2 = self.up2_block(u2, cond)
+        
+        # Robust skip connection: ensure spatial dimensions match exactly
+        if u2.shape[2:] != d1.shape[2:]:
+            u2 = F.interpolate(u2, size=d1.shape[2:], mode='nearest')
+            
         u1 = self.up1(u2 + d1, cond)
         out = self.tail(u1)
         
