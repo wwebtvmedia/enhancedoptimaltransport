@@ -145,22 +145,28 @@ def run_menu():
             import data_management as dm
             ckpt_path = config.DIRS["ckpt"] / "latest.pt"
             current_epoch = 0
+            current_step = 0
             if ckpt_path.exists():
                 try:
-                    import torch
-                    checkpoint = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+                    import torch, collections
+                    from torch.serialization import add_safe_globals
+                    add_safe_globals([collections.defaultdict])
+                    checkpoint = torch.load(ckpt_path, map_location='cpu', weights_only=False)
                     current_epoch = checkpoint.get('epoch', 0)
-                    print(f"Current progress: Epoch {current_epoch}/{config.EPOCHS}")
-                except:
-                    pass
+                    current_step = checkpoint.get('step', 0)
+                    print(f"Current progress: Epoch {current_epoch+1} (Step {current_step:,})")
+                except Exception as e:
+                    print(f"⚠️ Could not read checkpoint metadata: {e}")
             
-            additional_input = input("Enter number of ADDITIONAL epochs to train [default 10]: ").strip()
-            add_epochs = int(additional_input) if additional_input else 10
+            target_input = input(f"Enter TOTAL target epochs [current: {current_epoch+1}, config default: {config.EPOCHS}]: ").strip()
+            if target_input:
+                config.EPOCHS = int(target_input)
             
-            # Update total EPOCHS in config to allow continuation
-            config.EPOCHS = current_epoch + add_epochs + 1
-            print(f"Setting target to epoch {config.EPOCHS}...")
-            
+            if config.EPOCHS <= current_epoch:
+                print(f"❌ Error: Target epoch ({config.EPOCHS}) must be greater than current epoch ({current_epoch+1}).")
+                continue
+
+            print(f"🚀 Resuming training until TOTAL epoch {config.EPOCHS}...")
             run_headless_training()
             break
             
