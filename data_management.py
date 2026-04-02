@@ -222,9 +222,13 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
                             state = trainer.opt_vae.state[p]
                             for key in ['exp_avg', 'exp_avg_sq']:
                                 if key in state and state[key].shape != p.shape:
-                                    config.logger.warning(f"⚠️ VAE optimizer state shape mismatch for parameter. Resetting {key}.")
-                                    del trainer.opt_vae.state[p]
-                                    break
+                                    config.logger.warning(f"🩹 Rescuing VAE {key}: padding {list(state[key].shape)} -> {list(p.shape)}")
+                                    old_mom = state[key]
+                                    new_mom = torch.zeros_like(p)
+                                    # Copy overlapping region to preserve history
+                                    s0, s1, s2, s3 = [min(a, b) for a, b in zip(old_mom.shape, p.shape)]
+                                    new_mom[:s0, :s1, :s2, :s3] = old_mom[:s0, :s1, :s2, :s3]
+                                    state[key] = new_mom
         except Exception as e:
             config.logger.warning(f"Could not load VAE optimizer state: {e}")
             config.logger.info("VAE optimizer will be re-initialized.")
@@ -234,20 +238,21 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
             # First, try to load the state dict normally
             trainer.opt_drift.load_state_dict(checkpoint['opt_drift_state'])
             
-            # SANITIZE OPTIMIZER: Check for shape mismatches in moments vs parameters
-            # If any are found, we reset the optimizer state for those specific parameters
+            # RESCUE OPTIMIZER: Preserve history by padding moments
             with torch.no_grad():
                 for group in trainer.opt_drift.param_groups:
                     for p in group['params']:
                         if p in trainer.opt_drift.state:
                             state = trainer.opt_drift.state[p]
-                            # Check exp_avg (m) and exp_avg_sq (v)
                             for key in ['exp_avg', 'exp_avg_sq']:
                                 if key in state and state[key].shape != p.shape:
-                                    config.logger.warning(f"⚠️ Drift optimizer state shape mismatch for parameter. Resetting {key}.")
-                                    # Delete the state for this parameter to force re-initialization
-                                    del trainer.opt_drift.state[p]
-                                    break
+                                    config.logger.warning(f"🩹 Rescuing Drift {key}: padding {list(state[key].shape)} -> {list(p.shape)}")
+                                    old_mom = state[key]
+                                    new_mom = torch.zeros_like(p)
+                                    # Copy overlapping region to preserve history
+                                    s0, s1, s2, s3 = [min(a, b) for a, b in zip(old_mom.shape, p.shape)]
+                                    new_mom[:s0, :s1, :s2, :s3] = old_mom[:s0, :s1, :s2, :s3]
+                                    state[key] = new_mom
         except Exception as e:
             config.logger.warning(f"Could not load drift optimizer state (likely due to architecture change): {e}")
             config.logger.info("Drift optimizer will be re-initialized.")
