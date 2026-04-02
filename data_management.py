@@ -167,28 +167,32 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         return False
     
     def flexible_load(model, state_dict, prefix=""):
-        """Helper to load state_dict with architecture-aware mapping."""
+        """Helper to load state_dict with architecture-aware mapping and shape validation."""
         model_state = model.state_dict()
         new_state_dict = {}
         
         # Mapping for ConvTranspose2d -> Sequential(Upsample, Conv2d)
-        # up2_conv.weight (old) -> up2_conv.1.weight (new)
-        # up2_conv.bias (old) -> up2_conv.1.bias (new)
+        mapping = {
+            "up2_conv.weight": "up2_conv.1.weight",
+            "up2_conv.bias": "up2_conv.1.bias"
+        }
         
         for k, v in state_dict.items():
-            if "up2_conv.weight" in k:
-                new_key = k.replace("up2_conv.weight", "up2_conv.1.weight")
-                if new_key in model_state:
-                    new_state_dict[new_key] = v
-                    continue
-            elif "up2_conv.bias" in k:
-                new_key = k.replace("up2_conv.bias", "up2_conv.1.bias")
-                if new_key in model_state:
-                    new_state_dict[new_key] = v
-                    continue
+            mapped_key = k
+            for old_key, new_key in mapping.items():
+                if old_key in k:
+                    mapped_key = k.replace(old_key, new_key)
+                    break
             
-            if k in model_state:
-                new_state_dict[k] = v
+            if mapped_key in model_state:
+                # CRITICAL: Check if shapes match before attempting to load
+                if v.shape == model_state[mapped_key].shape:
+                    new_state_dict[mapped_key] = v
+                else:
+                    config.logger.warning(
+                        f"⚠️ Shape mismatch for {mapped_key}: checkpoint {list(v.shape)} vs model {list(model_state[mapped_key].shape)}. "
+                        f"Skipping this layer; it will be re-initialized."
+                    )
             else:
                 config.logger.debug(f"Skipping key {k} (not in model)")
                 
