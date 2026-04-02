@@ -19,12 +19,15 @@ def setup_terminal_logging(context):
     """Bridge processing logs to terminal and context queue."""
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     
-    # Terminal handler
-    ch = logging.StreamHandler()
-    ch.setFormatter(formatter)
+    # Check if a StreamHandler already exists
+    has_stream_handler = any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in config.logger.handlers)
     
-    config.logger.handlers.clear()
-    config.logger.addHandler(ch)
+    if not has_stream_handler:
+        # Terminal handler
+        ch = logging.StreamHandler()
+        ch.setFormatter(formatter)
+        config.logger.addHandler(ch)
+    
     config.logger.setLevel(logging.INFO)
 
 def run_headless_training():

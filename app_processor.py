@@ -5,7 +5,6 @@
 import os
 import sys
 import torch
-import logging
 import threading
 from typing import Callable, Dict, Any, Optional
 
@@ -74,7 +73,7 @@ class TrainingProcessor:
                     self.ctx.log_queue.put("UPDATE_GALLERY")
                     
         except Exception as e:
-            logging.error(f"Engine failure: {e}")
+            config.logger.error(f"Engine failure: {e}")
         finally:
             self.ctx.is_training = False
             self.ctx.stop_signal = False

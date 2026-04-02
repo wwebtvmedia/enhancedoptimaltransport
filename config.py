@@ -239,21 +239,27 @@ def setup_logger():
     logger = logging.getLogger("EnhancedTrainer")
     logger.setLevel(logging.INFO)
     
-    if logger.hasHandlers():
-        logger.handlers.clear()
+    # Check if we already have handlers to avoid duplicate logging or clearing active ones
+    has_file_handler = any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+    has_stream_handler = any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in logger.handlers)
     
+    if has_file_handler and has_stream_handler:
+        return logger
+        
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
     
-    ch = logging.StreamHandler()
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+    if not has_stream_handler:
+        ch = logging.StreamHandler()
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
     
-    # Create log directory if it doesn't exist
-    DIRS["logs"].mkdir(parents=True, exist_ok=True)
-    log_path = DIRS["logs"] / f"train_{int(time.time())}.log"
-    fh = logging.FileHandler(log_path, mode='w')
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
+    if not has_file_handler:
+        # Create log directory if it doesn't exist
+        DIRS["logs"].mkdir(parents=True, exist_ok=True)
+        log_path = DIRS["logs"] / f"train_{int(time.time())}.log"
+        fh = logging.FileHandler(log_path, mode='w')
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
     
     return logger
 

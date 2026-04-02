@@ -155,6 +155,11 @@ class SchrödingerBridgeGUI:
         self.engine = TrainingProcessor(self.ctx)
         # Link context queue to GUI's log_queue
         self.log_queue = self.ctx.log_queue
+        
+        # Add QueueHandler to config.logger so we see all logs in the UI
+        qh = QueueHandler(self.log_queue)
+        qh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S'))
+        config.logger.addHandler(qh)
 
         # Set up modern styling
         self.setup_styling()
@@ -1689,8 +1694,11 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
 
     # Configure logging
-    config.logger.handlers.clear()
-    config.logger.addHandler(logging.StreamHandler())
+    # config.logger is already configured in config.py on import
+    # Just ensure we have a StreamHandler for the terminal if needed
+    has_stream_handler = any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in config.logger.handlers)
+    if not has_stream_handler:
+        config.logger.addHandler(logging.StreamHandler())
     config.logger.setLevel(logging.INFO)
 
     # Start GUI

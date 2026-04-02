@@ -121,9 +121,11 @@ class SchrödingerBridgeGUI:
         self.root.geometry("1450x950")
         self.root.configure(bg=Colors.BG_DARK)
         
-        # MCP Initialization
-        self.ctx = AppContext()
-        self.engine = TrainingProcessor(self.ctx)
+        # Link context queue to GUI's log_queue
+        # Add QueueHandler to config.logger so we see all logs in the UI
+        qh = QueueHandler(self.ctx.log_queue)
+        qh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S'))
+        config.logger.addHandler(qh)
         
         self.setup_styling()
         
