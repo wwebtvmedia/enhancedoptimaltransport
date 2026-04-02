@@ -372,7 +372,10 @@ class LabelConditionedDrift(nn.Module):
         self.mid_attn = SelfAttention(256)
         self.mid2 = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
         
-        self.up2_conv = nn.ConvTranspose2d(256, 128, 4, 2, 1)
+        self.up2_conv = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(256, 128, 3, 1, 1)
+        )
         self.up2_block = LabelConditionedBlock(128, 128, label_dim=128, use_spectral_norm=True)
         self.up1 = LabelConditionedBlock(128, 64, label_dim=128, use_spectral_norm=True)
         

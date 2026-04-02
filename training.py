@@ -1179,33 +1179,8 @@ class EnhancedLabelTrainer:
         with torch.no_grad():
             labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
                         
-            try:
-                # Try to get a batch from the loader to estimate latent distribution
-                sample_batch = next(iter(self.loader))
-                if isinstance(sample_batch, dict):
-                    images = sample_batch['image'][:min(16, num_samples)].to(config.DEVICE)
-                    bash_labels = sample_batch['label'][:min(16, num_samples)].to(config.DEVICE)
-                else:
-                    images = sample_batch[0][:min(16, num_samples)].to(config.DEVICE)
-                    bash_labels = sample_batch[1][:min(16, num_samples)].to(config.DEVICE)
-                
-                with torch.no_grad():
-                    mu, logvar = self.vae.encode(images, bash_labels)
-                    # Start with a bit more variance to give the drift more signal
-                    z_init = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar) * config.CST_COEF_GAUSSIAN_PRIO
-                    
-                    # If we need more samples than we have, repeat
-                    if num_samples > z_init.shape[0]:
-                        repeats = (num_samples + z_init.shape[0] - 1) // z_init.shape[0]
-                        z = z_init.repeat(repeats, 1, 1, 1)[:num_samples]
-                    else:
-                        z = z_init[:num_samples]
-            except Exception as e:
-                config.logger.warning(f"Could not estimate latent distribution, using random noise: {e}")
-                # Use std defined in config
-                z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
-
-
+            # Start from pure noise using the prior standard deviation from config
+            z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
 
             config.logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
             
@@ -1215,21 +1190,25 @@ class EnhancedLabelTrainer:
             # ----- ODE integration -----
             for i in range(steps):
                 t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
-                used_for_norm = None
+                
+                # Predict drift
+                drift = self.drift(z, t_cur, labels_tensor, cfg_scale=cfg_scale)
+                
+                # Adaptive drift normalization: prevent explosions if drift becomes too large
+                drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
+                if drift_norm > 15.0:  # Safety threshold
+                    drift = drift * (15.0 / (drift_norm + 1e-8))
 
                 if method == 'euler':
-                    drift = self.drift(z, t_cur, labels_tensor, cfg_scale=cfg_scale)
                     z = z + drift * dt
-                    used_for_norm = drift
                 elif method == 'heun':
-                    k1 = self.drift(z, t_cur, labels_tensor, cfg_scale=cfg_scale)
+                    k1 = drift
                     t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_pred = z + dt * k1
                     k2 = self.drift(z_pred, t_next, labels_tensor, cfg_scale=cfg_scale)
                     z = z + (dt / 2.0) * (k1 + k2)
-                    used_for_norm = k1
                 elif method == 'rk4':
-                    k1 = self.drift(z, t_cur, labels_tensor, cfg_scale=cfg_scale)
+                    k1 = drift
                     t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
                     z_half = z + 0.5 * dt * k1
                     k2 = self.drift(z_half, t_half, labels_tensor, cfg_scale=cfg_scale)
@@ -1239,14 +1218,10 @@ class EnhancedLabelTrainer:
                     z_next = z + dt * k3
                     k4 = self.drift(z_next, t_next, labels_tensor, cfg_scale=cfg_scale)
                     z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
-                    used_for_norm = k1
-                else:
-                    raise ValueError(f"Unknown method: {method}")
     
                 z = torch.clamp(z, -10, 10)   # gentle clamping
                 
                 if i % 10 == 0:
-                    drift_norm = used_for_norm.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
                     config.logger.info(f"Step {i:3d}, t={i*dt:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std():.4f}")
                                 
                 if torch.isnan(z).any():
