@@ -89,6 +89,20 @@ with st.sidebar:
         config.RECON_WEIGHT = st.number_input("Recon Weight", value=config.RECON_WEIGHT, format="%.2f", help=get_param_description("RECON_WEIGHT"))
         config.DIVERSITY_WEIGHT = st.number_input("Diversity Weight", value=config.DIVERSITY_WEIGHT, format="%.2f", help=get_param_description("DIVERSITY_WEIGHT"))
 
+    with st.expander("📅 Training Schedule", expanded=False):
+        mode = st.selectbox("Schedule Mode", ["auto", "manual", "three_phase", "alternate"], 
+                           index=["auto", "manual", "three_phase", "alternate"].index(config.TRAINING_SCHEDULE['mode']))
+        
+        force_phase = config.TRAINING_SCHEDULE['force_phase'] or 1
+        new_force_phase = st.radio("Manual Phase (if manual mode)", [1, 2, 3], 
+                                  index=[1, 2, 3].index(force_phase),
+                                  format_func=lambda x: f"Phase {x} ({['VAE', 'Drift', 'Both'][x-1]})")
+        
+        config.TRAINING_SCHEDULE['mode'] = mode
+        config.TRAINING_SCHEDULE['force_phase'] = new_force_phase
+        
+        st.caption(f"Current Phase in Engine: {getattr(engine.trainer, 'phase', 'N/A') if engine.trainer else 'N/A'}")
+
     if st.button("💾 Apply & Save", width='stretch'):
         st.success("Configuration updated in memory!")
 
