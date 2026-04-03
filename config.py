@@ -60,6 +60,7 @@ GRAD_CLIP = 1.0
 # ============================================================================
 KL_WEIGHT = 0.003              # Increased from 0.001 for better latent structure
 RECON_WEIGHT = 7.0             # Increased from 2.5 for sharper reconstruction
+SUBPIXEL_INITIAL_MIX = -1.0    # Initial logit for hybrid upsampling (sigmoid(-1.0) ≈ 0.27 subpixel)
 DRIFT_WEIGHT = 1.0             # Increased from 0.5 for better trajectory learning
 DIVERSITY_WEIGHT = 1.5         # Increased from 1.0 to prevent channel collapse
 CONSISTENCY_WEIGHT = 1.0       # Increased from 0.5 for better anchor stability
