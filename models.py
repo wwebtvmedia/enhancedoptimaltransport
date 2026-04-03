@@ -146,6 +146,37 @@ class LabelConditionedBlock(nn.Module):
         return self.rescale(skip + h)
 
 # ============================================================
+# SUBPIXEL UPSAMPLING (NEW)
+# ============================================================
+class SubpixelUpsample(nn.Module):
+    """Artifact-free upsampling with Bilinear fallback for stability."""
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        # 1. Main Path: Subpixel Conv
+        self.conv = nn.Conv2d(in_channels, out_channels * 4, kernel_size=3, padding=1)
+        self.shuffle = nn.PixelShuffle(2)
+        
+        # 2. Fallback Path: Bilinear (ensures we don't lose progress)
+        self.fallback = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        )
+        
+        # 3. Learnable mix (starts heavily favoring fallback)
+        self.mix = nn.Parameter(torch.tensor(-2.0)) # sigmoid(-2) approx 0.12
+        self.act = nn.SiLU()
+        
+    def forward(self, x):
+        subpixel = self.shuffle(self.conv(x))
+        bilinear = self.fallback(x)
+        
+        # Blend the two (starts mostly bilinear to keep training, fades into subpixel)
+        alpha = torch.sigmoid(self.mix)
+        out = alpha * subpixel + (1 - alpha) * bilinear
+        
+        return self.act(out)
+
+# ============================================================
 # LABEL-CONDITIONED VAE
 # ============================================================
 class LabelConditionedVAE(nn.Module):
@@ -177,41 +208,25 @@ class LabelConditionedVAE(nn.Module):
         self.z_mean = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
         self.z_logvar = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
 
-        # ========== ENHANCED DECODER (4 symmetric upsample stages) ==========
+        # ========== ENHANCED DECODER WITH SUBPIXEL CONV (4 stages) ==========
         self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
         self.dec_blocks = nn.ModuleList([
             # Stage 1: 6x6 -> 12x12
-            nn.Sequential(
-                nn.Upsample(scale_factor=2, mode='nearest'),
-                nn.Conv2d(512, 512, 3, 1, 1),
-                nn.SiLU()
-            ),
+            SubpixelUpsample(512, 512),
             LabelConditionedBlock(512, 512),
             SelfAttention(512),
 
             # Stage 2: 12x12 -> 24x24
-            nn.Sequential(
-                nn.Upsample(scale_factor=2, mode='nearest'),
-                nn.Conv2d(512, 256, 3, 1, 1),
-                nn.SiLU()
-            ),
+            SubpixelUpsample(512, 256),
             LabelConditionedBlock(256, 256),
             SelfAttention(256),
 
             # Stage 3: 24x24 -> 48x48
-            nn.Sequential(
-                nn.Upsample(scale_factor=2, mode='nearest'),
-                nn.Conv2d(256, 128, 3, 1, 1),
-                nn.SiLU()
-            ),
+            SubpixelUpsample(256, 128),
             LabelConditionedBlock(128, 128),
 
             # Stage 4: 48x48 -> 96x96
-            nn.Sequential(
-                nn.Upsample(scale_factor=2, mode='nearest'),
-                nn.Conv2d(128, 64, 3, 1, 1),
-                nn.SiLU()
-            ),
+            SubpixelUpsample(128, 64),
             LabelConditionedBlock(64, 64),
         ])
 
