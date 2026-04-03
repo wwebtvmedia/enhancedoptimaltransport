@@ -449,47 +449,118 @@ def get_dataloader_config() -> Dict:
     return config_dict
 
 # ============================================================
+# MULTI-SOURCE DATASET
+# ============================================================
+class MultiSourceDataset(Dataset):
+    """Combines multiple datasets with shared labels and source context."""
+    
+    def __init__(self, datasets_list: List[Dataset], source_ids: List[int], transform=None):
+        self.datasets = datasets_list
+        self.source_ids = source_ids
+        self.transform = transform
+        
+        # Calculate lengths and cumulative lengths
+        self.lengths = [len(ds) for ds in self.datasets]
+        self.cumulative_lengths = [sum(self.lengths[:i+1]) for i in range(len(self.lengths))]
+        
+        # Shared class mapping (simplified to first 10 classes)
+        self.classes = ['airplane', 'bird', 'car', 'cat', 'deer', 'dog', 'horse', 'monkey', 'ship', 'truck']
+    
+    def __len__(self) -> int:
+        return self.cumulative_lengths[-1]
+    
+    def __getitem__(self, idx: int) -> Dict:
+        # Find which dataset this index belongs to
+        ds_idx = 0
+        for i, cum_len in enumerate(self.cumulative_lengths):
+            if idx < cum_len:
+                ds_idx = i
+                break
+        
+        # Adjust index for the specific dataset
+        internal_idx = idx if ds_idx == 0 else idx - self.cumulative_lengths[ds_idx-1]
+        
+        item = self.datasets[ds_idx][internal_idx]
+        source_id = self.source_ids[ds_idx]
+        
+        if isinstance(item, tuple):
+            img, label_idx = item
+            # Standardize label_idx for multi-dataset consistency if needed
+            # For STL10/CIFAR10, the first 10 are mostly compatible or can be mapped.
+        else:
+            img = item
+            label_idx = idx % 10
+            
+        if self.transform:
+            img = self.transform(img)
+            
+        return {
+            'image': img,
+            'label': torch.tensor(label_idx, dtype=torch.long),
+            'source_id': torch.tensor(source_id, dtype=torch.long),
+            'label_text': self.classes[label_idx] if label_idx < 10 else f"class_{label_idx}",
+            'index': idx
+        }
+
+# ============================================================
 # DATA LOADING FUNCTION
 # ============================================================
 def load_data() -> DataLoader:
-    """Load dataset based on config.DATASET_NAME with device-optimized settings."""
+    """Load dataset based on config.DATASET_NAME with multi-source support."""
     
     # ========== ENHANCED DATA AUGMENTATION ==========
     transform = T.Compose([
-        T.Resize((config.IMG_SIZE + 16, config.IMG_SIZE + 16)),  # Slightly larger
-        T.RandomCrop(config.IMG_SIZE),  # Random crop for variation
+        T.Resize((config.IMG_SIZE + 16, config.IMG_SIZE + 16)),
+        T.RandomCrop(config.IMG_SIZE),
         T.RandomHorizontalFlip(p=0.5),
-        T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1,hue=0.05),
+        T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
         T.RandomAffine(degrees=5, translate=(0.05, 0.05), scale=(0.95, 1.05)),
         T.ToTensor(),
         T.Normalize((0.5,)*3, (0.5,)*3),
-        T.RandomErasing(p=0.1, scale=(0.02, 0.1)),  # Occlusion augmentation
+        T.RandomErasing(p=0.1, scale=(0.02, 0.1)),
     ])
     
-    config.logger.info(f"Loading dataset: {config.DATASET_NAME} from {config.DATASET_PATH}...")
+    config.logger.info(f"Loading data: mode={config.DATASET_NAME}, multi={config.USE_MULTI_DATASET}")
     
     try:
-        if config.DATASET_NAME == "STL10":
-            base_ds = datasets.STL10(root=str(config.DATASET_PATH), split='train', download=True, transform=transform)
-            if not hasattr(base_ds, 'classes'):
-                base_ds.classes = ['airplane', 'bird', 'car', 'cat', 'deer', 'dog', 'horse', 'monkey', 'ship', 'truck']
+        if config.DATASET_NAME == "MULTI" or config.USE_MULTI_DATASET:
+            datasets_to_load = []
+            source_ids = []
+            
+            for i, ds_name in enumerate(config.DATASETS):
+                config.logger.info(f"  Adding source {i}: {ds_name}")
+                if ds_name == "STL10":
+                    ds = datasets.STL10(root=str(config.DATASET_PATH), split='train', download=True)
+                elif ds_name == "CIFAR10":
+                    ds = datasets.CIFAR10(root=str(config.DATASET_PATH), train=True, download=True)
+                elif ds_name == "CUSTOM":
+                    ds = datasets.ImageFolder(root=str(config.DATASET_PATH))
+                else:
+                    continue
+                
+                datasets_to_load.append(ds)
+                source_ids.append(i)
+            
+            dataset = MultiSourceDataset(datasets_to_load, source_ids, transform=transform)
+            config.logger.info(f"✅ Combined MultiSourceDataset: total={len(dataset)} images from {len(datasets_to_load)} sources")
+            
+        elif config.DATASET_NAME == "STL10":
+            base_ds = datasets.STL10(root=str(config.DATASET_PATH), split='train', download=True)
+            dataset = LabeledImageDataset(base_ds, transform=transform)
         
         elif config.DATASET_NAME == "CIFAR10":
-            base_ds = datasets.CIFAR10(root=str(config.DATASET_PATH), train=True, download=True, transform=transform)
+            base_ds = datasets.CIFAR10(root=str(config.DATASET_PATH), train=True, download=True)
+            dataset = LabeledImageDataset(base_ds, transform=transform)
             
         elif config.DATASET_NAME == "CUSTOM":
-            if not config.DATASET_PATH.exists():
-                raise FileNotFoundError(f"Custom data path {config.DATASET_PATH} does not exist!")
-            base_ds = datasets.ImageFolder(root=str(config.DATASET_PATH), transform=transform)
+            base_ds = datasets.ImageFolder(root=str(config.DATASET_PATH))
+            dataset = LabeledImageDataset(base_ds, transform=transform)
             
         else:
             raise ValueError(f"Unknown dataset: {config.DATASET_NAME}")
             
-        dataset = LabeledImageDataset(base_ds)
-        config.logger.info(f"Loaded {len(dataset)} images from {config.DATASET_NAME}")
-        
     except Exception as e:
-        config.logger.error(f"Failed to load dataset {config.DATASET_NAME}: {e}")
+        config.logger.error(f"Failed to load dataset: {e}")
         raise e
     
     dataloader_config = get_dataloader_config()

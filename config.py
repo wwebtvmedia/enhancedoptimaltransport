@@ -22,17 +22,22 @@ DIRS = {
     "metrics": BASE_DIR / "metrics",
     "inference": BASE_DIR / "inference",
     "best": BASE_DIR / "best_models"
-}
-
 # ============================================================================
 # DATASET CONFIGURATION
 # ============================================================================
-DATASET_NAME = "STL10"        # Options: "STL10", "CIFAR10", "CUSTOM"
+DATASET_NAME = "STL10"        # Options: "STL10", "CIFAR10", "CUSTOM", "MULTI"
 DATASET_PATH = Path("./data") # Path to download or find custom data
+USE_MULTI_DATASET = True      # Enable training on multiple datasets
+DATASETS = ["STL10", "CIFAR10"] # Datasets to use when MULTI is enabled
 
 # ============================================================================
-# MODEL DIMENSIONS
+# LABEL AND CONTEXT CONDITIONING
 # ============================================================================
+NUM_CLASSES = 10              # Max classes across datasets (shared mapping)
+LABEL_EMB_DIM = 128
+USE_CONTEXT = True            # Enable additional contextual input
+CONTEXT_DIM = 64              # Dimension of continuous context vector
+NUM_SOURCES = 2               # Number of unique data sources for context embedding
 IMG_SIZE = 96                # Internal processing size (standardized)
 GEN_SIZE = 96                # Final output generation size (can be different)
 LATENT_CHANNELS = 8          # Increased from 4 for better reconstruction quality

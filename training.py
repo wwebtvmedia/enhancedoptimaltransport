@@ -332,7 +332,7 @@ class EnhancedLabelTrainer:
         self.best_loss = float('inf')
         self.best_composite_score = float('-inf')
         self.debug_counter = 0
-        self.debug_interval = 50
+        self.debug_interval = 10
         
         # Reference for Phase 2
         self.vae_ref = None
@@ -343,6 +343,7 @@ class EnhancedLabelTrainer:
         # AMP scaler
         self.scaler = torch.cuda.amp.GradScaler() if config.USE_AMP and config.DEVICE.type == 'cuda' else None
         
+        config.logger.info(f"💓 Epoch 0 | Batch 0/{len(self.loader)}")
         config.logger.info(f"Models initialized:")
         config.logger.info(f"  VAE params: {sum(p.numel() for p in self.vae.parameters()):,}")
         config.logger.info(f"  Drift params: {sum(p.numel() for p in self.drift.parameters()):,}")
@@ -459,7 +460,7 @@ class EnhancedLabelTrainer:
             # Unfreeze encoder parts only, explicitly zero-out grad for frozen params
             unfrozen_count = 0
             for name, param in self.vae.named_parameters():
-                if any(k in name for k in ['enc_', 'label_emb', 'z_mean', 'z_logvar']):
+                if any(k in name for k in ['enc_', 'label_emb', 'z_mean', 'z_logvar', 'source_emb', 'cond_proj']):
                     param.requires_grad = True
                     unfrozen_count += param.numel()
                 else:
@@ -550,15 +551,15 @@ class EnhancedLabelTrainer:
         
         # Compute means, variances, covariances
         mu_x = F.conv2d(x, window, padding=pad, groups=x.size(1))
-        mu_y = F.conv2d(y, window, padding=pad, groups=x.size(1))
+        mu_y = F.conv2d(y, window, padding=pad, groups=y.size(1))
         
         mu_x_sq = mu_x.pow(2)
         mu_y_sq = mu_y.pow(2)
         mu_xy = mu_x * mu_y
         
         sigma_x_sq = F.conv2d(x * x, window, padding=pad, groups=x.size(1)) - mu_x_sq
-        sigma_y_sq = F.conv2d(y * y, window, padding=pad, groups=x.size(1)) - mu_y_sq
-        sigma_xy = F.conv2d(x * y, window, padding=pad, groups=x.size(1)) - mu_xy
+        sigma_y_sq = F.conv2d(y * y, window, padding=pad, groups=y.size(1)) - mu_y_sq
+        sigma_xy = F.conv2d(x * y, window, padding=pad, groups=y.size(1)) - mu_xy
         
         # Numerical stability
         sigma_x_sq = torch.clamp(sigma_x_sq, min=0)
@@ -580,9 +581,13 @@ class EnhancedLabelTrainer:
         if isinstance(batch, dict):
             images = batch['image'].to(config.DEVICE)
             labels = batch['label'].to(config.DEVICE)
+            source_id = batch.get('source_id', None)
+            if source_id is not None:
+                source_id = source_id.to(config.DEVICE)
         elif isinstance(batch, (list, tuple)) and len(batch) == 2:
             images = batch[0].to(config.DEVICE)
             labels = batch[1].to(config.DEVICE)
+            source_id = None
         else:
             raise TypeError(f"Unexpected batch type: {type(batch)}")
 
@@ -593,7 +598,7 @@ class EnhancedLabelTrainer:
 
         if phase == 1:
             # Phase 1: Train VAE
-            recon, mu, logvar = self.vae(images, labels)
+            recon, mu, logvar = self.vae(images, labels, source_id)
 
             # Periodically diagnose and correct latent collapse
             if batch_idx % self.debug_interval == 0:
@@ -696,8 +701,8 @@ class EnhancedLabelTrainer:
             # Get the epoch when drift training started
             drift_start_epoch = getattr(self, 'phase2_start_epoch', config.TRAINING_SCHEDULE.get('switch_epoch_1', config.TRAINING_SCHEDULE.get('switch_epoch', 50)))
             with torch.no_grad():
-                mu_ref, _ = self.vae_ref.encode(images, labels)   # always use frozen anchor
-            mu, logvar = self.vae.encode(images, labels)
+                mu_ref, _ = self.vae_ref.encode(images, labels, source_id)   # always use frozen anchor
+            mu, logvar = self.vae.encode(images, labels, source_id)
             
             # --- GLOBAL SPATIAL HARMONIZER ---
             # Use 'mu' as the reference spatial shape
@@ -762,7 +767,7 @@ class EnhancedLabelTrainer:
             else:
                 train_labels = labels
 
-            pred = self.drift(zt, t, train_labels)
+            pred = self.drift(zt, t, train_labels, source_id=source_id)
             
             # Ensure prediction and target match perfectly for loss
             if pred.shape[2:] != target_shape:
@@ -781,7 +786,7 @@ class EnhancedLabelTrainer:
             if phase == 3:
                 # Use mu (the clean latent) for VAE stability in Phase 3
                 # This ensures the decoder stays sharp without being confused by bridge noise
-                recon_p3 = self.vae.decode(mu, labels)
+                recon_p3 = self.vae.decode(mu, labels, source_id)
                 
                 # Scale recon loss down in Phase 3 so it doesn't overwhelm the Drift training
                 p3_scale = getattr(config, 'PHASE3_RECON_SCALE', 0.1)
@@ -801,6 +806,8 @@ class EnhancedLabelTrainer:
                     'total': total_loss,
                     'drift': drift_loss_base.item(),
                     'consistency': consistency_loss.item(),
+                    'mu_std': mu_global_std,
+                    'z_std': z_global_std,
                     'temperature': temperature
                 }
         
@@ -889,6 +896,10 @@ class EnhancedLabelTrainer:
                     batch_dict = batch
                 else:
                     continue
+                
+                # Heartbeat for Colab visibility
+                if batch_idx % 10 == 0:
+                    config.logger.info(f"💓 Epoch {current_epoch} ({mode}) | Batch {batch_idx}/{len(self.loader)}")
                 
                 # Forward pass with AMP if enabled
                 if self.scaler is not None and phase in (2,3):
@@ -1025,12 +1036,15 @@ class EnhancedLabelTrainer:
                         batch = next(iter(self.loader))
                         real_images = batch['image'][:fid_samples].to(config.DEVICE)
                         real_labels = batch['label'][:fid_samples].to(config.DEVICE)
+                        source_id = batch.get('source_id', None)
+                        if source_id is not None:
+                            source_id = source_id[:fid_samples].to(config.DEVICE)
                         
                         # Correct VGG normalization
                         real_norm = ((real_images + 1) / 2 - self.vgg_mean) / self.vgg_std
                         real_feat = self.vgg(real_norm)
                         
-                        gen_images, _, _ = self.vae(real_images, real_labels)
+                        gen_images, _, _ = self.vae(real_images, real_labels, source_id)
                         gen_norm = ((gen_images + 1) / 2 - self.vgg_mean) / self.vgg_std
                         gen_feat = self.vgg(gen_norm)
                         
@@ -1177,9 +1191,9 @@ class EnhancedLabelTrainer:
         
     def generate_samples(self, labels=None, num_samples=8, temperature=None, method='heun',
                          langevin_steps=None, langevin_step_size=None, langevin_score_scale=None,
-                         cfg_scale=None):
+                         cfg_scale=None, source_id=None):
         """
-        Generate samples with label conditioning.
+        Generate samples with label conditioning and optional context.
 
         Args:
             labels: List of class labels
@@ -1190,6 +1204,7 @@ class EnhancedLabelTrainer:
             langevin_step_size: Step size for Langevin dynamics (default from config)
             langevin_score_scale: Scaling factor for the approximate score (default from config)
             cfg_scale: Scale for classifier-free guidance (None = use config default)
+            source_id: Optional dataset source ID
         """
         if cfg_scale is None:
             cfg_scale = getattr(config, 'CFG_SCALE', 1.0)
@@ -1209,6 +1224,12 @@ class EnhancedLabelTrainer:
         
         with torch.no_grad():
             labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
+            
+            # Source ID context
+            if source_id is None:
+                s_id = torch.zeros(labels_tensor.shape[0], dtype=torch.long, device=config.DEVICE)
+            else:
+                s_id = torch.full((labels_tensor.shape[0],), source_id, dtype=torch.long, device=config.DEVICE)
                         
             # Start from pure noise using the prior standard deviation from config
             z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
@@ -1222,8 +1243,8 @@ class EnhancedLabelTrainer:
             for i in range(steps):
                 t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
                 
-                # Predict drift
-                drift = self.drift(z, t_cur, labels_tensor, cfg_scale=cfg_scale)
+                # Predict drift with context
+                drift = self.drift(z, t_cur, labels_tensor, cfg_scale=cfg_scale, source_id=s_id)
                 
                 # Adaptive drift normalization: prevent explosions if drift becomes too large
                 drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
@@ -1236,18 +1257,18 @@ class EnhancedLabelTrainer:
                     k1 = drift
                     t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_pred = z + dt * k1
-                    k2 = self.drift(z_pred, t_next, labels_tensor, cfg_scale=cfg_scale)
+                    k2 = self.drift(z_pred, t_next, labels_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     z = z + (dt / 2.0) * (k1 + k2)
                 elif method == 'rk4':
                     k1 = drift
                     t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
                     z_half = z + 0.5 * dt * k1
-                    k2 = self.drift(z_half, t_half, labels_tensor, cfg_scale=cfg_scale)
+                    k2 = self.drift(z_half, t_half, labels_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     z_half2 = z + 0.5 * dt * k2
-                    k3 = self.drift(z_half2, t_half, labels_tensor, cfg_scale=cfg_scale)
+                    k3 = self.drift(z_half2, t_half, labels_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_next = z + dt * k3
-                    k4 = self.drift(z_next, t_next, labels_tensor, cfg_scale=cfg_scale)
+                    k4 = self.drift(z_next, t_next, labels_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
     
                 z = torch.clamp(z, -10, 10)   # gentle clamping
@@ -1270,7 +1291,7 @@ class EnhancedLabelTrainer:
                 for step in range(langevin_steps):
                     # 1. Compute Score Proxy 
                     # Using drift at t=1 is theoretically the 'terminal' velocity
-                    drift_at_end = self.drift(z, t_one, labels_tensor)
+                    drift_at_end = self.drift(z, t_one, labels_tensor, source_id=s_id)
                     
                     # 2. Add Annealed Noise
                     # We decay the noise scale as we converge to the manifold
@@ -1293,7 +1314,7 @@ class EnhancedLabelTrainer:
             config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
             
             # Decode
-            images = self.vae.decode(z, labels_tensor)
+            images = self.vae.decode(z, labels_tensor, source_id=s_id)
             images = torch.clamp(images, -1, 1)
             
             config.logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")
@@ -1399,8 +1420,8 @@ class EnhancedLabelTrainer:
             def __init__(self, vae):
                 super().__init__()
                 self.vae = vae
-            def forward(self, z, labels):
-                return self.vae.decode(z, labels)
+            def forward(self, z, labels, source_id=None):
+                return self.vae.decode(z, labels, source_id)
 
         try:
             # --- Set export mode for VAE and Drift ---
@@ -1416,6 +1437,7 @@ class EnhancedLabelTrainer:
             # Export Generator (Decoder only)
             dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
             dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
+            dummy_source = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
             
             gen_path = config.DIRS["onnx"] / "generator.onnx"
             vae_gen = VAEGenerator(vae_for_export)
@@ -1423,16 +1445,17 @@ class EnhancedLabelTrainer:
             with torch.no_grad():
                 torch.onnx.export(
                     vae_gen,
-                    (dummy_z, dummy_label),
+                    (dummy_z, dummy_label, dummy_source),
                     str(gen_path),
                     export_params=True,
                     opset_version=18,
                     do_constant_folding=True,
-                    input_names=['z', 'label'],
+                    input_names=['z', 'label', 'source_id'],
                     output_names=['reconstruction'],
                     dynamic_axes={
                         'z': {0: 'batch_size'},
                         'label': {0: 'batch_size'},
+                        'source_id': {0: 'batch_size'},
                         'reconstruction': {0: 'batch_size'}
                     }
                 )
@@ -1447,17 +1470,18 @@ class EnhancedLabelTrainer:
             with torch.no_grad():
                 torch.onnx.export(
                     drift_for_export,
-                    (dummy_z, dummy_t, dummy_label),
+                    (dummy_z, dummy_t, dummy_label, dummy_source),
                     str(drift_path),
                     export_params=True,
                     opset_version=18,
                     do_constant_folding=True,
-                    input_names=['z', 't', 'label'],
+                    input_names=['z', 't', 'label', 'source_id'],
                     output_names=['drift'],
                     dynamic_axes={
                         'z': {0: 'batch_size'},
                         't': {0: 'batch_size'},
                         'label': {0: 'batch_size'},
+                        'source_id': {0: 'batch_size'},
                         'drift': {0: 'batch_size'}
                     }
                 )

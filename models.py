@@ -208,6 +208,15 @@ class LabelConditionedVAE(nn.Module):
         self.z_mean = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
         self.z_logvar = nn.Conv2d(512, config.LATENT_CHANNELS, 3, 1, 1)
 
+        # Contextual embedding (Source Dataset ID)
+        if config.USE_CONTEXT:
+            self.source_emb = nn.Embedding(config.NUM_SOURCES, config.CONTEXT_DIM)
+            self.cond_proj = nn.Sequential(
+                nn.Linear(config.LABEL_EMB_DIM + config.CONTEXT_DIM, config.LABEL_EMB_DIM),
+                nn.SiLU(),
+                nn.Linear(config.LABEL_EMB_DIM, config.LABEL_EMB_DIM)
+            )
+
         # ========== ENHANCED DECODER WITH SUBPIXEL CONV (4 stages) ==========
         self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
         self.dec_blocks = nn.ModuleList([
@@ -275,9 +284,13 @@ class LabelConditionedVAE(nn.Module):
             }
         return low_penalty + high_penalty + balance_loss
     
-    def encode(self, x, labels):
+    def encode(self, x, labels, source_id=None):
         """Encode images to latent distribution parameters."""
         label_emb = self.label_emb(labels)
+        if config.USE_CONTEXT and source_id is not None:
+            s_emb = self.source_emb(source_id)
+            label_emb = self.cond_proj(torch.cat([label_emb, s_emb], dim=-1))
+            
         if config.USE_FOURIER_FEATURES:
             fourier = self._get_fourier_features(x)
             x = torch.cat([x, fourier], dim=1)
@@ -301,9 +314,13 @@ class LabelConditionedVAE(nn.Module):
             self.diversity_loss = self._channel_diversity_loss(mu)
         return mu, logvar
     
-    def decode(self, z, labels):
+    def decode(self, z, labels, source_id=None):
         """Decode latents to images with enhanced architecture."""
         label_emb = self.label_emb(labels)
+        if config.USE_CONTEXT and source_id is not None:
+            s_emb = self.source_emb(source_id)
+            label_emb = self.cond_proj(torch.cat([label_emb, s_emb], dim=-1))
+            
         h = self.dec_in(z)
         for block in self.dec_blocks:
             if isinstance(block, LabelConditionedBlock):
@@ -318,15 +335,15 @@ class LabelConditionedVAE(nn.Module):
             
         return torch.tanh(h)
     
-    def forward(self, x, labels):
+    def forward(self, x, labels, source_id=None):
         """Forward pass with reparameterization."""
-        mu, logvar = self.encode(x, labels)
+        mu, logvar = self.encode(x, labels, source_id)
         if self.training:
             std = torch.exp(0.5 * logvar)
             z = mu + std * torch.randn_like(std)
         else:
             z = mu
-        return self.decode(z, labels), mu, logvar
+        return self.decode(z, labels, source_id), mu, logvar
     
     def reparameterize(self, mu, logvar):
         """Reparameterization trick for sampling."""
@@ -377,11 +394,21 @@ class LabelConditionedDrift(nn.Module):
         # Rest of initialization remains the same...
         # Label conditioning
         self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
-        self.cond_proj = nn.Sequential(
-            nn.Linear(256 + config.LABEL_EMB_DIM, 128),
-            nn.SiLU(),
-            nn.Linear(128, 128)
-        )
+        
+        # Contextual embedding (Source Dataset ID)
+        if config.USE_CONTEXT:
+            self.source_emb = nn.Embedding(config.NUM_SOURCES, config.CONTEXT_DIM)
+            self.cond_proj = nn.Sequential(
+                nn.Linear(256 + config.LABEL_EMB_DIM + config.CONTEXT_DIM, 128),
+                nn.SiLU(),
+                nn.Linear(128, 128)
+            )
+        else:
+            self.cond_proj = nn.Sequential(
+                nn.Linear(256 + config.LABEL_EMB_DIM, 128),
+                nn.SiLU(),
+                nn.Linear(128, 128)
+            )
 
         # Time-adaptive scaling
         self.time_weight_net = nn.Sequential(
@@ -425,8 +452,8 @@ class LabelConditionedDrift(nn.Module):
     def _set_export_mode(self, is_exporting=True):
         self._is_exporting = is_exporting
 
-    def forward(self, z, t, labels, cfg_scale=1.0):
-        """Forward pass - predict drift at time t with CFG support."""
+    def forward(self, z, t, labels, cfg_scale=1.0, source_id=None):
+        """Forward pass - predict drift at time t with CFG and context support."""
         # Time embedding
         if t.dim() == 1:
             t = t.unsqueeze(-1)
@@ -435,23 +462,28 @@ class LabelConditionedDrift(nn.Module):
         # Handle Classifier-Free Guidance during inference
         if cfg_scale != 1.0 and not self.training:
             # Predict with conditional labels
-            cond_drift = self._forward_internal(z, t, labels, t_emb)
+            cond_drift = self._forward_internal(z, t, labels, t_emb, source_id)
             
             # Predict with unconditional labels (using class index 0 as placeholder for 'null')
             uncond_labels = torch.zeros_like(labels) 
-            uncond_drift = self._forward_internal(z, t, uncond_labels, t_emb)
+            uncond_drift = self._forward_internal(z, t, uncond_labels, t_emb, source_id)
             
             return uncond_drift + cfg_scale * (cond_drift - uncond_drift)
             
-        return self._forward_internal(z, t, labels, t_emb)
+        return self._forward_internal(z, t, labels, t_emb, source_id)
 
-    def _forward_internal(self, z, t, labels, t_emb):
-        """Internal forward pass for a single label set."""
+    def _forward_internal(self, z, t, labels, t_emb, source_id=None):
+        """Internal forward pass for a single label and context set."""
         # Label embedding
         label_emb = self.label_emb(labels)
 
-        # Combine embeddings
-        cond = torch.cat([t_emb, label_emb], dim=-1)
+        # Combine embeddings with optional context
+        if config.USE_CONTEXT and source_id is not None:
+            s_emb = self.source_emb(source_id)
+            cond = torch.cat([t_emb, label_emb, s_emb], dim=-1)
+        else:
+            cond = torch.cat([t_emb, label_emb], dim=-1)
+            
         cond = self.cond_proj(cond)
         
         # Time-adaptive scaling
