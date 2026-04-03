@@ -159,7 +159,7 @@ class SubpixelUpsample(nn.Module):
         # 2. Fallback Path: Bilinear (ensures we don't lose progress)
         self.fallback = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            nn.Conv2d(in_channels, out_channels, kernel_size=1)
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         )
         
         # 3. Learnable mix (starts heavily favoring fallback)
