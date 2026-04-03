@@ -162,8 +162,8 @@ class SubpixelUpsample(nn.Module):
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         )
         
-        # 3. Learnable mix (starts heavily favoring fallback)
-        self.mix = nn.Parameter(torch.tensor(-2.0)) # sigmoid(-2) approx 0.12
+        # 3. Learnable mix (increased toward subpixel path)
+        self.mix = nn.Parameter(torch.tensor(-1.0)) # sigmoid(-1) approx 0.27
         self.act = nn.SiLU()
         
     def forward(self, x):
