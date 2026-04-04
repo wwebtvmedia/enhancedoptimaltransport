@@ -14,6 +14,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torchvision.utils as vutils
 import config
+import data_management
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -1141,12 +1142,12 @@ class EnhancedLabelTrainer:
             # Load VAE if requested and available
             if load_vae:
                 if 'model_state' in snapshot:
-                    self.vae.load_state_dict(snapshot['model_state'])
+                    data_management.flexible_load(self.vae, snapshot['model_state'])
                     if 'optimizer_state' in snapshot:
                         self.opt_vae.load_state_dict(snapshot['optimizer_state'])
                     config.logger.info(f"✅ Loaded VAE from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
                 elif snapshot.get('model_type') == 'vae' and 'model_state' in snapshot:
-                    self.vae.load_state_dict(snapshot['model_state'])
+                    data_management.flexible_load(self.vae, snapshot['model_state'])
                     config.logger.info(f"✅ Loaded VAE from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
                 else:
                     config.logger.warning("No VAE state found in snapshot")
@@ -1154,12 +1155,12 @@ class EnhancedLabelTrainer:
             # Load Drift if requested and available
             if load_drift:
                 if 'drift_state' in snapshot:
-                    self.drift.load_state_dict(snapshot['drift_state'])
+                    data_management.flexible_load(self.drift, snapshot['drift_state'])
                     if 'opt_drift_state' in snapshot:
                         self.opt_drift.load_state_dict(snapshot['opt_drift_state'])
                     config.logger.info(f"✅ Loaded Drift from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
                 elif snapshot.get('model_type') == 'drift' and 'drift_state' in snapshot:
-                    self.drift.load_state_dict(snapshot['drift_state'])
+                    data_management.flexible_load(self.drift, snapshot['drift_state'])
                     config.logger.info(f"✅ Loaded Drift from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
                 else:
                     config.logger.warning("No Drift state found in snapshot")

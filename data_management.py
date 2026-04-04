@@ -157,6 +157,38 @@ def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = Fals
     
     return latest_path
 
+def flexible_load(model, state_dict, prefix=""):
+    """Helper to load state_dict with architecture-aware mapping and shape validation."""
+    model_state = model.state_dict()
+    new_state_dict = {}
+    
+    # Mapping for ConvTranspose2d -> Sequential(Upsample, Conv2d)
+    mapping = {
+        "up2_conv.weight": "up2_conv.1.weight",
+        "up2_conv.bias": "up2_conv.1.bias"
+    }
+    
+    for k, v in state_dict.items():
+        mapped_key = k
+        for old_key, new_key in mapping.items():
+            if old_key in k:
+                mapped_key = k.replace(old_key, new_key)
+                break
+        
+        if mapped_key in model_state:
+            # CRITICAL: Check if shapes match before attempting to load
+            if v.shape == model_state[mapped_key].shape:
+                new_state_dict[mapped_key] = v
+            else:
+                config.logger.warning(
+                    f"⚠️ Shape mismatch for {mapped_key}: checkpoint {list(v.shape)} vs model {list(model_state[mapped_key].shape)}. "
+                    f"Skipping this layer; it will be re-initialized."
+                )
+        else:
+            config.logger.debug(f"Skipping key {k} (not in model)")
+            
+    return model.load_state_dict(new_state_dict, strict=False)
+
 def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
     """Load training checkpoint into trainer with flexible architecture mapping."""
     if path is None:
@@ -166,38 +198,6 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         config.logger.warning(f"No checkpoint found at {path}")
         return False
     
-    def flexible_load(model, state_dict, prefix=""):
-        """Helper to load state_dict with architecture-aware mapping and shape validation."""
-        model_state = model.state_dict()
-        new_state_dict = {}
-        
-        # Mapping for ConvTranspose2d -> Sequential(Upsample, Conv2d)
-        mapping = {
-            "up2_conv.weight": "up2_conv.1.weight",
-            "up2_conv.bias": "up2_conv.1.bias"
-        }
-        
-        for k, v in state_dict.items():
-            mapped_key = k
-            for old_key, new_key in mapping.items():
-                if old_key in k:
-                    mapped_key = k.replace(old_key, new_key)
-                    break
-            
-            if mapped_key in model_state:
-                # CRITICAL: Check if shapes match before attempting to load
-                if v.shape == model_state[mapped_key].shape:
-                    new_state_dict[mapped_key] = v
-                else:
-                    config.logger.warning(
-                        f"⚠️ Shape mismatch for {mapped_key}: checkpoint {list(v.shape)} vs model {list(model_state[mapped_key].shape)}. "
-                        f"Skipping this layer; it will be re-initialized."
-                    )
-            else:
-                config.logger.debug(f"Skipping key {k} (not in model)")
-                
-        return model.load_state_dict(new_state_dict, strict=False)
-
     try:
         checkpoint = torch.load(path, map_location=config.DEVICE, weights_only=False)
         
@@ -207,9 +207,8 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
             if saved_cfg.get('IMG_SIZE') != config.IMG_SIZE:
                 config.logger.warning(f"IMG_SIZE mismatch: checkpoint={saved_cfg.get('IMG_SIZE')}, current={config.IMG_SIZE}")
         
-        trainer.vae.load_state_dict(checkpoint['vae_state'])
-        
-        # Use flexible load for the drift network
+        # Use flexible load for both networks
+        flexible_load(trainer.vae, checkpoint['vae_state'])
         flexible_load(trainer.drift, checkpoint['drift_state'])
         
         # --- Robust Optimizer Loading ---
@@ -245,8 +244,15 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         safe_load_opt(trainer.opt_vae, checkpoint.get('opt_vae_state'), "VAE Optimizer")
         safe_load_opt(trainer.opt_drift, checkpoint.get('opt_drift_state'), "Drift Optimizer")
             
-        trainer.scheduler_vae.load_state_dict(checkpoint['scheduler_vae_state'])
-        trainer.scheduler_drift.load_state_dict(checkpoint['scheduler_drift_state'])
+        # Safely load schedulers
+        try:
+            if 'scheduler_vae_state' in checkpoint:
+                trainer.scheduler_vae.load_state_dict(checkpoint['scheduler_vae_state'])
+            if 'scheduler_drift_state' in checkpoint:
+                trainer.scheduler_drift.load_state_dict(checkpoint['scheduler_drift_state'])
+            config.logger.info("✅ Schedulers loaded.")
+        except Exception as e:
+            config.logger.warning(f"⚠️ Scheduler load mismatch: {e}. Keeping current scheduler states.")
         
         trainer.epoch = checkpoint['epoch']
         trainer.step = checkpoint['step']
@@ -259,7 +265,7 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
             trainer.vae_ref = LabelConditionedVAE().to(config.DEVICE)
             
             if 'vae_ref_state' in checkpoint:
-                trainer.vae_ref.load_state_dict(checkpoint['vae_ref_state'])
+                flexible_load(trainer.vae_ref, checkpoint['vae_ref_state'])
                 config.logger.info("Reference anchor loaded from checkpoint.")
             else:
                 trainer.vae_ref.load_state_dict(trainer.vae.state_dict())
@@ -298,8 +304,8 @@ def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
     
     try:
         checkpoint = torch.load(path, map_location=config.DEVICE, weights_only=False)
-        trainer.vae.load_state_dict(checkpoint['vae_state'])
-        trainer.drift.load_state_dict(checkpoint['drift_state'])
+        flexible_load(trainer.vae, checkpoint['vae_state'])
+        flexible_load(trainer.drift, checkpoint['drift_state'])
         trainer.epoch = checkpoint.get('epoch', 0)
         trainer.vae.eval()
         trainer.drift.eval()
