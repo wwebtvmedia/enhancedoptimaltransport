@@ -1598,7 +1598,7 @@ def train_model(num_epochs: int = config.EPOCHS, resume_from_snapshot: Optional[
         if current_total_loss < trainer.best_loss and current_total_loss != float('inf'):
             trainer.best_loss = current_total_loss
             trainer.save_checkpoint(is_best=True, is_best_overall=False)
-        elif (epoch + 1) % 5 == 0:
+        elif (epoch + 1) % config.CHECKPOINT_INTERVAL == 0:
             trainer.save_checkpoint(is_best=False, is_best_overall=False)
         
         # Generate samples periodically
