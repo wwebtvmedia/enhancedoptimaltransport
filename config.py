@@ -22,6 +22,7 @@ DIRS = {
     "metrics": BASE_DIR / "metrics",
     "inference": BASE_DIR / "inference",
     "best": BASE_DIR / "best_models"
+}
 # ============================================================================
 # DATASET CONFIGURATION
 # ============================================================================
