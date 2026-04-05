@@ -452,7 +452,7 @@ class LabelConditionedDrift(nn.Module):
     def _set_export_mode(self, is_exporting=True):
         self._is_exporting = is_exporting
 
-    def forward(self, z, t, labels, cfg_scale=1.0, source_id=None):
+    def forward(self, z, t, labels, source_id=None, cfg_scale=1.0):
         """Forward pass - predict drift at time t with CFG and context support."""
         # Time embedding
         if t.dim() == 1:
@@ -460,7 +460,7 @@ class LabelConditionedDrift(nn.Module):
         t_emb = self.time_mlp(t)
 
         # Handle Classifier-Free Guidance during inference
-        if cfg_scale != 1.0 and not self.training:
+        if cfg_scale != 1.0 and not self.training and not self._is_exporting:
             # Predict with conditional labels
             cond_drift = self._forward_internal(z, t, labels, t_emb, source_id)
             
