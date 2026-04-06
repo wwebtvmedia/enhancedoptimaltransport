@@ -162,6 +162,14 @@
             </div>
 
             <div class="control-group">
+                <label for="sourceSelect">Source Dataset (Context)</label>
+                <select id="sourceSelect">
+                    <option value="0">STL-10 (High Res)</option>
+                    <option value="1">CIFAR-10 (Low Res)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
                 <label for="resSelect">Resolution</label>
                 <select id="resSelect">
                     <option value="32">32x32 (CIFAR)</option>
@@ -395,8 +403,8 @@
                 console.warn('Auto-load failed:', err);
             }
 
-            async function runDrift(z, t, labelTensor) {
-                const feeds = { z, t: createTensor([t], [1, 1]), label: labelTensor };
+            async function runDrift(z, t, labelTensor, sourceTensor) {
+                const feeds = { z, t: createTensor([t], [1, 1]), label: labelTensor, source_id: sourceTensor };
                 const results = await driftSession.run(feeds);
                 let drift = results.drift;
 
@@ -415,8 +423,8 @@
                 return drift;
             }
 
-            async function decodeAndRender(z, labelTensor) {
-                const decodeResults = await vaeSession.run({ z, label: labelTensor });
+            async function decodeAndRender(z, labelTensor, sourceTensor) {
+                const decodeResults = await vaeSession.run({ z, label: labelTensor, source_id: sourceTensor });
                 const imgData = decodeResults.reconstruction.data;
                 const canvasData = ctx.createImageData(IMG_SIZE, IMG_SIZE);
                 const pixels = canvasData.data;
@@ -438,11 +446,13 @@
 
                 try {
                     const label = parseInt(document.getElementById('labelSelect').value, 10);
+                    const source = parseInt(document.getElementById('sourceSelect').value, 10);
                     const steps = parseInt(stepsSlider.value, 10);
                     const method = document.getElementById('methodSelect').value;
                     const temp = parseFloat(tempSlider.value);
                     const dt = 1.0 / steps;
                     const labelTensor = createTensor([label], [1], 'int64');
+                    const sourceTensor = createTensor([source], [1], 'int64');
 
                     const latentSize = LATENT_SHAPE[0] * LATENT_SHAPE[1] * LATENT_SHAPE[2] * LATENT_SHAPE[3];
                     const z0Data = new Float32Array(latentSize);
@@ -456,15 +466,15 @@
                         let drift;
                         
                         if (method === 'euler') {
-                            drift = await runDrift(z, t, labelTensor);
+                            drift = await runDrift(z, t, labelTensor, sourceTensor);
                             const nextZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) nextZ[j] = z.data[j] + drift.data[j] * dt;
                             z = createTensor(nextZ, LATENT_SHAPE);
                         } else if (method === 'heun') {
-                            const k1 = await runDrift(z, t, labelTensor);
+                            const k1 = await runDrift(z, t, labelTensor, sourceTensor);
                             const zTempData = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) zTempData[j] = z.data[j] + dt * k1.data[j];
-                            const k2 = await runDrift(createTensor(zTempData, LATENT_SHAPE), t + dt, labelTensor);
+                            const k2 = await runDrift(createTensor(zTempData, LATENT_SHAPE), t + dt, labelTensor, sourceTensor);
                             
                             const nextZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) nextZ[j] = z.data[j] + (dt / 2) * (k1.data[j] + k2.data[j]);
@@ -483,13 +493,13 @@
                         
                         // Live update every 10 steps
                         if (i % 10 === 0) {
-                            await decodeAndRender(z, labelTensor);
+                            await decodeAndRender(z, labelTensor, sourceTensor);
                             await new Promise(resolve => setTimeout(resolve, 0)); // Yield to UI
                         }
                     }
 
                     statusEl.textContent = 'Final Decoding...';
-                    await decodeAndRender(z, labelTensor);
+                    await decodeAndRender(z, labelTensor, sourceTensor);
                     
                     const avgDrift = totalDriftMagnitude / steps;
                     statsEl.innerHTML = `Trajectory: Complete<br>Average Drift: ${avgDrift.toFixed(6)}`;

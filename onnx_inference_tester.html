@@ -171,6 +171,13 @@
                 </select>
             </div>
             <div class="control-group">
+                <label>Source Context</label>
+                <select id="sourceSelect">
+                    <option value="0">STL-10</option>
+                    <option value="1">CIFAR-10</option>
+                </select>
+            </div>
+            <div class="control-group">
                 <label>Steps</label>
                 <input type="number" id="stepsInput" value="30" min="5" max="100">
             </div>
@@ -352,7 +359,7 @@
             return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
         }
 
-        async function runBridge(driftSess, genSess, label, steps, seed, canvasId, timeId) {
+        async function runBridge(driftSess, genSess, label, source, steps, seed, canvasId, timeId) {
             const ctx = document.getElementById(canvasId).getContext('2d');
             const start = performance.now();
             
@@ -363,11 +370,12 @@
 
             let z = new ort.Tensor('float32', z0Data, LATENT_SHAPE);
             const labelTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(label)]), [1]);
+            const sourceTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(source)]), [1]);
             const dt = 1.0 / steps;
 
             for (let i = 0; i < steps; i++) {
                 const t = new ort.Tensor('float32', new Float32Array([i * dt]), [1, 1]);
-                const results = await driftSess.run({ z, t, label: labelTensor });
+                const results = await driftSess.run({ z, t, label: labelTensor, source_id: sourceTensor });
                 const drift = results.drift;
                 
                 const nextZData = new Float32Array(z.data.length);
@@ -377,7 +385,7 @@
                 z = new ort.Tensor('float32', nextZData, LATENT_SHAPE);
             }
 
-            const genResults = await genSess.run({ z, label: labelTensor });
+            const genResults = await genSess.run({ z, label: labelTensor, source_id: sourceTensor });
             renderToCanvas(genResults.reconstruction.data, ctx);
             
             const end = performance.now();
@@ -409,16 +417,17 @@
             btn.textContent = '✨ Generating...';
             
             const label = parseInt(document.getElementById('labelSelect').value);
+            const source = parseInt(document.getElementById('sourceSelect').value);
             const steps = parseInt(document.getElementById('stepsInput').value);
             const seed = parseInt(document.getElementById('seedInput').value);
 
             try {
                 log(`Starting FP32 Reference generation (Seed: ${seed})...`);
-                const fp32Data = await runBridge(sessions.fp32_drift, sessions.fp32_gen, label, steps, seed, 'canvasFP32', 'timeFP32');
+                const fp32Data = await runBridge(sessions.fp32_drift, sessions.fp32_gen, label, source, steps, seed, 'canvasFP32', 'timeFP32');
                 
                 if (sessions.int8_drift && sessions.int8_gen) {
                     log("Starting INT8 Quantized generation...");
-                    const int8Data = await runBridge(sessions.int8_drift, sessions.int8_gen, label, steps, seed, 'canvasINT8', 'timeINT8');
+                    const int8Data = await runBridge(sessions.int8_drift, sessions.int8_gen, label, source, steps, seed, 'canvasINT8', 'timeINT8');
                     const diff = calculateDiff(fp32Data, int8Data);
                     document.getElementById('diffINT8').textContent = `Diff: ${diff}%`;
                     log(`Comparison complete. Visual difference: ${diff}%`);
