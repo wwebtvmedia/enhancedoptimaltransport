@@ -76,6 +76,7 @@ PHASE3_RECON_SCALE = 0.5       # Keep decoder sharp in Phase 3
 PERCEPTUAL_WEIGHT = 0.5        # VGG feature matching
 LPIPS_WEIGHT = 0.3             # Learned perceptual similarity (if available)
 EDGE_WEIGHT = 0.2              # Edge preservation loss
+TV_WEIGHT = 0.05               # Total Variation (TV) weight for smoothness (small by default)
 
 # ============================================================================
 # INFERENCE (ENHANCED FOR QUALITY)

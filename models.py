@@ -48,6 +48,43 @@ class SelfAttention(nn.Module):
         # Ensure contiguous before reshape
         return out.permute(0, 2, 1).contiguous().reshape(b, c, h, w)
 
+class SpatialSplitAttention(nn.Module):
+    """
+    Multi-Head Self-Attention with Spatial Split (Axial Attention).
+    Decomposes global attention into vertical (height) and horizontal (width) passes.
+    """
+    def __init__(self, in_channels, num_heads=4):
+        super().__init__()
+        self.num_heads = num_heads
+        self.ln_h = nn.LayerNorm(in_channels)
+        self.ln_w = nn.LayerNorm(in_channels)
+        
+        # Vertical (Height) Attention: Attend along H for each W
+        self.h_mha = nn.MultiheadAttention(in_channels, num_heads, batch_first=True)
+        # Horizontal (Width) Attention: Attend along W for each H
+        self.w_mha = nn.MultiheadAttention(in_channels, num_heads, batch_first=True)
+        
+    def forward(self, x):
+        b, c, h, w = x.shape
+        
+        # 1. Vertical Split Attention (Attend along H for each W)
+        # Shape: [B, C, H, W] -> [B, W, H, C] -> [B*W, H, C]
+        v = x.permute(0, 3, 2, 1).reshape(b * w, h, c).contiguous()
+        v_norm = self.ln_h(v)
+        v_attn, _ = self.h_mha(v_norm, v_norm, v_norm)
+        # Residual and back to [B, C, H, W]
+        x = x + (v + v_attn).reshape(b, w, h, c).permute(0, 3, 2, 1).contiguous()
+        
+        # 2. Horizontal Split Attention (Attend along W for each H)
+        # Shape: [B, C, H, W] -> [B, H, W, C] -> [B*H, W, C]
+        h_in = x.permute(0, 2, 3, 1).reshape(b * h, w, c).contiguous()
+        h_norm = self.ln_w(h_in)
+        h_attn, _ = self.w_mha(h_norm, h_norm, h_norm)
+        # Residual and back to [B, C, H, W]
+        x = x + (h_in + h_attn).reshape(b, h, w, c).permute(0, 3, 1, 2).contiguous()
+        
+        return x
+
 # ============================================================
 # PERCENTILE RESCALING
 # ============================================================
@@ -84,11 +121,46 @@ class PercentileRescale(nn.Module):
         shift = self.low.reshape(1, -1, 1, 1)
         return torch.tanh((x - shift) / scale)
 
+# ============================================================================
+# UTILITIES FOR QUALITY (NEW)
+# ============================================================================
+def icnr_init(conv_weight, upscale_factor=2, init=nn.init.kaiming_normal_):
+    """
+    ICNR initialization for subpixel convolution to prevent checkerboard artifacts.
+    Ensures that the subpixel filters are initialized to be as close to bilinear 
+    upsampling as possible, preventing early-stage grid motifs.
+    """
+    out_channels, in_channels, h, w = conv_weight.shape
+    new_shape = [out_channels // (upscale_factor**2), in_channels, h, w]
+    subkernel = torch.zeros(new_shape)
+    init(subkernel)
+    subkernel = subkernel.repeat_interleave(upscale_factor**2, dim=0)
+    return subkernel
+
+class NoiseInjection(nn.Module):
+    """
+    Injects learnable per-channel noise to break up repetitive textures (motifs).
+    Commonly used in StyleGAN to improve natural texture variation.
+    """
+    def __init__(self, channels):
+        super().__init__()
+        self.weight = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self._is_exporting = False
+
+    def _set_export_mode(self, is_exporting=True):
+        self._is_exporting = is_exporting
+
+    def forward(self, x):
+        if self._is_exporting or not self.training:
+            return x
+        noise = torch.randn(x.size(0), 1, x.size(2), x.size(3), device=x.device, dtype=x.dtype)
+        return x + self.weight * noise
+
 # ============================================================
 # LABEL-CONDITIONED BLOCK
 # ============================================================
 class LabelConditionedBlock(nn.Module):
-    """Residual block with label conditioning via scale-shift modulation."""
+    """Residual block with label conditioning and noise injection."""
     
     def __init__(self, c_in, c_out, label_dim=config.LABEL_EMB_DIM, use_spectral_norm=False):
         super().__init__()
@@ -105,6 +177,10 @@ class LabelConditionedBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(c_out * 2, c_out * 2)
         )
+        
+        # Noise injection to break motifs
+        self.noise1 = NoiseInjection(c_out)
+        self.noise2 = NoiseInjection(c_out)
         
         groups_out = min(8, c_out)
         self.norm2 = nn.GroupNorm(groups_out, c_out)
@@ -126,6 +202,7 @@ class LabelConditionedBlock(nn.Module):
     def forward(self, x, labels=None):
         h = F.silu(self.norm1(x))
         h = self.conv1(h)
+        h = self.noise1(h) # Inject noise after first convolution
         
         if labels is not None:
             # Stronger FiLM-like modulation
@@ -138,6 +215,7 @@ class LabelConditionedBlock(nn.Module):
         
         h = F.silu(self.norm2(h))
         h = self.conv2(h)
+        h = self.noise2(h) # Inject noise after second convolution
         
         skip = self.skip(x)
         if h.shape[2:] != skip.shape[2:]:
@@ -149,11 +227,16 @@ class LabelConditionedBlock(nn.Module):
 # SUBPIXEL UPSAMPLING (NEW)
 # ============================================================
 class SubpixelUpsample(nn.Module):
-    """Artifact-free upsampling with Bilinear fallback for stability."""
+    """Artifact-free upsampling with ICNR initialization and Bilinear fallback."""
     def __init__(self, in_channels, out_channels):
         super().__init__()
         # 1. Main Path: Subpixel Conv
         self.conv = nn.Conv2d(in_channels, out_channels * 4, kernel_size=3, padding=1)
+        
+        # Apply ICNR Initialization to prevent checkerboard motifs
+        with torch.no_grad():
+            self.conv.weight.data.copy_(icnr_init(self.conv.weight.data))
+            
         self.shuffle = nn.PixelShuffle(2)
         
         # 2. Fallback Path: Bilinear (ensures we don't lose progress)
@@ -200,7 +283,7 @@ class LabelConditionedVAE(nn.Module):
             ResidualBlock(64, 128, stride=2),           # 96 -> 48
             LabelConditionedBlock(128, 128),
             ResidualBlock(128, 256, stride=2),          # 48 -> 24
-            SelfAttention(256),
+            SpatialSplitAttention(256),
             LabelConditionedBlock(256, 512),
             ResidualBlock(512, 512, stride=2),          # 24 -> 12
             nn.Conv2d(512, 512, 4, 2, 1),               # 12 -> 6
@@ -223,12 +306,12 @@ class LabelConditionedVAE(nn.Module):
             # Stage 1: 6x6 -> 12x12
             SubpixelUpsample(512, 512),
             LabelConditionedBlock(512, 512),
-            SelfAttention(512),
+            SpatialSplitAttention(512),
 
             # Stage 2: 12x12 -> 24x24
             SubpixelUpsample(512, 256),
             LabelConditionedBlock(256, 256),
-            SelfAttention(256),
+            SpatialSplitAttention(256),
 
             # Stage 3: 24x24 -> 48x48
             SubpixelUpsample(256, 128),
@@ -426,7 +509,7 @@ class LabelConditionedDrift(nn.Module):
         self.down2_block = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
         
         self.mid1 = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
-        self.mid_attn = SelfAttention(256)
+        self.mid_attn = SpatialSplitAttention(256)
         self.mid2 = LabelConditionedBlock(256, 256, label_dim=128, use_spectral_norm=True)
         
         self.up2_conv = nn.Sequential(

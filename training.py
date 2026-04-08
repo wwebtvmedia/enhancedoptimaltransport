@@ -129,6 +129,15 @@ def kl_divergence_spatial(mu, logvar):
     kl = torch.max(kl, torch.full_like(kl, config.FREE_BITS))
     return torch.mean(kl)
 
+def total_variation_loss(img: torch.Tensor, weight: float = 1.0) -> torch.Tensor:
+    """
+    Compute Total Variation (TV) loss to encourage spatial smoothness.
+    Penalizes high-frequency noise and sharp discontinuities.
+    """
+    tv_h = torch.pow(img[:, :, 1:, :] - img[:, :, :-1, :], 2).mean()
+    tv_w = torch.pow(img[:, :, :, 1:] - img[:, :, :, :-1], 2).mean()
+    return weight * (tv_h + tv_w)
+
 def composite_score(loss_dict: Dict, phase: int) -> float:
     """Compute a composite score for model selection."""
     score = 0.0
@@ -658,6 +667,13 @@ class EnhancedLabelTrainer:
                 recon_loss = recon_loss + edge_loss
             else:
                 edge_loss = torch.tensor(0.0, device=config.DEVICE)
+            
+            # Add Total Variation (TV) loss for smoothness
+            if config.TV_WEIGHT > 0:
+                tv_loss = total_variation_loss(recon, config.TV_WEIGHT)
+                recon_loss = recon_loss + tv_loss
+            else:
+                tv_loss = torch.tensor(0.0, device=config.DEVICE)
 
             total_loss = recon_loss + kl_loss + diversity_loss * config.DIVERSITY_WEIGHT
             
@@ -669,6 +685,7 @@ class EnhancedLabelTrainer:
                 'kl': kl_loss.item(),
                 'diversity': diversity_loss.item(),
                 'edge_loss': edge_loss.item() if isinstance(edge_loss, torch.Tensor) else edge_loss,
+                'tv_loss': tv_loss.item() if isinstance(tv_loss, torch.Tensor) else tv_loss,
                 'snr': snr,
                 'raw_mse': raw_mse.item(),
                 'raw_kl': raw_kl.item(),
