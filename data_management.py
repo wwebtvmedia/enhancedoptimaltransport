@@ -275,8 +275,11 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
             for param in trainer.vae_ref.parameters():
                 param.requires_grad = False
         
-        if 'training_schedule' in checkpoint:
+        if 'training_schedule' in checkpoint and not config.SCHEDULE_MANUALLY_SET:
             config.TRAINING_SCHEDULE.update(checkpoint['training_schedule'])
+            config.logger.info("Training schedule restored from checkpoint.")
+        elif 'training_schedule' in checkpoint:
+            config.logger.info("Using manually configured training schedule (ignoring checkpoint schedule).")
         
         trainer.best_loss = checkpoint.get('best_loss', float('inf'))
         trainer.best_composite_score = checkpoint.get('best_composite_score', float('-inf'))

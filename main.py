@@ -246,6 +246,9 @@ def configure_schedule():
     print("-"*40)
     
     choice = input("\nSelect an option: ").strip()
+    if choice in ['1', '2', '3', '4']:
+        config.SCHEDULE_MANUALLY_SET = True
+        
     if choice == '1':
         config.TRAINING_SCHEDULE['mode'] = 'auto'
     elif choice == '2':

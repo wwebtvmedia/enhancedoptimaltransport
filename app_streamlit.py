@@ -99,10 +99,16 @@ with st.sidebar:
                                   index=[1, 2, 3].index(force_phase),
                                   format_func=lambda x: f"Phase {x} ({['VAE', 'Drift', 'Both'][x-1]})")
         
+        # Check if anything changed
+        if mode != config.TRAINING_SCHEDULE['mode'] or new_force_phase != config.TRAINING_SCHEDULE['force_phase']:
+            config.SCHEDULE_MANUALLY_SET = True
+            
         config.TRAINING_SCHEDULE['mode'] = mode
         config.TRAINING_SCHEDULE['force_phase'] = new_force_phase
         
         st.caption(f"Current Phase in Engine: {getattr(engine.trainer, 'phase', 'N/A') if engine.trainer else 'N/A'}")
+        if config.SCHEDULE_MANUALLY_SET:
+            st.success("Manual schedule override active (will ignore checkpoint schedule)")
 
     if st.button("💾 Apply & Save", width='stretch'):
         st.success("Configuration updated in memory!")

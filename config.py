@@ -184,6 +184,7 @@ PHASE2_EPOCHS = max(50, int(EPOCHS / 2))    # End of Phase 2 (Drift only)
 # ============================================================================
 # TRAINING SCHEDULE DICTIONARY
 # ============================================================================
+SCHEDULE_MANUALLY_SET = False
 TRAINING_SCHEDULE = {
     'mode': 'auto',                          # 'auto', 'manual', 'custom', 'alternate', 'three_phase'
     'force_phase': None,                      # 1 (VAE), 2 (Drift), 3 (Both) for manual mode
