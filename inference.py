@@ -125,4 +125,30 @@ def run_inference(labels: Optional[List[int]] = None,
         print(f"   Class {label} ({name}): {count} images")
 
 if __name__ == "__main__":
-    run_inference()
+    import argparse
+    parser = argparse.ArgumentParser(description="Schrödinger Bridge Inference")
+    parser.add_argument("--labels", type=str, help="Comma-separated labels (e.g. 0,1,2)", default=None)
+    parser.add_argument("--samples_per_label", type=int, help="Number of samples per label", default=None)
+    parser.add_argument("--temperature", type=float, help="Generation temperature", default=None)
+    parser.add_argument("--method", type=str, choices=['euler', 'heun', 'rk4'], default='rk4', help="ODE Solver method")
+    parser.add_argument("--cfg_scale", type=float, help="Classifier-free guidance scale", default=None)
+    parser.add_argument("--langevin_steps", type=int, help="Langevin refinement steps", default=None)
+    parser.add_argument("--langevin_step_size", type=float, help="Langevin step size", default=None)
+    parser.add_argument("--langevin_score_scale", type=float, help="Langevin score scale", default=None)
+    
+    args = parser.parse_args()
+    
+    labels_list = None
+    if args.labels is not None:
+        labels_list = [int(x.strip()) for x in args.labels.split(',')]
+        
+    run_inference(
+        labels=labels_list,
+        samples_per_label=args.samples_per_label,
+        temperature=args.temperature,
+        method=args.method,
+        langevin_steps=args.langevin_steps,
+        langevin_step_size=args.langevin_step_size,
+        langevin_score_scale=args.langevin_score_scale,
+        cfg_scale=args.cfg_scale
+    )
