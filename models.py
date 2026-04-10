@@ -224,42 +224,6 @@ class LabelConditionedBlock(nn.Module):
         return self.rescale(skip + h)
 
 # ============================================================
-# SUBPIXEL UPSAMPLING (NEW)
-# ============================================================
-class SubpixelUpsample(nn.Module):
-    """Artifact-free upsampling with ICNR initialization and Bilinear fallback."""
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        # 1. Main Path: Subpixel Conv
-        self.conv = nn.Conv2d(in_channels, out_channels * 4, kernel_size=3, padding=1)
-        
-        # Apply ICNR Initialization to prevent checkerboard motifs
-        with torch.no_grad():
-            self.conv.weight.data.copy_(icnr_init(self.conv.weight.data))
-            
-        self.shuffle = nn.PixelShuffle(2)
-        
-        # 2. Fallback Path: Bilinear (ensures we don't lose progress)
-        self.fallback = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        )
-        
-        # 3. Learnable mix (initialized from config)
-        self.mix = nn.Parameter(torch.tensor(config.SUBPIXEL_INITIAL_MIX)) 
-        self.act = nn.SiLU()
-        
-    def forward(self, x):
-        subpixel = self.shuffle(self.conv(x))
-        bilinear = self.fallback(x)
-        
-        # Blend the two (starts mostly bilinear to keep training, fades into subpixel)
-        alpha = torch.sigmoid(self.mix)
-        out = alpha * subpixel + (1 - alpha) * bilinear
-        
-        return self.act(out)
-
-# ============================================================
 # LABEL-CONDITIONED VAE
 # ============================================================
 class LabelConditionedVAE(nn.Module):
@@ -304,21 +268,37 @@ class LabelConditionedVAE(nn.Module):
         self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
         self.dec_blocks = nn.ModuleList([
             # Stage 1: 6x6 -> 12x12
-            SubpixelUpsample(512, 512),
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                nn.Conv2d(512, 512, 3, 1, 1),
+                nn.SiLU()
+            ),
             LabelConditionedBlock(512, 512),
             SpatialSplitAttention(512),
 
             # Stage 2: 12x12 -> 24x24
-            SubpixelUpsample(512, 256),
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                nn.Conv2d(512, 256, 3, 1, 1),
+                nn.SiLU()
+            ),
             LabelConditionedBlock(256, 256),
             SpatialSplitAttention(256),
 
             # Stage 3: 24x24 -> 48x48
-            SubpixelUpsample(256, 128),
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                nn.Conv2d(256, 128, 3, 1, 1),
+                nn.SiLU()
+            ),
             LabelConditionedBlock(128, 128),
 
             # Stage 4: 48x48 -> 96x96
-            SubpixelUpsample(128, 64),
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                nn.Conv2d(128, 64, 3, 1, 1),
+                nn.SiLU()
+            ),
             LabelConditionedBlock(64, 64),
         ])
 

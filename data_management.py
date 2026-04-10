@@ -165,7 +165,9 @@ def flexible_load(model, state_dict, prefix=""):
     # Mapping for ConvTranspose2d -> Sequential(Upsample, Conv2d)
     mapping = {
         "up2_conv.weight": "up2_conv.1.weight",
-        "up2_conv.bias": "up2_conv.1.bias"
+        "up2_conv.bias": "up2_conv.1.bias",
+        "fallback.1.weight": "1.weight",
+        "fallback.1.bias": "1.bias"
     }
     
     for k, v in state_dict.items():
