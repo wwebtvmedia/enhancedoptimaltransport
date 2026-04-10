@@ -1,6 +1,10 @@
 # ============================================================================
 # CONTRASTIVE LOSS FOR MODALITY ALIGNMENT (NEW)
 # ============================================================================
+import torch.nn as nn
+import torch.nn.functional as F
+import config
+
 class ContrastiveLoss(nn.Module):
     """InfoNCE loss for image-text alignment."""
     def __init__(self, temperature=config.CONTRASTIVE_TEMPERATURE):
@@ -724,10 +728,13 @@ class EnhancedLabelTrainer:
                      param.requires_grad = False
 
             # Get the epoch when drift training started
-            drift_start_epoch = getattr(self, 'phase2_start_epoch', config.TRAINING_SCHEDULE.get('switch_epoch_1', config.TRAINING_SCHEDULE.get('switch_epoch', 50)))
+            drift_start_epoch = getattr(self, 'phase2_start_epoch', None)
+            if drift_start_epoch is None:
+                drift_start_epoch = config.TRAINING_SCHEDULE.get('switch_epoch', 50)
+            
             with torch.no_grad():
-                mu_ref, _ = self.vae_ref.encode(images, labels, source_id)   # always use frozen anchor
-            mu, logvar = self.vae.encode(images, labels, source_id)
+                mu_ref, _ = self.vae_ref.encode(images, labels, text_bytes=text_bytes, source_id=source_id)   # always use frozen anchor
+            mu, logvar = self.vae.encode(images, labels, text_bytes=text_bytes, source_id=source_id)
             
             # --- GLOBAL SPATIAL HARMONIZER ---
             # Use 'mu' as the reference spatial shape
@@ -750,9 +757,12 @@ class EnhancedLabelTrainer:
             z_global_std = z1.std().item()
             
             # Sample time with beta distribution after sufficient training
-            if self.epoch > config.TRAINING_SCHEDULE['switch_epoch'] + config.EPOCHS // 6:  # After 1/6 of drift training
-                beta_dist = torch.distributions.Beta(2, 2)
-                t = beta_dist.sample((images.shape[0], 1)).to(config.DEVICE)
+            if self.epoch > config.TRAINING_SCHEDULE.get('switch_epoch', 50) + config.EPOCHS // 6:  # After 1/6 of drift training
+                # Move parameters to device for beta distribution
+                alpha = torch.tensor([2.0], device=config.DEVICE)
+                beta = torch.tensor([2.0], device=config.DEVICE)
+                beta_dist = torch.distributions.Beta(alpha, beta)
+                t = beta_dist.sample((images.shape[0],)).reshape(-1, 1)
             else:
                 t = torch.rand(images.shape[0], 1, device=config.DEVICE)
             
@@ -813,7 +823,7 @@ class EnhancedLabelTrainer:
             if phase == 3:
                 # Use mu (the clean latent) for VAE stability in Phase 3
                 # This ensures the decoder stays sharp without being confused by bridge noise
-                recon_p3 = self.vae.decode(mu, labels, source_id)
+                recon_p3 = self.vae.decode(mu, labels, text_bytes=text_bytes, source_id=source_id)
                 
                 # Scale recon loss down in Phase 3 so it doesn't overwhelm the Drift training
                 p3_scale = getattr(config, 'PHASE3_RECON_SCALE', 0.1)

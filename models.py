@@ -538,12 +538,14 @@ class LabelConditionedDrift(nn.Module):
         l_dim = config.TEXT_EMBEDDING_DIM if config.USE_NEURAL_TOKENIZER else config.LABEL_EMB_DIM
         if config.USE_CONTEXT:
             self.source_emb = nn.Embedding(config.NUM_SOURCES, config.CONTEXT_DIM)
+            # 256 (time) + 512 (text) + 64 (source) = 832
             self.cond_proj = nn.Sequential(
                 nn.Linear(256 + l_dim + config.CONTEXT_DIM, 256),
                 nn.SiLU(),
-                nn.Linear(256, 256) # Project to match conditioning block expected dim
+                nn.Linear(256, 256) 
             )
         else:
+            # 256 (time) + 512 (text) = 768
             self.cond_proj = nn.Sequential(
                 nn.Linear(256 + l_dim, 256),
                 nn.SiLU(),
