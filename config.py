@@ -34,7 +34,7 @@ DATASETS = ["STL10", "CIFAR10"] # Datasets to use when MULTI is enabled
 # ============================================================================
 # LABEL AND CONTEXT CONDITIONING
 # ============================================================================
-NUM_CLASSES = 10              # Max classes across datasets (shared mapping)
+NUM_CLASSES = 11              # 10 real classes + 1 NULL class (Index 10) for CFG
 LABEL_EMB_DIM = 128
 USE_CONTEXT = True            # Enable additional contextual input
 CONTEXT_DIM = 64              # Dimension of continuous context vector
@@ -42,16 +42,15 @@ NUM_SOURCES = 2               # Number of unique data sources for context embedd
 IMG_SIZE = 96                # Internal processing size (standardized)
 GEN_SIZE = 96                # Final output generation size (can be different)
 LATENT_CHANNELS = 8          # Increased from 4 for better reconstruction quality
-LATENT_H = IMG_SIZE // 16    # 6x6 for 96x96 images (4 downsampling stages)
-LATENT_W = IMG_SIZE // 16
+LATENT_H = IMG_SIZE // 8     # 12x12 for 96x96 images (reduced from 16 for better detail)
+LATENT_W = IMG_SIZE // 8
 LATENT_DIM = LATENT_CHANNELS * LATENT_H * LATENT_W
 COMPRESSION_RATIO = (IMG_SIZE * IMG_SIZE * 3) / LATENT_DIM
 
 # ============================================================================
 # LABEL CONDITIONING
 # ============================================================================
-NUM_CLASSES = 10
-LABEL_EMB_DIM = 128
+# Redundant block removed to ensure consistency
 
 # ============================================================================
 # TRAINING HYPERPARAMETERS (base values, may be adjusted per device)
@@ -64,30 +63,30 @@ GRAD_CLIP = 1.0
 # ============================================================================
 # LOSS WEIGHTS (ENHANCED FOR QUALITY)
 # ============================================================================
-KL_WEIGHT = 0.003              # Increased from 0.001 for better latent structure
-RECON_WEIGHT = 7.0             # Increased from 2.5 for sharper reconstruction
-SUBPIXEL_INITIAL_MIX = -1.0    # Initial logit for hybrid upsampling (sigmoid(-1.0) ≈ 0.27 subpixel)
-DRIFT_WEIGHT = 1.0             # Increased from 0.5 for better trajectory learning
-DIVERSITY_WEIGHT = 1.5         # Increased from 1.0 to prevent channel collapse
-CONSISTENCY_WEIGHT = 1.0       # Increased from 0.5 for better anchor stability
-PHASE3_RECON_SCALE = 0.5       # Keep decoder sharp in Phase 3
+KL_WEIGHT = 0.002              # Slightly reduced to allow more reconstruction detail
+RECON_WEIGHT = 5.0             # Adjusted to balance with Perceptual/SSIM
+SUBPIXEL_INITIAL_MIX = 1.0     # Enable subpixel upsampling
+DRIFT_WEIGHT = 1.0             
+DIVERSITY_WEIGHT = 1.5         
+CONSISTENCY_WEIGHT = 1.0       
+PHASE3_RECON_SCALE = 0.8       # Keep decoder very sharp in Phase 3
 
 # NEW: Quality-focused loss weights
-PERCEPTUAL_WEIGHT = 0.5        # VGG feature matching
-LPIPS_WEIGHT = 0.3             # Learned perceptual similarity (if available)
-EDGE_WEIGHT = 0.2              # Edge preservation loss
-TV_WEIGHT = 0.05               # Total Variation (TV) weight for smoothness (small by default)
+PERCEPTUAL_WEIGHT = 1.5        # Increased from 0.5 for better feature matching
+SSIM_WEIGHT = 1.0              # Structural Similarity loss
+LPIPS_WEIGHT = 0.3             
+EDGE_WEIGHT = 0.3              # Increased from 0.2
+TV_WEIGHT = 0.02               # Reduced slightly to prevent over-smoothing
 
 # ============================================================================
 # INFERENCE (ENHANCED FOR QUALITY)
 # ============================================================================
-DEFAULT_STEPS = 100            # Increased from 50 for smoother trajectories
+DEFAULT_STEPS = 100            
 DEFAULT_SEED = 42
-INFERENCE_TEMPERATURE = 0.6    # Lower from 0.8 for sharper samples
-DEFAULT_LANGEVIN_STEPS = 0     # Disabled by default (was causing instability)
-LANGEVIN_STEP_SIZE = 0.02      # Smaller from 0.05 for stability
-LANGEVIN_SCORE_SCALE = 1.2     # Reset from 1.5 to safer value
-LANGEVIN_DECAY = 0.95          # Slower decay for better convergence
+INFERENCE_TEMPERATURE = 0.5    # Lowered from 0.6 for even sharper samples
+DEFAULT_LANGEVIN_STEPS = 5     # Enabled a few refinement steps by default
+LANGEVIN_STEP_SIZE = 0.01      
+LANGEVIN_SCORE_SCALE = 1.0     
 
 # ============================================================================
 # VAE SPECIFIC (ENHANCED)
@@ -103,15 +102,16 @@ DIVERSITY_ADAPTIVE = True
 DIVERSITY_TARGET_START = 0.3
 DIVERSITY_TARGET_END = 1.0
 DIVERSITY_ADAPT_EPOCHS = 50
-KL_ANNEALING_EPOCHS = 30
+KL_ANNEALING_EPOCHS = 40       # Slightly longer annealing
 LOGVAR_CLAMP_MIN = -4
 LOGVAR_CLAMP_MAX = 4
 MU_NOISE_SCALE = 0.01
-CST_COEF_GAUSSIAN_PRIO = 0.8        # Standard deviation for the Gaussian prior in latent space
+CST_COEF_GAUSSIAN_PRIO = 0.8        
 
 # NEW: Enhanced decoder settings
-DECODER_ATTENTION_LAYERS = [16, 32]  # Resolutions to add self-attention
-DECODER_UPSAMPLE_STAGES = 4          # Increased from 3
+DECODER_ATTENTION_LAYERS = [12, 24]  # Resolutions to add self-attention
+DECODER_UPSAMPLE_STAGES = 3          # 12 -> 24 -> 48 -> 96 (3 stages)
+USE_SUBPIXEL_CONV = True             # Explicit flag for PixelShuffle
 
 # ============================================================================
 # CHANNEL DROPOUT SETTINGS
@@ -196,6 +196,17 @@ TRAINING_SCHEDULE = {
     'drift_epochs': list(range(50, 200)),
     'alternate_freq': 5,
 }
+
+# ============================================================================
+# NEURAL TOKENIZER AND CONTRASTIVE LEARNING (NEW)
+# ============================================================================
+USE_NEURAL_TOKENIZER = True       # Enable character/byte-level CNN encoder
+MAX_TEXT_BYTES = 128              # Fixed sequence length for text processing
+TEXT_EMBEDDING_DIM = 512          # Shared embedding space dimension
+NEURAL_TOKEN_HIDDEN_DIM = 512
+CONTRASTIVE_WEIGHT = 0.1          # Initial weight for InfoNCE loss
+CONTRASTIVE_TEMPERATURE = 0.07    # Temperature for similarity scaling
+USE_PROJECTION_HEADS = True       # Enable projection to shared space
 
 # ============================================================================
 # DEVICE CONFIGURATION

@@ -2,12 +2,12 @@
 
 This project implements a state-of-the-art generative model based on the **Latent Schrödinger Bridge (LSB)** problem. It enables high-quality, category-specific image generation by learning the optimal stochastic transport between a Gaussian prior and a learned latent data distribution.
 
-## 🚀 Key Advancements in v2.0
-- **Theoretically Correct OU Bridge:** Uses the exact time-derivative of the OU bridge mean as the training target, replacing linear approximations.
-- **Classifier-Free Guidance (CFG):** Integrated label dropout and guidance scaling for superior prompt/label alignment.
-- **Three-Phase Lifecycle:** Robust progression from VAE training → Drift Matching → Joint Fine-tuning.
-- **Unified Hardware Engine:** Centralized initialization for **NVIDIA (CUDA)**, **Apple Silicon (MPS)**, **Intel Arc (XPU)**, and **AMD (DirectML)**.
-- **MCP Architecture:** Model-Context-Protocol design separating the core `TrainingProcessor` from Desktop (Tkinter), Web (Streamlit), and CLI interfaces.
+## 🚀 Key Advancements in v2.1 (SharpFlow Optimization)
+- **High-Resolution Latent Space:** Latent dimensions increased to **12x12** (from 6x6), providing 4x more spatial detail for the decoder.
+- **Subpixel Convolution (PixelShuffle):** Replaced bilinear upsampling with PixelShuffle + ICNR initialization for artifact-free, razor-sharp upscaling.
+- **Structural Similarity (SSIM) Loss:** Integrated SSIM into the training objective to explicitly penalize structural blur.
+- **Tripled Perceptual Weight:** Increased VGG feature matching weight to 1.5 for superior texture preservation.
+- **Theoretically Correct OU Bridge:** Uses the exact time-derivative of the OU bridge mean as the training target.
 
 ---
 
@@ -62,7 +62,7 @@ where $s$ is the `CFG_SCALE`.
 ## 🏗️ Model Architecture
 
 ### Label-Conditioned VAE
-- **Encoder:** Maps images to a 4-channel latent space ($4 \times 12 \times 12$ for $96 \times 96$ inputs).
+- **Encoder:** Maps images to an 8-channel latent space ($8 \times 12 \times 12$ for $96 \times 96$ inputs).
 - **Decoder:** Reconstructs images from latents.
 - **Conditioning:** Uses scale-shift modulation (FiLM) based on label embeddings.
 - **Regularization:** KL annealing and a **Diversity Loss** to prevent latent channel collapse.

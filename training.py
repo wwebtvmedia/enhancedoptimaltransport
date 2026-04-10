@@ -1,4 +1,31 @@
 # ============================================================================
+# CONTRASTIVE LOSS FOR MODALITY ALIGNMENT (NEW)
+# ============================================================================
+class ContrastiveLoss(nn.Module):
+    """InfoNCE loss for image-text alignment."""
+    def __init__(self, temperature=config.CONTRASTIVE_TEMPERATURE):
+        super().__init__()
+        self.temperature = temperature
+        self.cross_entropy = nn.CrossEntropyLoss()
+        
+    def forward(self, image_emb, text_emb):
+        # Normalize embeddings to unit hypersphere
+        image_emb = F.normalize(image_emb, dim=-1)
+        text_emb = F.normalize(text_emb, dim=-1)
+        
+        # Compute cosine similarity matrix: [B, B]
+        logits = torch.matmul(image_emb, text_emb.T) / self.temperature
+        
+        # Labels are the diagonal (matching indices)
+        batch_size = image_emb.size(0)
+        labels = torch.arange(batch_size, device=image_emb.device)
+        
+        # Symmetric loss: image-to-text and text-to-image
+        loss_i2t = self.cross_entropy(logits, labels)
+        loss_t2i = self.cross_entropy(logits.T, labels)
+        return (loss_i2t + loss_t2i) / 2
+
+# ============================================================================
 # ENHANCED TRAINER FOR SCHRÖDINGER BRIDGE
 # ============================================================================
 
@@ -336,6 +363,9 @@ class EnhancedLabelTrainer:
             self.snapshot_vae = None
             self.snapshot_drift = None
 
+        # Multimodal Alignment Loss
+        self.contrastive_criterion = ContrastiveLoss().to(config.DEVICE)
+        
         self.epoch = 0
         self.step = 0
         self.phase = 1
@@ -343,6 +373,7 @@ class EnhancedLabelTrainer:
         self.best_composite_score = float('-inf')
         self.debug_counter = 0
         self.debug_interval = 10
+        self.phase2_start_epoch = None
         
         # Reference for Phase 2
         self.vae_ref = None
@@ -587,95 +618,75 @@ class EnhancedLabelTrainer:
 
     def compute_loss(self, batch: Dict, phase: int = 1, batch_idx: int = 0) -> Dict:
         """Compute loss for current batch based on training phase."""
-        # Extract images and labels
+        # Extract images, labels and optional text_bytes
         if isinstance(batch, dict):
             images = batch['image'].to(config.DEVICE)
             labels = batch['label'].to(config.DEVICE)
+            text_bytes = batch.get('text_bytes', None)
+            if text_bytes is not None:
+                text_bytes = text_bytes.to(config.DEVICE)
             source_id = batch.get('source_id', None)
             if source_id is not None:
                 source_id = source_id.to(config.DEVICE)
         elif isinstance(batch, (list, tuple)) and len(batch) == 2:
             images = batch[0].to(config.DEVICE)
             labels = batch[1].to(config.DEVICE)
+            text_bytes = None
             source_id = None
         else:
             raise TypeError(f"Unexpected batch type: {type(batch)}")
 
-        # Debug logging
-        if batch_idx % self.debug_interval == 0:
-            config.logger.info(f"\n=== DEBUG Epoch {self.epoch+1}, Batch {batch_idx} ===")
-            config.logger.info(f"Images - min: {images.min().item():.4f}, max: {images.max().item():.4f}, mean: {images.mean().item():.4f}")
-
         if phase == 1:
-            # Phase 1: Train VAE
-            recon, mu, logvar = self.vae(images, labels, source_id)
-
-            # Periodically diagnose and correct latent collapse
-            if batch_idx % self.debug_interval == 0:
-                self.diagnose_latent_collapse(mu, logvar, self.epoch)
-
-            # Compute metrics
+            # Phase 1: Train VAE + Neural Tokenizer Alignment
+            recon, mu, logvar = self.vae(images, labels, text_bytes=text_bytes, source_id=source_id)
+            
+            # --- Multimodal Contrastive Alignment (NEW) ---
+            contrastive_loss = torch.tensor(0.0, device=config.DEVICE)
+            if config.USE_NEURAL_TOKENIZER and text_bytes is not None and config.USE_PROJECTION_HEADS:
+                # 1. Get text embedding: [B, 512]
+                text_emb = self.vae.text_encoder(text_bytes)
+                
+                # 2. Project image latent to shared space: [B, 1152] -> [B, 512]
+                # Flatten mu: [B, 8, 12, 12] -> [B, 1152]
+                z_flat = mu.flatten(start_dim=1)
+                image_emb = self.vae.image_proj(z_flat)
+                
+                # 3. Compute InfoNCE loss
+                contrastive_loss = self.contrastive_criterion(image_emb, text_emb)
+            
+            # Compute VAE metrics
             latent_std = torch.exp(0.5 * logvar).mean().item()
             channel_stds = mu.std(dim=[0, 2, 3]).detach().cpu().numpy()
             min_channel_std = channel_stds.min()
             
-            if batch_idx % self.debug_interval == 0:
-                config.logger.info(f"Mu std: {mu.std().item():.3f}")
-                config.logger.info(f"Channel stds: {channel_stds}")
-            
             # Adaptive KL weight based on channel usage
             raw_l1 = F.l1_loss(recon, images)
-            raw_mse = F.mse_loss(recon, images) # Keep for SNR and logging
+            raw_mse = F.mse_loss(recon, images) 
             raw_kl = kl_divergence_spatial(mu, logvar)
             
-            if latent_std < 0.3:
-                current_kl_weight = config.KL_WEIGHT * 10.0
-            elif min_channel_std < 0.01:
-                current_kl_weight = config.KL_WEIGHT * 5.0
-            else:
-                current_kl_weight = config.KL_WEIGHT
-            
+            current_kl_weight = config.KL_WEIGHT
             diversity_loss = self.vae.diversity_loss if self.vae.diversity_loss is not None else torch.tensor(0.0, device=config.DEVICE)
 
             kl_annealing = min(1.0, self.epoch / config.KL_ANNEALING_EPOCHS)
-            # Add a minimum KL floor to prevent collapse
-            min_kl_per_channel = 0.1  # bits per channel
-            kl_per_channel = raw_kl / (config.LATENT_CHANNELS * config.LATENT_H * config.LATENT_W)
-            if kl_per_channel < min_kl_per_channel and self.epoch > 5:
-                # Boost KL if it's too low
-                kl_multiplier = 2.0
-                config.logger.debug(f"  KL too low ({kl_per_channel:.3f} < {min_kl_per_channel}), boosting")
-            else:
-                kl_multiplier = 1.0
-                
-            kl_loss = raw_kl * current_kl_weight * kl_annealing * kl_multiplier
+            kl_loss = raw_kl * current_kl_weight * kl_annealing 
 
             recon_loss = (raw_l1 * config.RECON_WEIGHT + 
                          config.PERCEPTUAL_WEIGHT * self.perceptual_loss(recon, images))
             
-            # Add edge preservation loss (differentiable)
-            if config.EDGE_WEIGHT > 0:
-                grad_x = torch.abs(recon[:, :, :, 1:] - recon[:, :, :, :-1]).mean()
-                grad_y = torch.abs(recon[:, :, 1:, :] - recon[:, :, :-1, :]).mean()
-                edge_strength = (grad_x + grad_y) / 2
-                
-                real_grad_x = torch.abs(images[:, :, :, 1:] - images[:, :, :, :-1]).mean()
-                real_grad_y = torch.abs(images[:, :, 1:, :] - images[:, :, :-1, :]).mean()
-                real_edge_strength = (real_grad_x + real_grad_y) / 2
-                
-                edge_loss = F.mse_loss(edge_strength, real_edge_strength) * config.EDGE_WEIGHT
-                recon_loss = recon_loss + edge_loss
+            # Add SSIM loss for structural integrity
+            if config.SSIM_WEIGHT > 0:
+                ssim_loss = self.ssim_loss(recon, images) * config.SSIM_WEIGHT
             else:
-                edge_loss = torch.tensor(0.0, device=config.DEVICE)
-            
-            # Add Total Variation (TV) loss for smoothness
-            if config.TV_WEIGHT > 0:
-                tv_loss = total_variation_loss(recon, config.TV_WEIGHT)
-                recon_loss = recon_loss + tv_loss
-            else:
-                tv_loss = torch.tensor(0.0, device=config.DEVICE)
+                ssim_loss = torch.tensor(0.0, device=config.DEVICE)
 
-            total_loss = recon_loss + kl_loss + diversity_loss * config.DIVERSITY_WEIGHT
+            # Combined VAE loss
+            total_loss = recon_loss + kl_loss + ssim_loss + diversity_loss * config.DIVERSITY_WEIGHT
+            
+            # Add Contrastive loss with annealing
+            if config.USE_NEURAL_TOKENIZER:
+                # Anneal contrastive weight to focus on alignment early, then generation
+                c_weight = config.CONTRASTIVE_WEIGHT * min(1.0, self.epoch / 10.0)
+                total_loss = total_loss + contrastive_loss * c_weight
             
             snr = calc_snr(images, recon)
             
@@ -684,14 +695,10 @@ class EnhancedLabelTrainer:
                 'recon': recon_loss.item(),
                 'kl': kl_loss.item(),
                 'diversity': diversity_loss.item(),
-                'edge_loss': edge_loss.item() if isinstance(edge_loss, torch.Tensor) else edge_loss,
-                'tv_loss': tv_loss.item() if isinstance(tv_loss, torch.Tensor) else tv_loss,
+                'contrastive': contrastive_loss.item() if isinstance(contrastive_loss, torch.Tensor) else 0.0,
+                'ssim_loss': ssim_loss.item(),
                 'snr': snr,
-                'raw_mse': raw_mse.item(),
-                'raw_kl': raw_kl.item(),
                 'latent_std': latent_std,
-                'min_channel_std': min_channel_std,
-                'max_channel_std': channel_stds.max(),
             }
             
             # Log gradient magnitude every 10 epochs for sharpness monitoring
@@ -779,13 +786,15 @@ class EnhancedLabelTrainer:
                 noise_scale = config.DRIFT_TARGET_NOISE_SCALE * (1 - t_reshaped)
                 target = target + torch.randn_like(target) * noise_scale
             
-            # Classifier-Free Guidance: Randomly drop labels (set to 0) during training
+            # Classifier-Free Guidance: Randomly drop labels (set to NULL index) during training
             if self.drift.training and torch.rand(1).item() < config.LABEL_DROPOUT_PROB:
-                train_labels = torch.zeros_like(labels)
+                train_labels = torch.full_like(labels, config.NUM_CLASSES - 1)
+                train_text_bytes = None # No text for unconditional branch
             else:
                 train_labels = labels
+                train_text_bytes = text_bytes
 
-            pred = self.drift(zt, t, train_labels, source_id=source_id)
+            pred = self.drift(zt, t, train_labels, text_bytes=train_text_bytes, source_id=source_id)
             
             # Ensure prediction and target match perfectly for loss
             if pred.shape[2:] != target_shape:
@@ -1243,6 +1252,16 @@ class EnhancedLabelTrainer:
         with torch.no_grad():
             labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
             
+            # Neural Tokenizer support
+            if config.USE_NEURAL_TOKENIZER:
+                text_bytes_list = []
+                for l in labels:
+                    desc = dm.CLASS_DESCRIPTIONS[l] if l < 10 else f"class_{l}"
+                    text_bytes_list.append(dm.text_to_bytes(desc))
+                text_bytes_tensor = torch.tensor(text_bytes_list, device=config.DEVICE)
+            else:
+                text_bytes_tensor = None
+
             # Source ID context
             if source_id is None:
                 s_id = torch.zeros(labels_tensor.shape[0], dtype=torch.long, device=config.DEVICE)
@@ -1262,12 +1281,10 @@ class EnhancedLabelTrainer:
                 t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
                 
                 # Predict drift with context
-                drift = self.drift(z, t_cur, labels_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                drift = self.drift(z, t_cur, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
                 
-                # Adaptive drift normalization: prevent explosions if drift becomes too large
+                # Monitor drift magnitude (adaptive clipping is inside the drift network)
                 drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
-                if drift_norm > 15.0:  # Safety threshold
-                    drift = drift * (15.0 / (drift_norm + 1e-8))
 
                 if method == 'euler':
                     z = z + drift * dt
@@ -1275,18 +1292,18 @@ class EnhancedLabelTrainer:
                     k1 = drift
                     t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_pred = z + dt * k1
-                    k2 = self.drift(z_pred, t_next, labels_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    k2 = self.drift(z_pred, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     z = z + (dt / 2.0) * (k1 + k2)
                 elif method == 'rk4':
                     k1 = drift
                     t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
                     z_half = z + 0.5 * dt * k1
-                    k2 = self.drift(z_half, t_half, labels_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    k2 = self.drift(z_half, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     z_half2 = z + 0.5 * dt * k2
-                    k3 = self.drift(z_half2, t_half, labels_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    k3 = self.drift(z_half2, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_next = z + dt * k3
-                    k4 = self.drift(z_next, t_next, labels_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    k4 = self.drift(z_next, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
     
                 z = torch.clamp(z, -10, 10)   # gentle clamping
@@ -1309,7 +1326,7 @@ class EnhancedLabelTrainer:
                 for step in range(langevin_steps):
                     # 1. Compute Score Proxy 
                     # Using drift at t=1 is theoretically the 'terminal' velocity
-                    drift_at_end = self.drift(z, t_one, labels_tensor, source_id=s_id)
+                    drift_at_end = self.drift(z, t_one, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
                     
                     # 2. Add Annealed Noise
                     # We decay the noise scale as we converge to the manifold
@@ -1332,7 +1349,7 @@ class EnhancedLabelTrainer:
             config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
             
             # Decode
-            images = self.vae.decode(z, labels_tensor, source_id=s_id)
+            images = self.vae.decode(z, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
             images = torch.clamp(images, -1, 1)
             
             config.logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")

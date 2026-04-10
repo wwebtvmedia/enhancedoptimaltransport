@@ -6,21 +6,21 @@
 ```
 Input Image: [B, 3, 96, 96]  # B=batch size, 3=RGB channels, 96x96 pixels
 VAE Encoder Output: 
-  - z_mean: [B, 8, 6, 6]     # LATENT_CHANNELS=8, LATENT_H=6, LATENT_W=6
-  - z_logvar: [B, 8, 6, 6]
-Latent Vector (flattened): [B, 288]  # 8*6*6 = 288
+  - z_mean: [B, 8, 12, 12]    # LATENT_CHANNELS=8, LATENT_H=12, LATENT_W=12
+  - z_logvar: [B, 8, 12, 12]
+Latent Vector (flattened): [B, 1152]  # 8*12*12 = 1152
 ```
 
 ### 2. Current Text Encoder Dimensions
 ```
 Input: label indices [B] or [B, S] where S=sequence length
-Embedding: nn.Embedding(10, 512)  # vocab_size=NUM_CLASSES=10, TEXT_EMBEDDING_DIM=512
+Embedding: nn.Embedding(11, 512)  # vocab_size=NUM_CLASSES+1=11 (Index 10 = NULL)
 Output: [B, 512] or [B, S, 512]
 ```
 
 ### 3. Context Encoder Dimensions
 ```
-Label Input: [B] → label_emb: [B, 128] → text_emb: [B, 512]
+Label Input: [B] (0-10) → label_emb: [B, 128] → text_emb: [B, 512]
 Text Input (optional): [B, 512] directly
 Output: [B, 512]
 ```

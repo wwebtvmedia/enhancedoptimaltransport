@@ -222,7 +222,7 @@
     <script>
         (async () => {
             let IMG_SIZE = 96;
-            let LATENT_SHAPE = [1, 8, 6, 6]; // Defaults, will be updated by detection
+            let LATENT_SHAPE = [1, 8, 12, 12]; // Updated for SharpFlow (12x12)
             let driftSession, vaeSession;
 
             const statusEl = document.getElementById('status');
@@ -296,7 +296,7 @@
 
             resSelect.addEventListener('change', () => {
                 IMG_SIZE = parseInt(resSelect.value, 10);
-                const latentDim = IMG_SIZE / 16;
+                const latentDim = IMG_SIZE / 8; // SharpFlow uses 8x compression (e.g. 96/8=12)
                 // Preserve the detected channel count
                 const channels = LATENT_SHAPE[1];
                 LATENT_SHAPE = [1, channels, latentDim, latentDim];

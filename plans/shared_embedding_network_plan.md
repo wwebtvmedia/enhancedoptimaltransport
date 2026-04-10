@@ -47,7 +47,7 @@ graph TD
     C[Image Input] --> D[VAE Encoder]
     
     B --> E[Text Projection Head]
-    D --> F[Image Projection Head]
+    D --> F[Image Projection Head (1152 -> 512)]
     
     E --> G[Shared Embedding Space]
     F --> G
@@ -140,10 +140,10 @@ class ContrastiveLoss(nn.Module):
 **Loss Composition:**
 ```
 Total Loss = 
-  λ_recon * ReconstructionLoss +          # λ = 3.0
-  λ_kl * KLLoss +                         # λ = 0.001  
+  λ_recon * ReconstructionLoss +          # λ = 5.0 (per config.py)
+  λ_kl * KLLoss +                         # λ = 0.002
   λ_contrastive * ContrastiveLoss +       # λ = 0.1 (annealed)
-  λ_diversity * DiversityLoss +           # λ = 1.0
+  λ_diversity * DiversityLoss +           # λ = 1.5
   λ_bridge * BridgeLoss                   # λ = 1.0
 ```
 

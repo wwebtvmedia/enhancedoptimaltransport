@@ -383,10 +383,45 @@ def save_raw_tensors(
     return path
 
 # ============================================================
+# TEXT PROCESSING UTILITIES
+# ============================================================
+def text_to_bytes(text: str, max_length: int = config.MAX_TEXT_BYTES) -> List[int]:
+    """Convert text string to a fixed-length list of UTF-8 byte values."""
+    # Encode to UTF-8
+    b = text.encode('utf-8')
+    
+    # Truncate if necessary
+    if len(b) > max_length:
+        b = b[:max_length]
+        
+    # Convert to list of ints
+    byte_list = list(b)
+    
+    # Pad with PAD token (256)
+    if len(byte_list) < max_length:
+        byte_list.extend([256] * (max_length - len(byte_list)))
+        
+    return byte_list
+
+# Standardized class descriptions for STL10/CIFAR10
+CLASS_DESCRIPTIONS = [
+    "an airplane flying in the sky",
+    "a bird perched on a branch",
+    "a car driving on the road",
+    "a cat sitting on a couch",
+    "a deer in a forest",
+    "a dog playing in the park",
+    "a horse running in a field",
+    "a monkey climbing a tree",
+    "a ship sailing on water",
+    "a truck on the highway"
+]
+
+# ============================================================
 # DATASET WITH LABELS
 # ============================================================
 class LabeledImageDataset(Dataset):
-    """Dataset wrapper that provides labels."""
+    """Dataset wrapper that provides labels and text bytes."""
     
     def __init__(self, base_dataset, transform=None):
         self.dataset = base_dataset
@@ -395,10 +430,9 @@ class LabeledImageDataset(Dataset):
         if hasattr(base_dataset, 'classes'):
             self.classes = base_dataset.classes
         else:
-            self.classes = [f"class_{i}" for i in range(10)]
+            self.classes = ['airplane', 'bird', 'car', 'cat', 'deer', 'dog', 'horse', 'monkey', 'ship', 'truck']
         
         self.label_map = {cls: idx for idx, cls in enumerate(self.classes)}
-        self.reverse_map = {idx: cls for cls, idx in self.label_map.items()}
     
     def __len__(self) -> int:
         return len(self.dataset)
@@ -408,19 +442,22 @@ class LabeledImageDataset(Dataset):
         
         if isinstance(item, tuple):
             img, label_idx = item
-            label_text = self.classes[label_idx] if label_idx < len(self.classes) else f"class_{label_idx}"
         else:
             img = item
-            label_idx = idx % len(self.classes)
-            label_text = self.classes[label_idx]
+            label_idx = idx % 10
         
         if self.transform:
             img = self.transform(img)
         
+        # Get text description
+        text_desc = CLASS_DESCRIPTIONS[label_idx] if label_idx < 10 else f"class_{label_idx}"
+        text_bytes = text_to_bytes(text_desc)
+        
         return {
             'image': img,
             'label': torch.tensor(label_idx, dtype=torch.long),
-            'label_text': label_text,
+            'text_bytes': torch.tensor(text_bytes, dtype=torch.long),
+            'label_text': text_desc,
             'index': idx
         }
 
@@ -474,8 +511,15 @@ class MultiSourceDataset(Dataset):
         self.lengths = [len(ds) for ds in self.datasets]
         self.cumulative_lengths = [sum(self.lengths[:i+1]) for i in range(len(self.lengths))]
         
-        # Shared class mapping (simplified to first 10 classes)
+        # Shared class mapping (standardized across STL10 and CIFAR10)
         self.classes = ['airplane', 'bird', 'car', 'cat', 'deer', 'dog', 'horse', 'monkey', 'ship', 'truck']
+        
+        # CIFAR10: [airplane, automobile, bird, cat, deer, dog, frog, horse, ship, truck]
+        # STL10: [airplane, bird, car, cat, deer, dog, horse, monkey, ship, truck]
+        
+        # Mapping from source dataset index to standardized index
+        self.cifar_map = {0:0, 1:2, 2:1, 3:3, 4:4, 5:5, 6:9, 7:6, 8:8, 9:9} # Mapping 'frog' (6) to 'truck' (9) as fallback
+        self.stl_map = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9}
     
     def __len__(self) -> int:
         return self.cumulative_lengths[-1]
@@ -496,8 +540,11 @@ class MultiSourceDataset(Dataset):
         
         if isinstance(item, tuple):
             img, label_idx = item
-            # Standardize label_idx for multi-dataset consistency if needed
-            # For STL10/CIFAR10, the first 10 are mostly compatible or can be mapped.
+            # Standardize label_idx
+            if config.DATASETS[ds_idx] == "CIFAR10":
+                label_idx = self.cifar_map.get(label_idx, label_idx)
+            else:
+                label_idx = self.stl_map.get(label_idx, label_idx)
         else:
             img = item
             label_idx = idx % 10
@@ -505,11 +552,16 @@ class MultiSourceDataset(Dataset):
         if self.transform:
             img = self.transform(img)
             
+        # Get text description
+        text_desc = CLASS_DESCRIPTIONS[label_idx] if label_idx < 10 else f"class_{label_idx}"
+        text_bytes = text_to_bytes(text_desc)
+            
         return {
             'image': img,
             'label': torch.tensor(label_idx, dtype=torch.long),
+            'text_bytes': torch.tensor(text_bytes, dtype=torch.long),
             'source_id': torch.tensor(source_id, dtype=torch.long),
-            'label_text': self.classes[label_idx] if label_idx < 10 else f"class_{label_idx}",
+            'label_text': text_desc,
             'index': idx
         }
 

@@ -44,9 +44,10 @@ def run_inference(labels: Optional[List[int]] = None,
     
     # Interactive input if parameters not provided
     if labels is None:
-        print("\nAvailable labels: 0-9 for STL-10 classes")
+        print("\nAvailable labels: 0-9 for standardized classes")
         print("(0: airplane, 1: bird, 2: car, 3: cat, 4: deer,")
         print(" 5: dog, 6: horse, 7: monkey, 8: ship, 9: truck)")
+        print("(10: NULL/Unconditional)")
         label_input = input("\nEnter labels (comma-separated, e.g., 0,1,2,3) [default: 0,1,2,3]: ").strip()
         if label_input:
             labels = [int(x.strip()) for x in label_input.split(',')]
