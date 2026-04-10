@@ -400,6 +400,48 @@ class LabelConditionedVAE(nn.Module):
         self.dec_out = nn.Conv2d(64, 3, 3, 1, 1)
         self.diversity_loss = None
     
+    def _get_fourier_features(self, x):
+        """Generate Fourier features for spatial coordinates."""
+        if not config.USE_FOURIER_FEATURES:
+            return None
+        B, C, H, W = x.shape
+        y_coords = torch.linspace(-1, 1, H, device=x.device).reshape(1, 1, H, 1)
+        x_coords = torch.linspace(-1, 1, W, device=x.device).reshape(1, 1, 1, W)
+        y_grid = y_coords.expand(B, 1, H, W)
+        x_grid = x_coords.expand(B, 1, H, W)
+        feats = []
+        for f in config.FOURIER_FREQS:
+            feats.append(torch.sin(np.pi * f * x_grid))
+            feats.append(torch.cos(np.pi * f * x_grid))
+            feats.append(torch.sin(np.pi * f * y_grid))
+            feats.append(torch.cos(np.pi * f * y_grid))
+        return torch.cat(feats, dim=1)
+    
+    def _channel_diversity_loss(self, mu):
+        """Compute diversity loss to encourage all channels to be used."""
+        channel_stds = mu.std(dim=[0, 2, 3])
+        if config.DIVERSITY_ADAPTIVE and hasattr(self, 'current_epoch'):
+            progress = min(1.0, self.current_epoch / config.DIVERSITY_ADAPT_EPOCHS)
+            target_std = config.DIVERSITY_TARGET_START + progress * (
+                config.DIVERSITY_TARGET_END - config.DIVERSITY_TARGET_START
+            )
+        else:
+            target_std = config.DIVERSITY_TARGET_STD
+        
+        low_penalty = torch.mean(F.relu(target_std - channel_stds)) * config.DIVERSITY_LOW_PENALTY
+        high_penalty = torch.mean(F.relu(channel_stds - config.DIVERSITY_MAX_STD)) * config.DIVERSITY_HIGH_PENALTY
+        balance_loss = channel_stds.std() * config.DIVERSITY_BALANCE_WEIGHT
+        
+        if self.training:
+            self.diversity_stats = {
+                'channel_stds': channel_stds.detach().cpu(),
+                'target_std': target_std,
+                'low_penalty': low_penalty.item(),
+                'high_penalty': high_penalty.item() if isinstance(high_penalty, torch.Tensor) else 0,
+                'balance_loss': balance_loss.item()
+            }
+        return low_penalty + high_penalty + balance_loss
+
     def _get_conditioning(self, labels, text_bytes=None, source_id=None):
         """Standardized conditioning extractor for both modalities."""
         if config.USE_NEURAL_TOKENIZER and text_bytes is not None:
