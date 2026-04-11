@@ -84,9 +84,9 @@ TV_WEIGHT = 0.02               # Reduced slightly to prevent over-smoothing
 DEFAULT_STEPS = 100            
 DEFAULT_SEED = 42
 INFERENCE_TEMPERATURE = 0.5    # Lowered from 0.6 for even sharper samples
-DEFAULT_LANGEVIN_STEPS = 5     # Enabled a few refinement steps by default
+DEFAULT_LANGEVIN_STEPS = 10    # Enabled a few refinement steps by default
 LANGEVIN_STEP_SIZE = 0.01      
-LANGEVIN_SCORE_SCALE = 1.0     
+LANGEVIN_SCORE_SCALE = 1.2     
 
 # ============================================================================
 # VAE SPECIFIC (ENHANCED)
@@ -123,7 +123,7 @@ CHANNEL_DROPOUT_SURVIVAL = 0.8      # Probability of channel surviving when drop
 # CLASSIFIER-FREE GUIDANCE (CFG)
 # ============================================================================
 LABEL_DROPOUT_PROB = 0.1            # Probability of dropping label during training
-CFG_SCALE = 1.0                     # Scale for classifier-free guidance (1.0 = disabled)
+CFG_SCALE = 4.0                     # Scale for classifier-free guidance (1.0 = disabled)
 
 # ============================================================================
 # DRIFT NETWORK SPECIFIC
@@ -138,13 +138,13 @@ PHASE3_VAE_LR_FACTOR = 0.05               # Phase 3 VAE LR = LR * PHASE3_VAE_LR_
 
 # Temperature annealing (Phase 2/3)
 TEMPERATURE_START = 1.0                    # Initial temperature (at start of Phase 2)
-TEMPERATURE_END = 0.3                      # Final temperature (at end of training)
+TEMPERATURE_END = 0.2                      # Final temperature (at end of training)
 
 # Target noise for drift training
 DRIFT_TARGET_NOISE_SCALE = 0.01
 
 # Time weighting factor for drift loss
-TIME_WEIGHT_FACTOR = 2.0                   # time_weights = 1 + TIME_WEIGHT_FACTOR * t
+TIME_WEIGHT_FACTOR = 3.0                   # time_weights = 1 + TIME_WEIGHT_FACTOR * t
 
 # ============================================================================
 # FOURIER FEATURES
@@ -177,8 +177,8 @@ USE_AMP = False
 # THREE-PHASE TRAINING SCHEDULE
 # ============================================================================
 # Adaptive switch points based on total epochs
-PHASE1_EPOCHS = max(50, int(EPOCHS / 6))    # End of Phase 1 (VAE only)
-PHASE2_EPOCHS = max(50, int(EPOCHS / 2))    # End of Phase 2 (Drift only)
+PHASE1_EPOCHS = 100
+PHASE2_EPOCHS = 400                    # We are currently at 534, so we will be in Phase 3
 # Phase 3 runs from PHASE2_EPOCHS to EPOCHS (Both train)
 
 # ============================================================================
@@ -186,7 +186,7 @@ PHASE2_EPOCHS = max(50, int(EPOCHS / 2))    # End of Phase 2 (Drift only)
 # ============================================================================
 SCHEDULE_MANUALLY_SET = False
 TRAINING_SCHEDULE = {
-    'mode': 'auto',                          # 'auto', 'manual', 'custom', 'alternate', 'three_phase'
+    'mode': 'three_phase',                   # Changed from 'auto' to enable Phase 3
     'force_phase': None,                      # 1 (VAE), 2 (Drift), 3 (Both) for manual mode
     'custom_schedule': {},                    # {epoch: phase}
     'switch_epoch': 50,                       # For auto mode (single switch)
