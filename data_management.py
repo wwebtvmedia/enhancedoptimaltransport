@@ -170,6 +170,20 @@ def flexible_load(model, state_dict, prefix=""):
         "fallback.1.bias": "1.bias"
     }
     
+    # LoRA mapping: layer.weight -> layer.base.weight
+    lora_mapped_state = {}
+    for k, v in state_dict.items():
+        if ".weight" in k and ".base.weight" not in k:
+            lora_key = k.replace(".weight", ".base.weight")
+            if lora_key in model_state:
+                lora_mapped_state[lora_key] = v
+        if ".bias" in k and ".base.bias" not in k:
+            lora_key = k.replace(".bias", ".base.bias")
+            if lora_key in model_state:
+                lora_mapped_state[lora_key] = v
+    
+    state_dict.update(lora_mapped_state)
+    
     for k, v in state_dict.items():
         mapped_key = k
         for old_key, new_key in mapping.items():

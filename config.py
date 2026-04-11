@@ -209,6 +209,16 @@ CONTRASTIVE_TEMPERATURE = 0.07    # Temperature for similarity scaling
 USE_PROJECTION_HEADS = True       # Enable projection to shared space
 
 # ============================================================================
+# LoRA SETTINGS (NEW)
+# ============================================================================
+USE_LORA = False
+LORA_RANK = 8
+LORA_ALPHA = 16
+LORA_DROPOUT = 0.05
+# List of module names or types to target (e.g., ["Linear", "Conv2d"])
+LORA_TARGET_MODULES = ["Linear", "Conv2d"] 
+
+# ============================================================================
 # DEVICE CONFIGURATION
 # ============================================================================
 DEVICE = None

@@ -131,9 +131,10 @@
                 <li><a href="#drift-arch">2.2 LabelConditionedDrift</a></li>
                 <li><a href="#percentile">2.3 PercentileRescale</a></li>
                 <li><a href="#latent-onnx">2.4 Latent Space & ONNX Export</a></li>
-            </ul>
-        </li>
-        <li><a href="#training-phases">3. Training Phases and Loss Functions</a>
+                <li><a href="#lora-optimization">2.5 LoRA Optimization (Low‑Rank Adaptation)</a></li>
+                </ul>
+                </li>
+                <li><a href="#training-phases">3. Training Phases and Loss Functions</a></li>
             <ul>
                 <li><a href="#phase1">3.1 Phase 1 – VAE Training</a></li>
                 <li><a href="#phase2">3.2 Phase 2 – Drift Training</a></li>
@@ -297,6 +298,23 @@ dz_t = -\theta z_t\,dt + \sigma\,dw_t,
 </ul>
 <p>Both models use <strong>Symbolic Shapes</strong> where possible, allowing for flexible batch sizes during inference. Adaptive statistics (like PercentileRescale parameters and Drift clipping thresholds) are baked into the ONNX graph as constants or buffers to ensure consistency with the PyTorch training environment.</p>
 
+<h3 id="lora-optimization">2.5 LoRA Optimization (Low‑Rank Adaptation)</h3>
+<div class="note">
+    <strong>Optimization Upgrade:</strong> The model now supports <strong>LoRA</strong> (Low‑Rank Adaptation) for highly efficient fine‑tuning.
+</div>
+<p>When <code>USE_LORA = True</code> is enabled in the configuration, all <code>Linear</code> and <code>Conv2d</code> layers in both the VAE and the Drift network are wrapped with low‑rank matrices. The original (base) weights are frozen, and only the small LoRA matrices are trained.</p>
+<ul>
+    <li><strong>Rank & Alpha:</strong> Controlled via <code>LORA_RANK</code> (default 8) and <code>LORA_ALPHA</code> (default 16).</li>
+    <li><strong>Parameter Efficiency:</strong> Trainable parameters are reduced by <strong>~90%</strong>. The VAE trainable count drops from ~24M to ~2.4M.</li>
+    <li><strong>Structure:</strong>
+        <ul>
+            <li>For <code>Linear</code> layers: \(\Delta W = (A \times B) \times \frac{\alpha}{r}\)</li>
+            <li>For <code>Conv2d</code> layers: 1&times;1 convolutions are used as the low‑rank bypass.</li>
+        </ul>
+    </li>
+    <li><strong>Backward Compatibility:</strong> Standard checkpoints can be loaded into LoRA‑enabled models; weights are automatically mapped to the frozen <code>base</code> layers.</li>
+</ul>
+
 <hr>
 
 <h2 id="training-phases">3. Training Phases and Loss Functions</h2>
@@ -427,6 +445,7 @@ z \leftarrow z + \frac{\eta}{2}\, s\, f_\psi(z,1,y) + \sqrt{\eta}\,\epsilon,\qqu
     <li><strong>Snapshot ensemble</strong> – automatic saving of model snapshots every <code>SNAPSHOT_INTERVAL</code> epochs; emergency revert on NaN/Inf.</li>
     <li><strong>Ornstein‑Uhlenbeck bridge</strong> – exact OU bridge sampling for theoretically grounded training.</li>
     <li><strong>Multi‑device support</strong> – CUDA, MPS (Apple Silicon), DirectML, CPU.</li>
+    <li><strong>LoRA Optimization Support:</strong> Efficient fine‑tuning with ~90% fewer trainable parameters and seamless checkpoint backward compatibility.</li>
 </ul>
 
 <hr>

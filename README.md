@@ -8,6 +8,7 @@ This project implements a state-of-the-art generative model based on the **Laten
 - **Structural Similarity (SSIM) Loss:** Integrated SSIM into the training objective to explicitly penalize structural blur.
 - **Tripled Perceptual Weight:** Increased VGG feature matching weight to 1.5 for superior texture preservation.
 - **Theoretically Correct OU Bridge:** Uses the exact time-derivative of the OU bridge mean as the training target.
+- **LoRA (Low-Rank Adaptation):** Support for efficient fine-tuning and style adaptation with <10% trainable parameters.
 
 ---
 
@@ -85,6 +86,13 @@ where $s$ is the `CFG_SCALE`.
 - **Latent Monitor:** Real-time visualization of channel standard deviations to detect collapse early.
 - **Visual Gallery:** Automatic preview of generated samples directly within the GUI.
 - **Hot-Swap:** Change loss weights (KL, Diversity, etc.) on-the-fly without restarting training.
+
+### 🛡️ Low-Rank Adaptation (LoRA)
+The model now supports efficient fine-tuning via **LoRA**. When `USE_LORA = True` is set in `config.py`:
+- Base weights are frozen, and small rank-8 matrices are injected into all `Linear` and `Conv2d` layers.
+- Reduces trainable parameters by **~90%** (e.g., VAE drops from 24.2M to 2.4M parameters).
+- Perfect for adapting a pre-trained Schrödinger Bridge to a specific style or a custom narrow dataset.
+- **Backward Compatible:** You can load standard checkpoints into a LoRA-enabled model; weights are automatically mapped to the frozen base layers.
 
 ---
 

@@ -16,10 +16,15 @@ def run_inference(labels: Optional[List[int]] = None,
                   langevin_steps: Optional[int] = None,
                   langevin_step_size: Optional[float] = None,
                   langevin_score_scale: Optional[float] = None,
-                  cfg_scale: Optional[float] = None) -> None:
+                  cfg_scale: Optional[float] = None,
+                  use_lora: Optional[bool] = None) -> None:
     """
     Run inference with label conditioning.
     """
+    # Override config LoRA setting if specified
+    if use_lora is not None:
+        config.USE_LORA = use_lora
+        
     # Ensure hardware is initialized
     config.initialize_hardware()
     
@@ -40,6 +45,8 @@ def run_inference(labels: Optional[List[int]] = None,
     
     config.logger.info("\n" + "="*50)
     config.logger.info("LABEL-CONDITIONED INFERENCE")
+    if config.USE_LORA:
+        config.logger.info("  🚀 [LoRA-ENABLED MODE]")
     config.logger.info("="*50)
     
     # Interactive input if parameters not provided
@@ -136,6 +143,7 @@ if __name__ == "__main__":
     parser.add_argument("--langevin_steps", type=int, help="Langevin refinement steps", default=None)
     parser.add_argument("--langevin_step_size", type=float, help="Langevin step size", default=None)
     parser.add_argument("--langevin_score_scale", type=float, help="Langevin score scale", default=None)
+    parser.add_argument("--use_lora", action="store_true", help="Explicitly enable LoRA for inference")
     
     args = parser.parse_args()
     
@@ -151,5 +159,6 @@ if __name__ == "__main__":
         langevin_steps=args.langevin_steps,
         langevin_step_size=args.langevin_step_size,
         langevin_score_scale=args.langevin_score_scale,
-        cfg_scale=args.cfg_scale
+        cfg_scale=args.cfg_scale,
+        use_lora=args.use_lora
     )

@@ -72,6 +72,7 @@ except ImportError:
 import config
 import data_management as dm
 import models
+import lora
 
 warnings.filterwarnings('ignore')
 
@@ -338,11 +339,27 @@ class EnhancedLabelTrainer:
 
         self.vae = models.LabelConditionedVAE().to(config.DEVICE)
         self.drift = models.LabelConditionedDrift().to(config.DEVICE)
-        self.opt_vae = optim.AdamW(self.vae.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY)
+        
+        # Apply LoRA if enabled in config
+        if config.USE_LORA:
+            import lora
+            n_vae = lora.apply_lora(self.vae, r=config.LORA_RANK, lora_alpha=config.LORA_ALPHA, 
+                                    lora_dropout=config.LORA_DROPOUT, target_modules=config.LORA_TARGET_MODULES)
+            n_drift = lora.apply_lora(self.drift, r=config.LORA_RANK, lora_alpha=config.LORA_ALPHA, 
+                                      lora_dropout=config.LORA_DROPOUT, target_modules=config.LORA_TARGET_MODULES)
+            
+            tr_v, tot_v = lora.count_lora_params(self.vae)
+            tr_d, tot_d = lora.count_lora_params(self.drift)
+            config.logger.info(f"🚀 LoRA enabled: VAE ({n_vae} layers, {tr_v/tot_v:.1%} trainable), "
+                               f"Drift ({n_drift} layers, {tr_d/tot_d:.1%} trainable)")
+
+        # Only optimize parameters with requires_grad=True (filters frozen base weights)
+        self.opt_vae = optim.AdamW(filter(lambda p: p.requires_grad, self.vae.parameters()), 
+                                   lr=config.LR, weight_decay=config.WEIGHT_DECAY)
 
         # Drift optimizer with multiplier from config
         self.opt_drift = optim.AdamW(
-            self.drift.parameters(),
+            filter(lambda p: p.requires_grad, self.drift.parameters()),
             lr=config.LR * config.DRIFT_LR_MULTIPLIER,
             weight_decay=config.WEIGHT_DECAY
         )
@@ -480,9 +497,12 @@ class EnhancedLabelTrainer:
             self.vae.train()
             self.drift.eval()
             
-            # Ensure all VAE params are trainable
-            for param in self.vae.parameters():
-                param.requires_grad = True
+            # Ensure VAE params are trainable (respecting LoRA)
+            for name, param in self.vae.named_parameters():
+                if config.USE_LORA:
+                    param.requires_grad = ("lora_" in name)
+                else:
+                    param.requires_grad = True
                 
             # Update existing optimizer's LR dynamically
             new_lr = config.LR
@@ -497,7 +517,8 @@ class EnhancedLabelTrainer:
         elif new_phase == 2:
             # Phase 2: Drift only, freeze decoder, unfreeze encoder, create anchor
             self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
-            self.vae_ref.load_state_dict(self.vae.state_dict())
+            # Use flexible_load to ensure LoRA mapping if needed
+            dm.flexible_load(self.vae_ref, self.vae.state_dict())
             self.vae_ref.eval()
             for param in self.vae_ref.parameters():
                 param.requires_grad = False
@@ -505,13 +526,22 @@ class EnhancedLabelTrainer:
             # Unfreeze encoder parts only, explicitly zero-out grad for frozen params
             unfrozen_count = 0
             for name, param in self.vae.named_parameters():
-                if any(k in name for k in ['enc_', 'label_emb', 'z_mean', 'z_logvar', 'source_emb', 'cond_proj']):
-                    param.requires_grad = True
-                    unfrozen_count += param.numel()
+                # Check if it's an encoder part
+                is_encoder = any(k in name for k in ['enc_', 'label_emb', 'z_mean', 'z_logvar', 'source_emb', 'cond_proj'])
+                
+                if is_encoder:
+                    if config.USE_LORA:
+                        param.requires_grad = ("lora_" in name)
+                    else:
+                        param.requires_grad = True
+                    
+                    if param.requires_grad:
+                        unfrozen_count += param.numel()
                 else:
                     param.requires_grad = False
-                    param.grad = None  # Ensures optimizer skips this parameter
-            config.logger.info(f"Phase 2: Unfrozen {unfrozen_count:,} encoder params. Anchor set.")
+                    param.grad = None
+            
+            config.logger.info(f"Phase 2: Unfrozen {unfrozen_count:,} encoder trainable params. Anchor set.")
 
             # Update existing optimizer's LR dynamically
             new_lr = config.LR * config.PHASE2_VAE_LR_FACTOR
@@ -529,18 +559,21 @@ class EnhancedLabelTrainer:
         elif new_phase == 3:
             # Phase 3: Both trainable – unfreeze decoder as well
             for name, param in self.vae.named_parameters():
-                param.requires_grad = True
+                if config.USE_LORA:
+                    param.requires_grad = ("lora_" in name)
+                else:
+                    param.requires_grad = True
             
             # Ensure reference anchor exists if we skipped Phase 2
             if not hasattr(self, 'vae_ref') or self.vae_ref is None:
                 self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
-                self.vae_ref.load_state_dict(self.vae.state_dict())
+                dm.flexible_load(self.vae_ref, self.vae.state_dict())
                 self.vae_ref.eval()
                 for param in self.vae_ref.parameters():
                     param.requires_grad = False
                 config.logger.info("Phase 3: Reference anchor created (transitioned from Phase 1).")
 
-            config.logger.info("Phase 3: Unfroze all VAE parameters (encoder + decoder).")
+            config.logger.info("Phase 3: Unfroze all trainable VAE parameters (encoder + decoder).")
 
             # Update existing optimizer's LR dynamically
             new_lr = config.LR * config.PHASE3_VAE_LR_FACTOR
