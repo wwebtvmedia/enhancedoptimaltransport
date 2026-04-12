@@ -146,7 +146,7 @@ class SharedEmbeddingHead(nn.Module):
 class PercentileRescale(nn.Module):
     """Adaptive percentile-based rescaling to [-1, 1]."""
     
-    def __init__(self, features, p_low=1.0, p_high=99.0, momentum=0.1):
+    def __init__(self, features, p_low=1.0, p_high=99.0, momentum=0.005):
         super().__init__()
         self.register_buffer('low', torch.zeros(features))
         self.register_buffer('high', torch.ones(features))
