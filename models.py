@@ -72,16 +72,16 @@ class SpatialSplitAttention(nn.Module):
         v = x.permute(0, 3, 2, 1).reshape(b * w, h, c).contiguous()
         v_norm = self.ln_h(v)
         v_attn, _ = self.h_mha(v_norm, v_norm, v_norm)
-        # Residual and back to [B, C, H, W]
-        x = x + (v + v_attn).reshape(b, w, h, c).permute(0, 3, 2, 1).contiguous()
+        # Correct residual: only add the attention delta back to the original x
+        x = x + v_attn.reshape(b, w, h, c).permute(0, 3, 2, 1).contiguous()
         
         # 2. Horizontal Split Attention (Attend along W for each H)
         # Shape: [B, C, H, W] -> [B, H, W, C] -> [B*H, W, C]
         h_in = x.permute(0, 2, 3, 1).reshape(b * h, w, c).contiguous()
         h_norm = self.ln_w(h_in)
         h_attn, _ = self.w_mha(h_norm, h_norm, h_norm)
-        # Residual and back to [B, C, H, W]
-        x = x + (h_in + h_attn).reshape(b, h, w, c).permute(0, 3, 1, 2).contiguous()
+        # Correct residual: only add the attention delta back to the original x
+        x = x + h_attn.reshape(b, h, w, c).permute(0, 3, 1, 2).contiguous()
         
         return x
 

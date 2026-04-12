@@ -69,7 +69,7 @@ SUBPIXEL_INITIAL_MIX = 1.0     # Enable subpixel upsampling
 DRIFT_WEIGHT = 1.0             
 DIVERSITY_WEIGHT = 1.5         
 CONSISTENCY_WEIGHT = 1.0       
-PHASE3_RECON_SCALE = 0.8       # Keep decoder very sharp in Phase 3
+PHASE3_RECON_SCALE = 0.1       # Reduced from 0.8 for smoother transition in Phase 3
 
 # NEW: Quality-focused loss weights
 PERCEPTUAL_WEIGHT = 1.5        # Increased from 0.5 for better feature matching
@@ -129,7 +129,7 @@ CFG_SCALE = 4.0                     # Scale for classifier-free guidance (1.0 = 
 # DRIFT NETWORK SPECIFIC
 # ============================================================================
 # Optimizer multipliers
-DRIFT_LR_MULTIPLIER = 2.0                # Drift LR = LR * DRIFT_LR_MULTIPLIER
+DRIFT_LR_MULTIPLIER = 0.5                # Reduced from 2.0 for stability in Phase 3
 DRIFT_GRAD_CLIP_FACTOR = 0.5             # Drift grad clip = GRAD_CLIP * DRIFT_GRAD_CLIP_FACTOR
 
 # Phase transition learning rate factors
