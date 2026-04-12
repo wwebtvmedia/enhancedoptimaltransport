@@ -171,7 +171,7 @@ EARLY_STOP_PATIENCE = 15
 USE_OU_BRIDGE = False
 OU_THETA = 1.0
 OU_SIGMA = np.sqrt(2)
-USE_AMP = False
+USE_AMP = True
 
 # ============================================================================
 # THREE-PHASE TRAINING SCHEDULE
@@ -232,16 +232,20 @@ def initialize_hardware():
     
     if torch.cuda.is_available():
         DEVICE = torch.device("cuda")
+        # Check for AMP support (Tensor Cores generally available on most modern CUDA GPUs)
         AMP_AVAILABLE = True
         info = f"🎮 CUDA: {torch.cuda.get_device_name(0)}"
         BATCH_SIZE = 64
     elif hasattr(torch, 'xpu') and torch.xpu.is_available():
         DEVICE = torch.device("xpu")
+        # Intel XPU (Arc/Data Center) supports AMP via torch.xpu.amp
         AMP_AVAILABLE = True
         info = f"🔵 Intel Arc: {torch.xpu.get_device_name(0)}"
         BATCH_SIZE = 64
     elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         DEVICE = torch.device("mps")
+        # MPS currently has limited support for AMP/autocast in some torch versions
+        # but is generally used with float32 or manual float16
         AMP_AVAILABLE = False
         info = "🍎 Apple Silicon (MPS)"
         BATCH_SIZE = 32

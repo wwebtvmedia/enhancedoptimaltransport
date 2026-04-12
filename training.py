@@ -402,8 +402,17 @@ class EnhancedLabelTrainer:
         # OU reference process
         self.ou_ref = OUReference(theta=config.OU_THETA, sigma=config.OU_SIGMA) if config.USE_OU_BRIDGE else None
         
-        # AMP scaler
-        self.scaler = torch.cuda.amp.GradScaler() if config.USE_AMP and config.DEVICE.type == 'cuda' else None
+        # AMP Scaler (Cross-backend support)
+        self.scaler = None
+        if config.USE_AMP and config.AMP_AVAILABLE:
+            if config.DEVICE.type == 'cuda':
+                self.scaler = torch.cuda.amp.GradScaler()
+            elif config.DEVICE.type == 'xpu':
+                # Intel XPU uses the same GradScaler API or its own depending on torch version
+                try:
+                    self.scaler = torch.xpu.amp.GradScaler()
+                except (AttributeError, ImportError):
+                    self.scaler = torch.cuda.amp.GradScaler() # Fallback
         
         config.logger.info(f"💓 Epoch 0 | Batch 0/{len(self.loader)}")
         config.logger.info(f"Models initialized:")
@@ -412,21 +421,40 @@ class EnhancedLabelTrainer:
         if config.USE_OU_BRIDGE:
             config.logger.info(f"  Using OU bridge reference (theta={config.OU_THETA})")
 
-        # ImageNet Mean and Std (for 0-1 normalized images)
-        # ImageNet Mean and Std (for 0-1 normalized images) - Moved to device once
-        self.vgg_mean = torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1).to(config.DEVICE)
-        self.vgg_std = torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1).to(config.DEVICE)
+        # ImageNet Mean and Std (for 0-1 normalized images) - Registered as buffers
+        self.register_buffer('vgg_mean', torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1))
+        self.register_buffer('vgg_std', torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1))
 
         # Pre-compute SSIM Gaussian Window
         window_size = 11
         sigma = 1.5
-        gauss = torch.arange(window_size, dtype=torch.float32, device=config.DEVICE)
+        gauss = torch.arange(window_size, dtype=torch.float32)
         gauss = torch.exp(-(gauss - window_size//2)**2 / (2 * sigma**2))
         gauss = gauss / gauss.sum()
         window = gauss[:, None] * gauss[None, :]
         window = window[None, None, :, :]
-        # Cache it for the 3 channels
-        self.ssim_window = window.expand(3, -1, -1, -1).contiguous()
+        # Cache it for the 3 channels - Registered as buffer
+        self.register_buffer('ssim_window', window.expand(3, -1, -1, -1).contiguous())
+
+
+    def register_buffer(self, name, tensor):
+        """Helper to register a buffer on the trainer (since it's not an nn.Module)."""
+        if not hasattr(self, '_buffers'):
+            self._buffers = {}
+        self._buffers[name] = tensor.to(config.DEVICE)
+        setattr(self, name, self._buffers[name])
+
+    def to_device(self, device):
+        """Move all buffers to device."""
+        if hasattr(self, '_buffers'):
+            for name in self._buffers:
+                self._buffers[name] = self._buffers[name].to(device)
+                setattr(self, name, self._buffers[name])
+        self.vae.to(device)
+        self.drift.to(device)
+        if hasattr(self, 'vgg'):
+            self.vgg.to(device)
+        return self
 
 
     def diagnose_latent_collapse(self, mu, logvar, epoch):
@@ -463,17 +491,12 @@ class EnhancedLabelTrainer:
                 for param in self.vgg.parameters():
                     param.requires_grad = False
                 self.vgg.eval()
-                
-                # ImageNet normalization constants
-                # Ensure mean/std are on the same device as inputs
-                mean = self.vgg_mean.to(recon.device)
-                std = self.vgg_std.to(recon.device)
             except:
                 return torch.tensor(0.0, device=config.DEVICE)
     
-        # Using pre-allocated device tensors
-        mean = self.vgg_mean
-        std = self.vgg_std
+        # Ensure mean/std match the precision of recon (Crucial for AMP)
+        mean = self.vgg_mean.to(recon.dtype)
+        std = self.vgg_std.to(recon.dtype)
 
         # 1. Map from [-1, 1] to [0, 1]
         recon_01 = (recon + 1) / 2
@@ -484,8 +507,11 @@ class EnhancedLabelTrainer:
         target_norm = ((target_01 - mean) / std).contiguous()
         
         # 3. Get features
-        recon_feat = self.vgg(recon_norm)
-        target_feat = self.vgg(target_norm)
+        # Ensure VGG also operates in the same precision as inputs
+        with torch.no_grad():
+            self.vgg.to(recon.dtype)
+            recon_feat = self.vgg(recon_norm)
+            target_feat = self.vgg(target_norm)
         
         return F.mse_loss(recon_feat, target_feat)
 
@@ -971,9 +997,15 @@ class EnhancedLabelTrainer:
                 if batch_idx % 10 == 0:
                     config.logger.info(f"💓 Epoch {current_epoch} ({mode}) | Batch {batch_idx}/{len(self.loader)}")
                 
-                # Forward pass with AMP if enabled
-                if self.scaler is not None and phase in (2,3):
-                    with torch.cuda.amp.autocast():
+                # Forward pass with AMP if enabled (Cross-backend autocast)
+                if self.scaler is not None:
+                    device_type = config.DEVICE.type
+                    # Fallback to 'cuda' for autocast if 'xpu' not explicitly available in old torch versions
+                    autocast_ctx = torch.cuda.amp.autocast()
+                    if hasattr(torch, device_type) and hasattr(getattr(torch, device_type), 'amp'):
+                        autocast_ctx = getattr(torch, device_type).amp.autocast()
+                        
+                    with autocast_ctx:
                         loss_dict = self.compute_loss(batch_dict, phase=phase, batch_idx=batch_idx)
                 else:
                     loss_dict = self.compute_loss(batch_dict, phase=phase, batch_idx=batch_idx)
@@ -1019,9 +1051,16 @@ class EnhancedLabelTrainer:
                 # Backward pass
                 if phase == 1:
                     self.opt_vae.zero_grad()
-                    loss_dict['total'].backward()
-                    torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
-                    self.opt_vae.step()
+                    if self.scaler is not None:
+                        self.scaler.scale(loss_dict['total']).backward()
+                        self.scaler.unscale_(self.opt_vae)
+                        torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
+                        self.scaler.step(self.opt_vae)
+                        self.scaler.update()
+                    else:
+                        loss_dict['total'].backward()
+                        torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
+                        self.opt_vae.step()
                     
                     if 'snr' in loss_dict:
                         snr_values.append(loss_dict['snr'])
