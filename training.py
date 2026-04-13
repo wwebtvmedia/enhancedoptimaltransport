@@ -1431,7 +1431,9 @@ class EnhancedLabelTrainer:
             config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
             
             # Decode
+            self.vae.set_force_active(True)
             images = self.vae.decode(z, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
+            self.vae.set_force_active(False)
             images = torch.clamp(images, -1, 1)
             
             config.logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")

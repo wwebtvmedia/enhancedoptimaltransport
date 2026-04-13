@@ -152,12 +152,13 @@ class PercentileRescale(nn.Module):
         self.register_buffer('high', torch.ones(features))
         self.p_low, self.p_high, self.m = p_low, p_high, momentum
         self._is_exporting = False
+        self.force_active = False
 
     def _set_export_mode(self, is_exporting=True):
         self._is_exporting = is_exporting
 
     def forward(self, x):
-        if self._is_exporting or not self.training:
+        if self._is_exporting:
             scale = (self.high - self.low).clamp(min=1e-6).reshape(1, -1, 1, 1)
             shift = self.low.reshape(1, -1, 1, 1)
             return torch.tanh((x - shift) / scale)
@@ -172,9 +173,17 @@ class PercentileRescale(nn.Module):
                     self.low.mul_(1 - self.m).add_(l, alpha=self.m)
                     self.high.mul_(1 - self.m).add_(h, alpha=self.m)
         
+        # In eval mode without force_active, we use buffers
+        # In training mode or if forced, we use buffers but they were updated above
         scale = (self.high - self.low).clamp(min=1e-6).reshape(1, -1, 1, 1)
         shift = self.low.reshape(1, -1, 1, 1)
-        return torch.tanh((x - shift) / scale)
+        
+        out = (x - shift) / scale
+        if self.training or self.force_active:
+             return torch.tanh(out)
+        else:
+             # During eval we might want a slightly softer clamp if not forcing
+             return torch.tanh(out)
 
 # ============================================================================
 # UTILITIES FOR QUALITY (NEW)
@@ -201,13 +210,17 @@ class NoiseInjection(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.zeros(1, channels, 1, 1))
         self._is_exporting = False
+        self.force_active = False
 
     def _set_export_mode(self, is_exporting=True):
         self._is_exporting = is_exporting
 
     def forward(self, x):
-        if self._is_exporting or not self.training:
+        if self._is_exporting:
             return x
+        if not self.training and not self.force_active:
+            return x
+            
         noise = torch.randn(x.size(0), 1, x.size(2), x.size(3), device=x.device, dtype=x.dtype)
         return x + self.weight * noise
 
@@ -494,29 +507,25 @@ class LabelConditionedVAE(nn.Module):
     def decode(self, z, labels, text_bytes=None, source_id=None):
         """Decode latents to images with enhanced architecture."""
         cond_emb = self._get_conditioning(labels, text_bytes, source_id)
-            
+
         h = self.dec_in(z)
         for block in self.dec_blocks:
             if isinstance(block, LabelConditionedBlock):
                 h = block(h, cond_emb)
             else:
                 h = block(h)
-        h = self.dec_out(h)
-        
-        # Robust final upsampling to match target image size
-        if h.shape[2:] != (config.IMG_SIZE, config.IMG_SIZE):
-            h = F.interpolate(h, size=(config.IMG_SIZE, config.IMG_SIZE), mode='bilinear', align_corners=False)
-            
-        return torch.tanh(h)
-    
+        return self.dec_out(h)
+
+    def set_force_active(self, active=True):
+        """Toggle force_active on submodules for better inference quality."""
+        for m in self.modules():
+            if isinstance(m, (NoiseInjection, PercentileRescale)):
+                m.force_active = active
+
     def forward(self, x, labels, text_bytes=None, source_id=None):
         """Forward pass with reparameterization."""
         mu, logvar = self.encode(x, labels, text_bytes, source_id)
-        if self.training:
-            std = torch.exp(0.5 * logvar)
-            z = mu + std * torch.randn_like(std)
-        else:
-            z = mu
+        z = self.reparameterize(mu, logvar)
         return self.decode(z, labels, text_bytes, source_id), mu, logvar
     
     def reparameterize(self, mu, logvar):
