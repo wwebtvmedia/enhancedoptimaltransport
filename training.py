@@ -811,8 +811,11 @@ class EnhancedLabelTrainer:
             temperature = config.TEMPERATURE_START + (config.TEMPERATURE_END - config.TEMPERATURE_START) * (self.epoch / config.EPOCHS)
             
             # Ensure logvar/mu match exactly for z1
-            z1_noise = torch.exp(0.5 * logvar) * torch.randn_like(logvar) * temperature
-            z1 = mu + z1_noise
+            mu_for_drift = mu.detach()
+            logvar_for_drift = logvar.detach()
+            
+            z1_noise = torch.exp(0.5 * logvar_for_drift) * torch.randn_like(logvar_for_drift) * temperature
+            z1 = mu_for_drift + z1_noise
             z_global_std = z1.std().item()
             
             # Sample time with beta distribution after sufficient training

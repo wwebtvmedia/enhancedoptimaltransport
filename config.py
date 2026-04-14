@@ -185,13 +185,18 @@ PHASE2_EPOCHS = 400                    # We are currently at 534, so we will be 
 # TRAINING SCHEDULE DICTIONARY
 # ============================================================================
 SCHEDULE_MANUALLY_SET = False
+# Stabilization phase: epoch 570-620 = Phase 1 (VAE only)
+# Epoch 620+ = Phase 3 (Both)
+CUSTOM_SCHED = {e: 1 for e in range(570, 620)}
+for e in range(620, 1000): CUSTOM_SCHED[e] = 3
+
 TRAINING_SCHEDULE = {
-    'mode': 'three_phase',                   # Changed from 'auto' to enable Phase 3
-    'force_phase': None,                      # 1 (VAE), 2 (Drift), 3 (Both) for manual mode
-    'custom_schedule': {},                    # {epoch: phase}
-    'switch_epoch': 50,                       # For auto mode (single switch)
-    'switch_epoch_1': PHASE1_EPOCHS,           # For three_phase mode
-    'switch_epoch_2': PHASE2_EPOCHS,           # For three_phase mode
+    'mode': 'custom',                        
+    'force_phase': None,                     
+    'custom_schedule': CUSTOM_SCHED,         
+    'switch_epoch': 50,                       
+    'switch_epoch_1': PHASE1_EPOCHS,           
+    'switch_epoch_2': PHASE2_EPOCHS,           
     'vae_epochs': list(range(0, 50)),
     'drift_epochs': list(range(50, 200)),
     'alternate_freq': 5,
