@@ -65,11 +65,18 @@ def parse_training_log(filename: str) -> Dict[int, Dict[str, Any]]:
     if not os.path.exists(filename):
         return metrics
 
-    # Improved Regex for multi-word loss names
-    epoch_pattern = re.compile(r'Epoch (\d+)/(\d+) complete:')
-    loss_pattern = re.compile(r'  ([\w\s]+ loss): ([\d\.eE+-]+)')
-    snr_pattern = re.compile(r'  SNR: ([\d\.]+)dB')
-    latent_std_pattern = re.compile(r'  Latent std: ([\d\.]+)')
+    # More inclusive patterns
+    # Epoch pattern: catch both completion and start/progress heart lines
+    # Completion: Epoch 550/561 complete:
+    # Heart: 💓 Epoch 550 (VAE) | Batch 0/859
+    epoch_pattern = re.compile(r'(?:Epoch (\d+)/\d+ complete:|💓 Epoch (\d+))')
+    
+    # Loss/Metric pattern: catch both "Total loss: 12.3" and "total: 12.3"
+    # Added lookahead to avoid matching things like "Batch 0/859"
+    metric_pattern = re.compile(r'  ([\w\s]+?)(?: loss)?: ([\d\.eE+-]+)(?!/)')
+    
+    snr_pattern = re.compile(r'SNR: ([\d\.]+)dB|snr: ([\d\.]+)')
+    latent_std_pattern = re.compile(r'Latent std: ([\d\.]+)|latent_std: ([\d\.]+)')
 
     try:
         with open(filename, 'r') as f:
@@ -77,27 +84,48 @@ def parse_training_log(filename: str) -> Dict[int, Dict[str, Any]]:
 
         current_epoch = None
         for line in lines:
-            m = epoch_pattern.search(line)
-            if m:
-                current_epoch = int(m.group(1)) - 1 # Zero-indexed for consistency
-                metrics[current_epoch] = {}
+            m_epoch = epoch_pattern.search(line)
+            if m_epoch:
+                # Use whichever group matched
+                epoch_str = m_epoch.group(1) or m_epoch.group(2)
+                epoch_num = int(epoch_str)
+                
+                # If we are using the completion line, it's often 1-indexed in some logs
+                if "complete:" in line:
+                    current_epoch = epoch_num - 1
+                else:
+                    current_epoch = epoch_num
+                
+                if current_epoch not in metrics:
+                    metrics[current_epoch] = {}
                 continue
 
             if current_epoch is not None:
-                m = loss_pattern.search(line)
-                if m:
-                    # Clean key name: 'Total loss' -> 'total'
-                    key = m.group(1).lower().replace(' loss', '').strip()
-                    val = float(m.group(2))
-                    metrics[current_epoch][key] = val
+                # Try general metric pattern
+                m_metric = metric_pattern.search(line)
+                if m_metric:
+                    key = m_metric.group(1).lower().strip()
+                    # Skip common false positives
+                    if key in ['batch', 'step', 't', 'mean', 'std', 'min', 'max', 'drift norm', 'image gradient magnitude', 'channel utilization']:
+                        pass
+                    else:
+                        try:
+                            val = float(m_metric.group(2))
+                            # Keep latest value seen in the epoch (overwriting intermediate ones)
+                            metrics[current_epoch][key] = val
+                        except ValueError:
+                            pass
                 
-                m = snr_pattern.search(line)
-                if m:
-                    metrics[current_epoch]['snr'] = float(m.group(1))
+                # Try specific ones for SNR/Latent Std (if they have dB or specific casing)
+                m_snr = snr_pattern.search(line)
+                if m_snr:
+                    snr_str = m_snr.group(1) or m_snr.group(2)
+                    metrics[current_epoch]['snr'] = float(snr_str)
                 
-                m = latent_std_pattern.search(line)
-                if m:
-                    metrics[current_epoch]['latent_std'] = float(m.group(1))
+                m_std = latent_std_pattern.search(line)
+                if m_std:
+                    std_str = m_std.group(1) or m_std.group(2)
+                    metrics[current_epoch]['latent_std'] = float(std_str)
                     
     except Exception as e:
         print(f"Log parsing error: {e}")

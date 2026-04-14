@@ -200,7 +200,7 @@ with tab4:
             with c1:
                 st.write("### Loss Convergence")
                 # Filter to show main losses
-                loss_cols = [c for c in ['total', 'recon', 'kl', 'diversity'] if c in df.columns]
+                loss_cols = [c for c in ['total', 'recon', 'kl', 'diversity', 'drift'] if c in df.columns]
                 st.line_chart(df[loss_cols])
             
             with c2:
@@ -211,7 +211,10 @@ with tab4:
             st.write("### Raw Epoch Data")
             st.dataframe(df.tail(10), width='stretch')
         else:
-            st.error("Could not parse metrics from the latest log.")
+            if selected_log_path.stat().st_size < 1024:
+                st.info(f"Log file **{selected_log_name}** is very small ({selected_log_path.stat().st_size} bytes). It might have just started and doesn't have metrics yet.")
+            else:
+                st.error(f"Could not parse any metrics from **{selected_log_name}**. The log format might be unrecognized.")
     else:
         st.info("No log files found to visualize.")
 
