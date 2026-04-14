@@ -180,7 +180,7 @@ def composite_score(loss_dict: Dict, phase: int) -> float:
         if 'kl' in loss_dict:
             score -= loss_dict['kl'] * 10
         if 'diversity' in loss_dict:
-            score += loss_dict['diversity'] * 100
+            score -= loss_dict['diversity'] * 100
         if 'min_channel_std' in loss_dict:
             score += loss_dict['min_channel_std'] * 20
     else:

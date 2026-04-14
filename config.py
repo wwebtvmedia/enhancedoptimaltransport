@@ -63,7 +63,7 @@ GRAD_CLIP = 1.0
 # ============================================================================
 # LOSS WEIGHTS (ENHANCED FOR QUALITY)
 # ============================================================================
-KL_WEIGHT = 0.002              # Slightly reduced to allow more reconstruction detail
+KL_WEIGHT = 0.005              # Slightly increased from 0.002 to improve stability
 RECON_WEIGHT = 5.0             # Adjusted to balance with Perceptual/SSIM
 SUBPIXEL_INITIAL_MIX = 1.0     # Enable subpixel upsampling
 DRIFT_WEIGHT = 1.0             
