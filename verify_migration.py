@@ -30,6 +30,9 @@ def verify_with_data():
         mu, logvar = trainer.vae.encode(real_images, labels)
         recon = trainer.vae.decode(mu, labels)
         
+        print(f"Latent mu - min: {mu.min():.3f}, max: {mu.max():.3f}, mean: {mu.mean():.3f}, std: {mu.std():.3f}")
+        print(f"Reconstruction - min: {recon.min():.3f}, max: {recon.max():.3f}, mean: {recon.mean():.3f}, std: {recon.std():.3f}")
+        
         # Prepare display
         real_display = (real_images + 1) / 2
         recon_display = (recon + 1) / 2

@@ -508,9 +508,9 @@ class EnhancedLabelTrainer:
         
         # 3. Get features
         # Ensure VGG also operates in the same precision as inputs
+        self.vgg.to(recon.dtype)
+        recon_feat = self.vgg(recon_norm)
         with torch.no_grad():
-            self.vgg.to(recon.dtype)
-            recon_feat = self.vgg(recon_norm)
             target_feat = self.vgg(target_norm)
         
         return F.mse_loss(recon_feat, target_feat)

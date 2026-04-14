@@ -14,14 +14,16 @@ class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
+        groups1 = min(8, out_channels)
+        self.bn1 = nn.GroupNorm(groups1, out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
+        groups2 = min(8, out_channels)
+        self.bn2 = nn.GroupNorm(groups2, out_channels)
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels)
+                nn.GroupNorm(min(8, out_channels), out_channels)
             )
     def forward(self, x):
         out = F.silu(self.bn1(self.conv1(x)))
@@ -362,6 +364,8 @@ class LabelConditionedVAE(nn.Module):
             )
 
         # ========== ENHANCED DECODER WITH SUBPIXEL CONV (3 stages) ==========
+        # NEW: Latent Normalization for stability
+        self.latent_norm = nn.GroupNorm(min(8, config.LATENT_CHANNELS), config.LATENT_CHANNELS)
         self.dec_in = nn.Conv2d(config.LATENT_CHANNELS, 512, 3, 1, 1)
         l_dim = config.TEXT_EMBEDDING_DIM if config.USE_NEURAL_TOKENIZER else config.LABEL_EMB_DIM
         
@@ -508,7 +512,9 @@ class LabelConditionedVAE(nn.Module):
         """Decode latents to images with enhanced architecture."""
         cond_emb = self._get_conditioning(labels, text_bytes, source_id)
 
-        h = self.dec_in(z)
+        # Apply latent normalization for stability
+        h = self.latent_norm(z)
+        h = self.dec_in(h)
         for block in self.dec_blocks:
             if isinstance(block, LabelConditionedBlock):
                 h = block(h, cond_emb)

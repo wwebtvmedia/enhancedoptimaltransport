@@ -187,8 +187,8 @@ PHASE2_EPOCHS = 400                    # We are currently at 534, so we will be 
 SCHEDULE_MANUALLY_SET = False
 # Stabilization phase: epoch 570-620 = Phase 1 (VAE only)
 # Epoch 620+ = Phase 3 (Both)
-CUSTOM_SCHED = {e: 1 for e in range(570, 620)}
-for e in range(620, 1000): CUSTOM_SCHED[e] = 3
+CUSTOM_SCHED = {e: 1 for e in range(399, 450)}
+for e in range(450, 1000): CUSTOM_SCHED[e] = 3
 
 TRAINING_SCHEDULE = {
     'mode': 'custom',                        
