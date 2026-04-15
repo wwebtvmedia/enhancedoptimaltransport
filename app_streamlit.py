@@ -63,8 +63,9 @@ with st.sidebar:
     st.info(f"Hardware: {ctx.device_info}")
     
     with st.expander("📁 Dataset Settings", expanded=True):
-        dataset_name = st.selectbox("Dataset", ["STL10", "CIFAR10", "CUSTOM"], 
-                                   index=["STL10", "CIFAR10", "CUSTOM"].index(config.DATASET_NAME))
+        dataset_options = ["STL10", "CIFAR10", "CUSTOM", "MULTI"]
+        ds_idx = dataset_options.index(config.DATASET_NAME) if config.DATASET_NAME in dataset_options else 0
+        dataset_name = st.selectbox("Dataset", dataset_options, index=ds_idx)
         dataset_path = st.text_input("Dataset Path", value=str(config.DATASET_PATH))
         img_size = st.number_input("Model Input Size (IMG_SIZE)", value=config.IMG_SIZE, step=8)
         gen_size = st.number_input("Generation Size (GEN_SIZE)", value=config.GEN_SIZE, step=8)
@@ -91,20 +92,34 @@ with st.sidebar:
         config.DIVERSITY_WEIGHT = st.number_input("Diversity Weight", value=config.DIVERSITY_WEIGHT, format="%.2f", help=get_param_description("DIVERSITY_WEIGHT"))
 
     with st.expander("📅 Training Schedule", expanded=False):
-        mode = st.selectbox("Schedule Mode", ["auto", "manual", "three_phase", "alternate"], 
-                           index=["auto", "manual", "three_phase", "alternate"].index(config.TRAINING_SCHEDULE['mode']))
+        modes = ["auto", "manual", "three_phase", "alternate", "custom"]
+        current_mode = config.TRAINING_SCHEDULE['mode']
+        mode_index = modes.index(current_mode) if current_mode in modes else 0
         
-        force_phase = config.TRAINING_SCHEDULE['force_phase'] or 1
-        new_force_phase = st.radio("Manual Phase (if manual mode)", [1, 2, 3], 
-                                  index=[1, 2, 3].index(force_phase),
+        mode = st.selectbox("Schedule Mode", modes, index=mode_index)
+        
+        force_phase = config.TRAINING_SCHEDULE.get('force_phase') or 1
+        phase_options = [1, 2, 3]
+        phase_idx = phase_options.index(force_phase) if force_phase in phase_options else 0
+        new_force_phase = st.radio("Manual Phase (if manual mode)", phase_options, 
+                                  index=phase_idx,
                                   format_func=lambda x: f"Phase {x} ({['VAE', 'Drift', 'Both'][x-1]})")
         
         # Check if anything changed
-        if mode != config.TRAINING_SCHEDULE['mode'] or new_force_phase != config.TRAINING_SCHEDULE['force_phase']:
+        has_mode_changed = mode != config.TRAINING_SCHEDULE.get('mode')
+        # Only consider phase changed if in manual mode or if it was already set to something else
+        current_fp = config.TRAINING_SCHEDULE.get('force_phase')
+        has_phase_changed = (mode == 'manual' and current_fp is not None and new_force_phase != current_fp)
+        
+        if has_mode_changed or has_phase_changed:
             config.SCHEDULE_MANUALLY_SET = True
             
         config.TRAINING_SCHEDULE['mode'] = mode
-        config.TRAINING_SCHEDULE['force_phase'] = new_force_phase
+        if mode == 'manual':
+            config.TRAINING_SCHEDULE['force_phase'] = new_force_phase
+        else:
+            # If we switch away from manual, we might want to clear force_phase or keep it
+            pass
         
         st.caption(f"Current Phase in Engine: {getattr(engine.trainer, 'phase', 'N/A') if engine.trainer else 'N/A'}")
         if config.SCHEDULE_MANUALLY_SET:

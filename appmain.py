@@ -803,21 +803,14 @@ class SchrödingerBridgeGUI:
             ("📐 Model Dimensions", ["IMG_SIZE", "LATENT_CHANNELS", "LATENT_H", "LATENT_W", "LATENT_DIM"]),
             ("🏷️ Label Conditioning", ["NUM_CLASSES", "LABEL_EMB_DIM"]),
             ("⚡ Training Hyperparameters", ["LR", "EPOCHS", "WEIGHT_DECAY", "GRAD_CLIP", "BATCH_SIZE", "CST_COEF_GAUSSIAN_PRIO"]),
-            ("⚖️ Loss Weights", ["KL_WEIGHT", "RECON_WEIGHT", "DRIFT_WEIGHT", "DIVERSITY_WEIGHT", "CONSISTENCY_WEIGHT"]),
+            ("⚖️ Loss Weights", ["KL_WEIGHT", "RECON_WEIGHT", "DRIFT_WEIGHT", "DIVERSITY_WEIGHT", "CONSISTENCY_WEIGHT", "PERCEPTUAL_WEIGHT", "SSIM_WEIGHT"]),
             ("🎨 VAE Specific", ["LATENT_SCALE", "FREE_BITS", "DIVERSITY_TARGET_STD", "DIVERSITY_BALANCE_WEIGHT",
                                 "KL_ANNEALING_EPOCHS", "LOGVAR_CLAMP_MIN", "LOGVAR_CLAMP_MAX", "MU_NOISE_SCALE"]),
-            ("📊 Channel Dropout", ["CHANNEL_DROPOUT_PROB", "CHANNEL_DROPOUT_SURVIVAL"]),
-            ("🔄 Drift Network", ["DRIFT_LR_MULTIPLIER", "DRIFT_GRAD_CLIP_FACTOR", "PHASE2_VAE_LR_FACTOR",
-                                 "PHASE3_VAE_LR_FACTOR", "TEMPERATURE_START", "TEMPERATURE_END",
-                                 "DRIFT_TARGET_NOISE_SCALE", "TIME_WEIGHT_FACTOR"]),
+            ("📅 Training Schedule", ["PHASE1_EPOCHS", "PHASE2_EPOCHS"]),
+            ("🧠 Neural Tokenizer", ["USE_NEURAL_TOKENIZER", "TEXT_EMBEDDING_DIM", "CONTRASTIVE_WEIGHT"]),
             ("🔮 Inference", ["DEFAULT_STEPS", "DEFAULT_SEED", "INFERENCE_TEMPERATURE",
                              "LANGEVIN_STEP_SIZE", "LANGEVIN_SCORE_SCALE"]),
-            ("🌈 Fourier Features", ["USE_FOURIER_FEATURES", "FOURIER_FREQS"]),
-            ("✨ Enhanced Features", ["USE_PERCENTILE", "USE_SNAPSHOTS", "USE_KPI_TRACKING",
-                                    "TARGET_SNR", "SNAPSHOT_INTERVAL", "SNAPSHOT_KEEP",
-                                    "KPI_WINDOW_SIZE", "EARLY_STOP_PATIENCE"]),
-            ("🎯 OU Bridge", ["USE_OU_BRIDGE", "OU_THETA", "OU_SIGMA", "USE_AMP"]),
-            ("📅 Training Schedule", ["PHASE1_EPOCHS", "PHASE2_EPOCHS"]),
+            ("✨ Enhanced Features", ["USE_SUBPIXEL_CONV", "USE_PERCENTILE", "USE_SNAPSHOTS", "USE_AMP"]),
         ]
 
         self.config_vars = {}
@@ -831,48 +824,19 @@ class SchrödingerBridgeGUI:
             for i, param in enumerate(param_list):
                 self.create_param_row(card.content, param, i)
 
-        # Action buttons
-        actions_card = CardFrame(scrollable_frame, title="🎮 Actions")
-        actions_card.pack(fill='x', padx=10, pady=5)
-
-        btn_frame = ttk.Frame(actions_card.content)
-        btn_frame.pack(fill='x', pady=5)
-
-        buttons = [
-            ("💾 Apply to Config", self.apply_config, Colors.ACCENT),
-            ("📂 Save to JSON", self.save_config_json, Colors.BG_LIGHT),
-            ("📂 Load from JSON", self.load_config_json, Colors.BG_LIGHT),
-            ("🔄 Load from config.py", self.load_from_config_py, Colors.BG_LIGHT),
-            ("✏️ Edit config.py", self.edit_config_file, Colors.ACCENT2),
-        ]
-
-        for text, command, color in buttons:
-            btn = tk.Button(btn_frame, text=text, command=command,
-                          bg=color, fg=Colors.BG_DARK if color == Colors.ACCENT else Colors.FG,
-                          font=("Segoe UI", 10, "bold" if color == Colors.ACCENT else "normal"),
-                          relief="flat", padx=15, pady=8, cursor="hand2")
-            btn.pack(side='left', padx=5)
-            
-            # Add hover effect
-            btn.bind("<Enter>", lambda e, b=btn, c=color: b.config(bg=self.lighten_color(c)))
-            btn.bind("<Leave>", lambda e, b=btn, c=color: b.config(bg=c))
-
-    def lighten_color(self, color):
-        """Lighten a color for hover effect (Material style)"""
-        if color == Colors.ACCENT:
-            return "#e8f0fe" # Light blue hover for outlined
-        elif color == Colors.ACCENT2:
-            return "#f3e8fd" # Light purple hover
-        else:
-            return "#f1f3f4"
-
     def create_param_row(self, parent, param, row):
         """Create a parameter row with Google-style inputs"""
         frame = ttk.Frame(parent, style="Card.TFrame")
         frame.pack(fill='x', pady=4)
 
-        # Get current value
-        default = getattr(config, param, "")
+        # Get current value with fallback
+        default = getattr(config, param, None)
+        if default is None:
+            # Check if it's in a dict (like TRAINING_SCHEDULE)
+            if param == "TRAINING_SCHEDULE":
+                default = config.TRAINING_SCHEDULE.get('mode', 'auto')
+            else:
+                default = ""
         
         # Label
         label = ttk.Label(frame, text=param, width=25, anchor='w', 

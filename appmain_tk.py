@@ -121,6 +121,10 @@ class SchrödingerBridgeGUI:
         self.root.geometry("1450x950")
         self.root.configure(bg=Colors.BG_DARK)
         
+        # Initialize App State
+        self.ctx = AppContext()
+        self.engine = TrainingProcessor(self.ctx)
+        
         # Link context queue to GUI's log_queue
         # Add QueueHandler to config.logger so we see all logs in the UI
         qh = QueueHandler(self.ctx.log_queue)
@@ -204,7 +208,10 @@ class SchrödingerBridgeGUI:
         groups = [
             ("📁 Dataset Settings", ["DATASET_NAME", "DATASET_PATH", "IMG_SIZE", "GEN_SIZE"]),
             ("⚡ Hyperparameters", ["LR", "EPOCHS", "BATCH_SIZE", "CST_COEF_GAUSSIAN_PRIO"]),
-            ("⚖️ Loss Weights", ["KL_WEIGHT", "RECON_WEIGHT", "DIVERSITY_WEIGHT"])
+            ("⚖️ Loss Weights", ["KL_WEIGHT", "RECON_WEIGHT", "DIVERSITY_WEIGHT", "PERCEPTUAL_WEIGHT", "SSIM_WEIGHT"]),
+            ("📅 Training Schedule", ["PHASE1_EPOCHS", "PHASE2_EPOCHS"]),
+            ("🧠 Neural Tokenizer", ["USE_NEURAL_TOKENIZER", "TEXT_EMBEDDING_DIM", "CONTRASTIVE_WEIGHT"]),
+            ("🎨 Features", ["USE_SUBPIXEL_CONV", "USE_AMP", "USE_SNAPSHOTS"])
         ]
         
         for name, params in groups:
@@ -219,7 +226,13 @@ class SchrödingerBridgeGUI:
         lbl = ttk.Label(frame, text=param, width=25, background=Colors.BG_MEDIUM)
         lbl.pack(side='left', padx=10)
         ToolTip(lbl, get_param_description(param))
-        var = tk.StringVar(value=str(getattr(config, param, "")))
+        
+        # Handle dict/list nested configs (simplified for UI)
+        val = getattr(config, param, "")
+        if isinstance(val, dict) and param == "TRAINING_SCHEDULE":
+            val = val.get('mode', 'auto')
+            
+        var = tk.StringVar(value=str(val))
         ttk.Entry(frame, textvariable=var, width=20).pack(side='left')
         self.config_vars[param] = var
 
@@ -353,6 +366,33 @@ class SchrödingerBridgeGUI:
     def create_gallery_tab(self):
         self.gallery_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.gallery_frame, text="🖼️ Gallery")
+        
+        bar = ttk.Frame(self.gallery_frame)
+        bar.pack(fill='x', pady=5)
+        tk.Button(bar, text="🔄 Refresh Samples", command=self.refresh_gallery, bg=Colors.ACCENT, fg="white", relief='flat', padx=15).pack(side='left', padx=10)
+        
+        self.gallery_container = ttk.Frame(self.gallery_frame)
+        self.gallery_container.pack(fill='both', expand=True, padx=10, pady=10)
+        self.refresh_gallery()
+
+    def refresh_gallery(self):
+        for w in self.gallery_container.winfo_children(): w.destroy()
+        
+        samples_dir = config.DIRS["samples"]
+        png_files = sorted(list(samples_dir.glob("gen_*.png")), key=os.path.getmtime, reverse=True)
+        
+        if png_files:
+            try:
+                # Load latest sample
+                img = Image.open(str(png_files[0]))
+                # Resize if too large for display
+                img.thumbnail((800, 800))
+                self.gallery_photo = ImageTk.PhotoImage(img)
+                tk.Label(self.gallery_container, image=self.gallery_photo, text=f"Latest: {png_files[0].name}", compound='top', bg=Colors.BG_DARK).pack()
+            except Exception as e:
+                tk.Label(self.gallery_container, text=f"Error loading image: {e}").pack()
+        else:
+            tk.Label(self.gallery_container, text="No generated samples found.").pack()
 
     def start_training(self):
         self.start_btn.config(state='disabled')
