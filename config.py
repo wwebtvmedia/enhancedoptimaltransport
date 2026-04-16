@@ -63,28 +63,28 @@ GRAD_CLIP = 1.0
 # ============================================================================
 # LOSS WEIGHTS (ENHANCED FOR QUALITY)
 # ============================================================================
-KL_WEIGHT = 0.005              # Slightly increased from 0.002 to improve stability
-RECON_WEIGHT = 5.0             # Adjusted to balance with Perceptual/SSIM
-SUBPIXEL_INITIAL_MIX = 1.0     # Enable subpixel upsampling
+KL_WEIGHT = 0.002              # Reduced from 0.005 to allow better reconstruction early on
+RECON_WEIGHT = 10.0            # Increased from 5.0 to prioritize sharpness
+SUBPIXEL_INITIAL_MIX = 1.0     
 DRIFT_WEIGHT = 1.0             
 DIVERSITY_WEIGHT = 1.5         
 CONSISTENCY_WEIGHT = 1.0       
 PHASE3_RECON_SCALE = 0.1       # Reduced from 0.8 for smoother transition in Phase 3
 
 # NEW: Quality-focused loss weights
-PERCEPTUAL_WEIGHT = 1.5        # Increased from 0.5 for better feature matching
-SSIM_WEIGHT = 1.0              # Structural Similarity loss
+PERCEPTUAL_WEIGHT = 1.5        
+SSIM_WEIGHT = 1.0              
 LPIPS_WEIGHT = 0.3             
-EDGE_WEIGHT = 0.3              # Increased from 0.2
-TV_WEIGHT = 0.02               # Reduced slightly to prevent over-smoothing
+EDGE_WEIGHT = 0.3              
+TV_WEIGHT = 0.02               
 
 # ============================================================================
 # INFERENCE (ENHANCED FOR QUALITY)
 # ============================================================================
 DEFAULT_STEPS = 100            
 DEFAULT_SEED = 42
-INFERENCE_TEMPERATURE = 0.5    # Lowered from 0.6 for even sharper samples
-DEFAULT_LANGEVIN_STEPS = 10    # Enabled a few refinement steps by default
+INFERENCE_TEMPERATURE = 0.5    
+DEFAULT_LANGEVIN_STEPS = 10    
 LANGEVIN_STEP_SIZE = 0.01      
 LANGEVIN_SCORE_SCALE = 1.2     
 
@@ -92,8 +92,7 @@ LANGEVIN_SCORE_SCALE = 1.2
 # VAE SPECIFIC (ENHANCED)
 # ============================================================================
 LATENT_SCALE = 1.0
-FREE_BITS = 1.0
-DIVERSITY_TARGET_STD = 0.8
+FREE_BITS = 48.0               # Increased from 1.0 to allow more detail per latent dimension (approx 1 bit per 24 pixels)
 DIVERSITY_MAX_STD = 2.0
 DIVERSITY_LOW_PENALTY = 2.0
 DIVERSITY_HIGH_PENALTY = 0.5

@@ -532,7 +532,7 @@ class MultiSourceDataset(Dataset):
         # STL10: [airplane, bird, car, cat, deer, dog, horse, monkey, ship, truck]
         
         # Mapping from source dataset index to standardized index
-        self.cifar_map = {0:0, 1:2, 2:1, 3:3, 4:4, 5:5, 6:9, 7:6, 8:8, 9:9} # Mapping 'frog' (6) to 'truck' (9) as fallback
+        self.cifar_map = {0:0, 1:2, 2:1, 3:3, 4:4, 5:5, 6:10, 7:6, 8:8, 9:9} # Mapping 'frog' (6) to 'NULL' (10)
         self.stl_map = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9}
     
     def __len__(self) -> int:
@@ -586,8 +586,10 @@ def load_data() -> DataLoader:
     """Load dataset based on config.DATASET_NAME with multi-source support."""
     
     # ========== ENHANCED DATA AUGMENTATION ==========
+    # Use BICUBIC interpolation with antialias=True for sharper upscaling of small images (like CIFAR10)
     transform = T.Compose([
-        T.Resize((config.IMG_SIZE + 16, config.IMG_SIZE + 16)),
+        T.Resize((config.IMG_SIZE + 16, config.IMG_SIZE + 16), 
+                 interpolation=T.InterpolationMode.BICUBIC, antialias=True),
         T.RandomCrop(config.IMG_SIZE),
         T.RandomHorizontalFlip(p=0.5),
         T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),

@@ -148,11 +148,12 @@ class SharedEmbeddingHead(nn.Module):
 class PercentileRescale(nn.Module):
     """Adaptive percentile-based rescaling to [-1, 1]."""
     
-    def __init__(self, features, p_low=1.0, p_high=99.0, momentum=0.005):
+    def __init__(self, features, p_low=1.0, p_high=99.0, momentum=0.005, use_tanh=True):
         super().__init__()
         self.register_buffer('low', torch.zeros(features))
         self.register_buffer('high', torch.ones(features))
         self.p_low, self.p_high, self.m = p_low, p_high, momentum
+        self.use_tanh = use_tanh
         self._is_exporting = False
         self.force_active = False
 
@@ -163,7 +164,8 @@ class PercentileRescale(nn.Module):
         if self._is_exporting:
             scale = (self.high - self.low).clamp(min=1e-6).reshape(1, -1, 1, 1)
             shift = self.low.reshape(1, -1, 1, 1)
-            return torch.tanh((x - shift) / scale)
+            out = (x - shift) / scale
+            return torch.tanh(out) if self.use_tanh else out
         
         if self.training:
             with torch.no_grad():
@@ -176,16 +178,14 @@ class PercentileRescale(nn.Module):
                     self.high.mul_(1 - self.m).add_(h, alpha=self.m)
         
         # In eval mode without force_active, we use buffers
-        # In training mode or if forced, we use buffers but they were updated above
         scale = (self.high - self.low).clamp(min=1e-6).reshape(1, -1, 1, 1)
         shift = self.low.reshape(1, -1, 1, 1)
         
         out = (x - shift) / scale
-        if self.training or self.force_active:
+        if self.use_tanh:
              return torch.tanh(out)
         else:
-             # During eval we might want a slightly softer clamp if not forcing
-             return torch.tanh(out)
+             return out
 
 # ============================================================================
 # UTILITIES FOR QUALITY (NEW)
@@ -260,7 +260,7 @@ class LabelConditionedBlock(nn.Module):
         else:
             self.conv2 = nn.Conv2d(c_out, c_out, 3, 1, 1)
         
-        self.rescale = PercentileRescale(c_out) if config.USE_PERCENTILE else nn.Identity()
+        self.rescale = PercentileRescale(c_out, use_tanh=False) if config.USE_PERCENTILE else nn.Identity()
         
         if use_spectral_norm and c_in != c_out:
             self.skip = nn.utils.spectral_norm(nn.Conv2d(c_in, c_out, 1))
