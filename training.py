@@ -1085,18 +1085,24 @@ class EnhancedLabelTrainer:
                     if 'min_channel_std' in loss_dict:
                         channel_std_values.append(loss_dict['min_channel_std'])
                 elif phase == 2:
+                    self.opt_vae.zero_grad()
                     self.opt_drift.zero_grad()
                     
                     if self.scaler is not None:
                         self.scaler.scale(loss_dict['total']).backward()
+                        self.scaler.unscale_(self.opt_vae)
                         self.scaler.unscale_(self.opt_drift)
-                        # Use config factor for drift grad clip
+                        # Clip both
+                        torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
                         torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR)
+                        self.scaler.step(self.opt_vae)
                         self.scaler.step(self.opt_drift)
                         self.scaler.update()
                     else:
                         loss_dict['total'].backward()
+                        torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
                         torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR)
+                        self.opt_vae.step()
                         self.opt_drift.step()
                 elif phase == 3:
                     # In Phase 3, we update BOTH
