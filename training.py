@@ -742,8 +742,19 @@ class EnhancedLabelTrainer:
             else:
                 ssim_loss = torch.tensor(0.0, device=config.DEVICE)
 
+            # --- Texture and Sharpness Enhancements ---
+            # 1. Edge Loss (Sobel-like gradient matching)
+            recon_grad_x = torch.abs(recon[:, :, :, 1:] - recon[:, :, :, :-1])
+            recon_grad_y = torch.abs(recon[:, :, 1:, :] - recon[:, :, :-1, :])
+            image_grad_x = torch.abs(images[:, :, :, 1:] - images[:, :, :, :-1])
+            image_grad_y = torch.abs(images[:, :, 1:, :] - images[:, :, :-1, :])
+            edge_loss = (F.mse_loss(recon_grad_x, image_grad_x) + F.mse_loss(recon_grad_y, image_grad_y)) * config.EDGE_WEIGHT
+
+            # 2. Total Variation (TV) Loss for denoising
+            tv_loss = total_variation_loss(recon, weight=config.TV_WEIGHT)
+
             # Combined VAE loss
-            total_loss = recon_loss + kl_loss + ssim_loss + diversity_loss * config.DIVERSITY_WEIGHT
+            total_loss = recon_loss + kl_loss + ssim_loss + edge_loss + tv_loss + diversity_loss * config.DIVERSITY_WEIGHT
             
             # Add Contrastive loss with annealing
             if config.USE_NEURAL_TOKENIZER:
@@ -760,6 +771,8 @@ class EnhancedLabelTrainer:
                 'diversity': diversity_loss.item(),
                 'contrastive': contrastive_loss.item() if isinstance(contrastive_loss, torch.Tensor) else 0.0,
                 'ssim_loss': ssim_loss.item(),
+                'edge_loss': edge_loss.item(),
+                'tv_loss': tv_loss.item(),
                 'snr': snr,
                 'latent_std': latent_std,
             }
@@ -1202,6 +1215,9 @@ class EnhancedLabelTrainer:
                     )
             config.logger.info(f"  Recon loss: {avg_losses.get('recon', 0):.4f}")
             config.logger.info(f"  KL loss: {avg_losses.get('kl', 0):.6f}")
+            config.logger.info(f"  SSIM loss: {avg_losses.get('ssim_loss', 0):.4f}")
+            config.logger.info(f"  Edge loss: {avg_losses.get('edge_loss', 0):.4f}")
+            config.logger.info(f"  TV loss: {avg_losses.get('tv_loss', 0):.4f}")
             config.logger.info(f"  Diversity loss: {avg_losses.get('diversity', 0):.6f}")
             config.logger.info(f"  Latent std: {avg_losses.get('latent_std', 0):.3f}")
             if 'snr' in avg_losses:
