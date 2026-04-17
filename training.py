@@ -1153,13 +1153,13 @@ class EnhancedLabelTrainer:
                             source_id = source_id[:fid_samples].to(config.DEVICE)
                         
                         # Correct VGG normalization
-                        real_norm = ((real_images + 1) / 2 - self.vgg_mean) / self.vgg_std
+                        vgg_dtype = next(self.vgg.parameters()).dtype
+                        real_norm = (((real_images + 1) / 2 - self.vgg_mean) / self.vgg_std).to(vgg_dtype)
                         real_feat = self.vgg(real_norm)
-                        
+
                         gen_images, _, _ = self.vae(real_images, real_labels, source_id)
-                        gen_norm = ((gen_images + 1) / 2 - self.vgg_mean) / self.vgg_std
-                        gen_feat = self.vgg(gen_norm)
-                        
+                        gen_norm = (((gen_images + 1) / 2 - self.vgg_mean) / self.vgg_std).to(vgg_dtype)
+                        gen_feat = self.vgg(gen_norm)                        
                         fid_score = self.calculate_fid_batch(real_feat.flatten(1), gen_feat.flatten(1))
                         losses['fid'] = fid_score
                         config.logger.info(f"FID Score (approx): {fid_score:.2f}")

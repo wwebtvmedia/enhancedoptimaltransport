@@ -63,7 +63,7 @@ GRAD_CLIP = 1.0
 # ============================================================================
 # LOSS WEIGHTS (ENHANCED FOR QUALITY)
 # ============================================================================
-KL_WEIGHT = 0.002              # Reduced from 0.005 to allow better reconstruction early on
+KL_WEIGHT = 0.008              # Increased from 0.002 to further stabilize the latent space and avoid collapse.
 RECON_WEIGHT = 10.0            # Increased from 5.0 to prioritize sharpness
 SUBPIXEL_INITIAL_MIX = 1.0     
 DRIFT_WEIGHT = 1.0             
@@ -92,7 +92,7 @@ LANGEVIN_SCORE_SCALE = 1.2
 # VAE SPECIFIC (ENHANCED)
 # ============================================================================
 LATENT_SCALE = 1.0
-FREE_BITS = 48.0               # Increased from 1.0 to allow more detail per latent dimension (approx 1 bit per 24 pixels)
+FREE_BITS = 2.0                # Reduced from 48.0 to encourage active latent space regularization
 DIVERSITY_MAX_STD = 2.0
 DIVERSITY_LOW_PENALTY = 2.0
 DIVERSITY_HIGH_PENALTY = 0.5
@@ -186,8 +186,8 @@ PHASE2_EPOCHS = 400                    # We are currently at 534, so we will be 
 SCHEDULE_MANUALLY_SET = False
 # Stabilization phase: epoch 570-620 = Phase 1 (VAE only)
 # Epoch 620+ = Phase 3 (Both)
-CUSTOM_SCHED = {e: 1 for e in range(399, 450)}
-for e in range(450, 1000): CUSTOM_SCHED[e] = 3
+CUSTOM_SCHED = {e: 1 for e in range(570, 620)}
+for e in range(620, 1000): CUSTOM_SCHED[e] = 3
 
 TRAINING_SCHEDULE = {
     'mode': 'custom',                        
