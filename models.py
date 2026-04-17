@@ -161,10 +161,18 @@ class PercentileRescale(nn.Module):
         self._is_exporting = is_exporting
 
     def forward(self, x):
+        # Calculate scale and shift to map [low, high] to [-1, 1]
+        # range = high - low, mid = (high + low) / 2
+        # out = (x - mid) / (range / 2)
+        
+        low = self.low.reshape(1, -1, 1, 1)
+        high = self.high.reshape(1, -1, 1, 1)
+        
+        mid = (high + low) / 2
+        half_range = (high - low).clamp(min=1e-6) / 2
+
         if self._is_exporting:
-            scale = (self.high - self.low).clamp(min=1e-6).reshape(1, -1, 1, 1)
-            shift = self.low.reshape(1, -1, 1, 1)
-            out = (x - shift) / scale
+            out = (x - mid) / half_range
             return torch.tanh(out) if self.use_tanh else out
         
         if self.training:
@@ -177,11 +185,9 @@ class PercentileRescale(nn.Module):
                     self.low.mul_(1 - self.m).add_(l, alpha=self.m)
                     self.high.mul_(1 - self.m).add_(h, alpha=self.m)
         
-        # In eval mode without force_active, we use buffers
-        scale = (self.high - self.low).clamp(min=1e-6).reshape(1, -1, 1, 1)
-        shift = self.low.reshape(1, -1, 1, 1)
+        # Rescale to [-1, 1] range
+        out = (x - mid) / half_range
         
-        out = (x - shift) / scale
         if self.use_tanh:
              return torch.tanh(out)
         else:
@@ -520,7 +526,8 @@ class LabelConditionedVAE(nn.Module):
                 h = block(h, cond_emb)
             else:
                 h = block(h)
-        return self.dec_out(h)
+        out = self.dec_out(h)
+        return torch.tanh(out)
 
     def set_force_active(self, active=True):
         """Toggle force_active on submodules for better inference quality."""
