@@ -13,5 +13,6 @@ pip install -r requirements.txt
 # Make other scripts executable
 chmod +x checkpoint_backup.sh
 chmod +x vast_start.sh
+chmod +x storage_manager.sh
 
 echo "✅ Setup complete!"
