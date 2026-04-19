@@ -1477,16 +1477,16 @@ class EnhancedLabelTrainer:
         # Apply EMA weights for better generative quality
         self.ema_vae.apply_shadow()
         self.ema_drift.apply_shadow()
-        
+
         try:
             if labels is not None:
                 num_samples = len(labels)
             else:
                 labels = [i % 10 for i in range(num_samples)]
-            
+
             with torch.no_grad():
                 labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
-                
+
                 # Neural Tokenizer support
                 if config.USE_NEURAL_TOKENIZER:
                     text_bytes_list = []
@@ -1502,22 +1502,22 @@ class EnhancedLabelTrainer:
                     s_id = torch.zeros(labels_tensor.shape[0], dtype=torch.long, device=config.DEVICE)
                 else:
                     s_id = torch.full((labels_tensor.shape[0],), source_id, dtype=torch.long, device=config.DEVICE)
-                        
+
             # Start from pure noise using the prior standard deviation from config
             z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
 
             config.logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
-            
+
             steps = config.DEFAULT_STEPS
             dt = 1.0 / steps
-            
+
             # ----- ODE integration -----
             for i in range(steps):
                 t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
-                
+
                 # Predict drift with context
                 drift = self.drift(z, t_cur, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
-                
+
                 # Monitor drift magnitude (adaptive clipping is inside the drift network)
                 drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
 
@@ -1540,86 +1540,85 @@ class EnhancedLabelTrainer:
                     z_next = z + dt * k3
                     k4 = self.drift(z_next, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
-    
+
                 z = torch.clamp(z, -10, 10)   # gentle clamping
-                
+
                 if i % 10 == 0:
                     config.logger.info(f"Step {i:3d}, t={i*dt:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std():.4f}")
-                                
+
                 if torch.isnan(z).any():
                     config.logger.error(f"NaN detected at step {i}!")
                     break
-            
+
             # ----- Refined Langevin Refinement -----
             if langevin_steps > 0:
                 config.logger.info(f"Starting {langevin_steps} Refined Langevin steps...")
                 t_one = torch.full((num_samples, 1), 1.0, device=config.DEVICE)
-                
+
                 # Adaptive step size: start strong, end gentle
                 base_lr = langevin_step_size
-                
+
                 for step in range(langevin_steps):
                     # 1. Compute Score Proxy 
                     # Using drift at t=1 is theoretically the 'terminal' velocity
                     drift_at_end = self.drift(z, t_one, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
-                    
+
                     # 2. Add Annealed Noise
                     # We decay the noise scale as we converge to the manifold
                     step_ratio = step / langevin_steps
                     current_noise_scale = np.sqrt(2 * base_lr) * (1 - 0.5 * step_ratio)
                     noise = torch.randn_like(z) * current_noise_scale
-                    
+
                     # 3. Stochastic Gradient Update (MALA style)
                     # We treat the drift as the gradient of the log-probability
                     z = z.detach() + 0.5 * base_lr * langevin_score_scale * drift_at_end + noise
-                    
+
                     # 4. Gentle Manifold Constraint
                     # Prevents latents from escaping the range expected by the VAE decoder
                     z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
-                    
+
                     if (step + 1) % 5 == 0:
                         config.logger.info(f" Langevin Step {step+1}: z_std={z.std():.4f}")
 
                 z = z.detach() # Final cleanup
             config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
-            
+
             # Decode
             self.vae.set_force_active(True)
             images = self.vae.decode(z, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
             self.vae.set_force_active(False)
             images = torch.clamp(images, -1, 1)
-            
+
             config.logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")
-            
+
             # Save images
             images_display = (images + 1) / 2
             images_display = torch.clamp(images_display, 0, 1)
-            
+
             grid = vutils.make_grid(images_display, nrow=4, padding=2)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             grid_path = config.DIRS["samples"] / f"gen_epoch{self.epoch+1}_{timestamp}.png"
             vutils.save_image(grid, grid_path)
-            
+
             for idx, img in enumerate(images_display):
                 individual_path = config.DIRS["samples"] / f"gen_{idx}_label{labels[idx]}_epoch{self.epoch+1}.png"
                 vutils.save_image(img, individual_path)
-            
+
             debug_path = config.DIRS["samples"] / f"raw_epoch{self.epoch+1}_{timestamp}.pt"
             torch.save({
                 'z': z.cpu(),
                 'images': images.cpu(),
                 'labels': labels
             }, debug_path)
-            
+
             config.logger.info(f"Generated {num_samples} samples for labels {labels}")
             config.logger.info(f"Images saved to: {grid_path}")
-            
+
             return grid_path
         finally:
             # Restore original weights
             self.ema_vae.restore()
             self.ema_drift.restore()
-
     def list_available_snapshots(self) -> List[Path]:
         """List all available snapshots."""
         snap_files = list(config.DIRS["snaps"].glob("*_snapshot_epoch_*.pt"))
