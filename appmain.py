@@ -560,7 +560,7 @@ class SchrödingerBridgeGUI:
             grid = vutils.make_grid(all_images_tensor, nrow=nrow, padding=2, normalize=False)
             
             # Convert to PIL Image
-            grid_np = grid.permute(1, 2, 0).cpu().numpy()
+            grid_np = grid.permute(1, 2, 0).cpu().to(torch.float32).numpy()
             grid_np = (grid_np * 255).astype(np.uint8)
             pil_image = Image.fromarray(grid_np)
             
@@ -619,7 +619,7 @@ class SchrödingerBridgeGUI:
                     
                     # Get individual image
                     single_img = all_images_tensor[idx]
-                    single_img_np = single_img.permute(1, 2, 0).cpu().numpy()
+                    single_img_np = single_img.permute(1, 2, 0).cpu().to(torch.float32).numpy()
                     single_img_np = (single_img_np * 255).astype(np.uint8)
                     single_pil = Image.fromarray(single_img_np)
                     single_pil.thumbnail((256, 256), Image.Resampling.LANCZOS)
@@ -691,7 +691,7 @@ class SchrödingerBridgeGUI:
         nrow = 4
         import torchvision.utils as vutils
         train_grid = vutils.make_grid(train_display, nrow=nrow, padding=2, normalize=False)
-        train_grid_np = train_grid.permute(1, 2, 0).cpu().numpy()
+        train_grid_np = train_grid.permute(1, 2, 0).cpu().to(torch.float32).numpy()
         train_grid_np = (train_grid_np * 255).astype(np.uint8)
         train_pil = Image.fromarray(train_grid_np)
         train_pil.thumbnail((500, 500), Image.Resampling.LANCZOS)
@@ -734,7 +734,7 @@ class SchrödingerBridgeGUI:
             
             # Get individual image
             img = self.training_images_cache[idx]
-            img_np = img.permute(1, 2, 0).cpu().numpy()
+            img_np = img.permute(1, 2, 0).cpu().to(torch.float32).numpy()
             img_np = (img_np * 255).astype(np.uint8)
             pil_img = Image.fromarray(img_np)
             pil_img.thumbnail((80, 80), Image.Resampling.LANCZOS)

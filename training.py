@@ -720,7 +720,7 @@ class EnhancedLabelTrainer:
             
             # Compute VAE metrics
             latent_std = torch.exp(0.5 * logvar).mean().item()
-            channel_stds = mu.std(dim=[0, 2, 3]).detach().cpu().numpy()
+            channel_stds = mu.std(dim=[0, 2, 3]).detach().cpu().to(torch.float32).numpy()
             min_channel_std = channel_stds.min()
             
             # Adaptive KL weight based on channel usage
@@ -788,7 +788,7 @@ class EnhancedLabelTrainer:
                     
                     # Check latent statistics
                     latent_std_channel = mu.std(dim=[0, 2, 3])
-                    config.logger.info(f"Channel utilization - min: {latent_std_channel.min():.4f}, max: {latent_std_channel.max():.4f}")
+                    config.logger.info(f"Channel utilization - min: {latent_std_channel.min().item():.4f}, max: {latent_std_channel.max().item():.4f}")
 
         else:  # Drift training (phase 2 or 3)
             # Ensure vae_ref exists (extra safety check)
