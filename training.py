@@ -1594,12 +1594,10 @@ class EnhancedLabelTrainer:
             if hasattr(module, '_set_export_mode'):
                 module._set_export_mode(mode)
         
-        # Helper to bake spectral norm into weights for quantization
+        # Helper to bake spectral norm into weights
         def bake_spectral_norm(model):
             import copy
             from torch.nn.utils import remove_spectral_norm
-            
-            # Use deepcopy to avoid modifying the live model
             model_copy = copy.deepcopy(model)
             for m in model_copy.modules():
                 try:
@@ -1608,134 +1606,112 @@ class EnhancedLabelTrainer:
                     pass
             return model_copy
 
-        # Helper to merge .onnx.data files back into the .onnx file
-        def merge_external_data(model_path):
-            try:
-                import onnx
-                from pathlib import Path
-                model_path = Path(model_path)
-                if not model_path.exists():
-                    return
-                
-                # Load model and external data automatically
-                model = onnx.load(str(model_path))
-                # Save model as a single file (default behavior when not specifying external data location)
-                onnx.save(model, str(model_path))
-                
-                # Remove the now redundant .data file
-                data_path = model_path.with_suffix(model_path.suffix + ".data")
-                if data_path.exists():
-                    data_path.unlink()
-                    config.logger.info(f"Merged and removed external data: {data_path.name}")
-            except Exception as e:
-                config.logger.warning(f"Could not merge external data for {model_path.name}: {e}")
-
         # Wrapper class to export ONLY the decoder (generator) part of the VAE
         class VAEGenerator(torch.nn.Module):
             def __init__(self, vae):
                 super().__init__()
                 self.vae = vae
-            def forward(self, z, labels, source_id=None):
-                return self.vae.decode(z, labels, source_id)
+            def forward(self, z, labels):
+                return self.vae.decode(z, labels, None)
 
         try:
-            # --- Set export mode for VAE and Drift ---
             self.vae.eval()
             self.drift.eval()
+            # Set internal export flags
             self.vae.apply(lambda m: set_export_mode(m, True))
             self.drift.apply(lambda m: set_export_mode(m, True))
             
-            # Create baked copies for export to ensure static weights (essential for quantization)
             vae_for_export = bake_spectral_norm(self.vae)
             drift_for_export = bake_spectral_norm(self.drift)
 
-            # Export Generator (Decoder only)
+            # --- Export Generator ---
             dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
             dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
-            dummy_source = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
             
             gen_path = config.DIRS["onnx"] / "generator.onnx"
             vae_gen = VAEGenerator(vae_for_export)
             
+            config.logger.info("Exporting Generator (Simplified)...")
             with torch.no_grad():
                 torch.onnx.export(
                     vae_gen,
-                    (dummy_z, dummy_label, dummy_source),
+                    (dummy_z, dummy_label),
                     str(gen_path),
                     export_params=True,
-                    opset_version=18,
+                    opset_version=15,
                     do_constant_folding=True,
-                    input_names=['z', 'label', 'source_id'],
+                    input_names=['z', 'label'],
                     output_names=['reconstruction'],
                     dynamic_axes={
                         'z': {0: 'batch_size'},
                         'label': {0: 'batch_size'},
-                        'source_id': {0: 'batch_size'},
                         'reconstruction': {0: 'batch_size'}
                     }
                 )
-            merge_external_data(gen_path)
-            config.logger.info(f"Generator exported to {gen_path}")
             
-            # Export Drift
+            # --- Export Drift ---
             dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
-            
             drift_path = config.DIRS["onnx"] / "drift.onnx"
             
+            config.logger.info("Exporting Drift (Simplified)...")
+            # Create a simple wrapper for drift too to strip source_id
+            class DriftWrapper(torch.nn.Module):
+                def __init__(self, drift):
+                    super().__init__()
+                    self.drift = drift
+                def forward(self, z, t, label):
+                    return self.drift(z, t, label, None, None)
+
+            drift_gen = DriftWrapper(drift_for_export)
+
             with torch.no_grad():
                 torch.onnx.export(
-                    drift_for_export,
-                    (dummy_z, dummy_t, dummy_label, dummy_source),
+                    drift_gen,
+                    (dummy_z, dummy_t, dummy_label),
                     str(drift_path),
                     export_params=True,
-                    opset_version=18,
+                    opset_version=15, 
                     do_constant_folding=True,
-                    input_names=['z', 't', 'label', 'source_id'],
+                    input_names=['z', 't', 'label'],
                     output_names=['drift'],
                     dynamic_axes={
                         'z': {0: 'batch_size'},
                         't': {0: 'batch_size'},
                         'label': {0: 'batch_size'},
-                        'source_id': {0: 'batch_size'},
                         'drift': {0: 'batch_size'}
                     }
                 )
-            merge_external_data(drift_path)
-            config.logger.info(f"Drift exported to {drift_path}")
+            
+            config.logger.info(f"✅ ONNX Export Successful: {gen_path}, {drift_path}")
 
             # --- Auto-configure the HTML file to match the current dimensions ---
             html_path = Path("onnx_generate_image.html")
             if html_path.exists():
                 try:
-                    with open(html_path, 'r', encoding='utf-8') as f:
-                        html_content = f.read()
-
                     import re
-                    # Replace LATENT_SHAPE array (handles let or const, and varied spacing)
-                    html_content = re.sub(
-                        r'(let|const)\s+LATENT_SHAPE\s*=\s*\[1,\s*\d+,\s*\d+,\s*\d+\];',
-                        f'\\1 LATENT_SHAPE = [1, {config.LATENT_CHANNELS}, {config.LATENT_H}, {config.LATENT_W}];',
-                        html_content
-                    )
-                    # Replace IMG_SIZE constant
-                    html_content = re.sub(
-                        r'(let|const)\s+IMG_SIZE\s*=\s*\d+;',
-                        f'\\1 IMG_SIZE = {config.IMG_SIZE};',
-                        html_content
-                    )
+                    with open(html_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
 
+                    # Correct Latent Shape
+                    new_latent = f"[1, {config.LATENT_CHANNELS}, {config.LATENT_H}, {config.LATENT_W}]"
+                    content = re.sub(r'LATENT_SHAPE\s*=\s*\[1,\s*\d+,\s*\d+,\s*\d+\]', f'LATENT_SHAPE = {new_latent}', content)
+                    
+                    # Correct Image Size
+                    content = re.sub(r'(let|const)\s+IMG_SIZE\s*=\s*\d+', f'let IMG_SIZE = {config.IMG_SIZE}', content)
+                    
                     with open(html_path, 'w', encoding='utf-8') as f:
-                        f.write(html_content)
-                    config.logger.info(f"Updated {html_path.name} with new dimensions (IMG_SIZE={config.IMG_SIZE}).")
+                        f.write(content)
+                    config.logger.info(f"Updated {html_path.name} with {config.LATENT_H}x{config.LATENT_W} dimensions.")
                 except Exception as e:
-                    config.logger.warning(f"Could not auto-update HTML file dimensions: {e}")
+                    config.logger.warning(f"Could not auto-update HTML: {e}")
 
-            # --- Reset export mode ---
-            self.vae.apply(lambda m: set_export_mode(m, False))
-            self.drift.apply(lambda m: set_export_mode(m, False))
-            
         except Exception as e:
             config.logger.error(f"ONNX export failed: {e}")
+        finally:
+            # Revert internal flags
+            self.vae.apply(lambda m: set_export_mode(m, False))
+            self.drift.apply(lambda m: set_export_mode(m, False))
+
 
 
 # ============================================================

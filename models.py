@@ -302,23 +302,20 @@ class LabelConditionedBlock(nn.Module):
 class SubpixelUpsample(nn.Module):
     """
     Subpixel Convolution (PixelShuffle) for sharper upsampling.
-    Uses ICNR initialization and Noise Injection to prevent periodic artifacts.
+    Uses ICNR initialization to prevent checkerboard artifacts.
     """
     def __init__(self, in_channels, out_channels, upscale_factor=2):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels * (upscale_factor**2), kernel_size=3, stride=1, padding=1)
         self.shuffle = nn.PixelShuffle(upscale_factor)
         self.norm = nn.GroupNorm(min(8, out_channels), out_channels)
-        self.noise = NoiseInjection(out_channels)
         
         # Initialize with ICNR
         self.conv.weight.data.copy_(icnr_init(self.conv.weight.data, upscale_factor))
         nn.init.zeros_(self.conv.bias)
 
     def forward(self, x):
-        x = self.shuffle(self.conv(x))
-        x = self.noise(x)
-        return F.silu(self.norm(x))
+        return F.silu(self.norm(self.shuffle(self.conv(x))))
 
 # ============================================================
 # LABEL-CONDITIONED VAE
@@ -328,6 +325,7 @@ class LabelConditionedVAE(nn.Module):
     def __init__(self, free_bits=config.FREE_BITS):
         super().__init__()
         self.free_bits = free_bits
+        self._is_exporting = False
         
         # Multimodal Text Encoder
         if config.USE_NEURAL_TOKENIZER:
@@ -538,6 +536,10 @@ class LabelConditionedVAE(nn.Module):
             if isinstance(m, (NoiseInjection, PercentileRescale)):
                 m.force_active = active
 
+    def _set_export_mode(self, is_exporting=True):
+        """Enable export-optimized forward paths."""
+        self._is_exporting = is_exporting
+
     def forward(self, x, labels, text_bytes=None, source_id=None):
         """Forward pass with reparameterization."""
         mu, logvar = self.encode(x, labels, text_bytes, source_id)
@@ -583,6 +585,7 @@ class LabelConditionedDrift(nn.Module):
     """Drift network for probability flow ODE."""
     def __init__(self):
         super().__init__()
+        self._is_exporting = False
         # ========== ENHANCED TIME EMBEDDING WITH FOURIER FEATURES ==========
         self.time_mlp = nn.Sequential(
             FourierTimeEmbed(dim=128),
