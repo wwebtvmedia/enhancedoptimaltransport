@@ -1606,6 +1606,26 @@ class EnhancedLabelTrainer:
                     pass
             return model_copy
 
+        # Helper to merge .onnx.data files back into the .onnx file
+        def merge_external_data(model_path):
+            try:
+                import onnx
+                from pathlib import Path
+                model_path = Path(model_path)
+                if not model_path.exists():
+                    return
+                # Load model and external data automatically
+                model = onnx.load(str(model_path))
+                # Save model as a single file
+                onnx.save(model, str(model_path))
+                # Remove the now redundant .data file
+                data_path = model_path.with_suffix(model_path.suffix + ".data")
+                if data_path.exists():
+                    data_path.unlink()
+                    config.logger.info(f"Merged and removed external data: {data_path.name}")
+            except Exception as e:
+                config.logger.warning(f"Could not merge external data for {model_path.name}: {e}")
+
         # Wrapper class to export ONLY the decoder (generator) part of the VAE
         class VAEGenerator(torch.nn.Module):
             def __init__(self, vae):
@@ -1650,6 +1670,7 @@ class EnhancedLabelTrainer:
                         }
                     )
                 config.logger.info(f"✅ Generator exported to {gen_path}")
+                merge_external_data(gen_path)
             except Exception as e:
                 config.logger.error(f"❌ Generator export failed: {e}")
             
@@ -1691,6 +1712,7 @@ class EnhancedLabelTrainer:
                         }
                     )
                 config.logger.info(f"✅ Drift exported to {drift_path}")
+                merge_external_data(drift_path)
             except Exception as e:
                 config.logger.error(f"❌ Drift export failed: {e}")
 
