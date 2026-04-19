@@ -75,6 +75,7 @@ class TrainingProcessor:
                 if (epoch+1) % 5 == 0:
                     self.trainer.save_checkpoint()
                 if (epoch+1) % 10 == 0:
+                    self.trainer.generate_reconstructions()
                     self.trainer.generate_samples()
                     # Signal to UI that new samples are available
                     self.ctx.log_queue.put("UPDATE_GALLERY")

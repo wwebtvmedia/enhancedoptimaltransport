@@ -945,13 +945,21 @@ class EnhancedLabelTrainer:
 
     def calculate_fid_batch(self, real_features, fake_features):
         """Calculate FID score using scipy for matrix square root."""
+        # Ensure correct shape [N, D]
+        if real_features.dim() > 2:
+            real_features = real_features.flatten(1)
+        if fake_features.dim() > 2:
+            fake_features = fake_features.flatten(1)
+
         mu1 = real_features.mean(dim=0).cpu().numpy()
+        # torch.cov expects input where each row is a variable (dimension) and each column is an observation
+        # If input is [N, D], we transpose to [D, N]
         sigma1 = torch.cov(real_features.T).cpu().numpy()
+
         mu2 = fake_features.mean(dim=0).cpu().numpy()
         sigma2 = torch.cov(fake_features.T).cpu().numpy()
-        
+
         diff = mu1 - mu2
-        
         # Add regularization to prevent singularity with small batches
         reg = 1e-5 * np.eye(sigma1.shape[0])
         sigma1 += reg
@@ -1323,6 +1331,34 @@ class EnhancedLabelTrainer:
             traceback.print_exc()
             return False
         
+    def generate_reconstructions(self, batch: Optional[Dict] = None):
+        """Save real images and their reconstructions to check VAE quality."""
+        self.vae.eval()
+        
+        # Use provided batch or grab one from loader
+        if batch is None:
+            batch = next(iter(self.loader))
+            
+        images = batch['image'][:8].to(config.DEVICE)
+        labels = batch['label'][:8].to(config.DEVICE)
+        text_bytes = batch.get('text_bytes', None)
+        if text_bytes is not None:
+            text_bytes = text_bytes[:8].to(config.DEVICE)
+        source_id = batch.get('source_id', None)
+        if source_id is not None:
+            source_id = source_id[:8].to(config.DEVICE)
+            
+        with torch.no_grad():
+            recon, _, _ = self.vae(images, labels, text_bytes=text_bytes, source_id=source_id)
+            
+        # Combine into a single grid: top row real, bottom row recon
+        combined = torch.cat([images, recon], dim=0)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_path = config.DIRS["samples"] / f"recon_epoch{self.epoch+1}_{timestamp}.png"
+        
+        dm.save_image_grid(combined, save_path, nrow=8)
+        config.logger.info(f"VAE reconstructions saved to {save_path}")
+
     def generate_samples(self, labels=None, num_samples=8, temperature=None, method='heun',
                          langevin_steps=None, langevin_step_size=None, langevin_score_scale=None,
                          cfg_scale=None, source_id=None):

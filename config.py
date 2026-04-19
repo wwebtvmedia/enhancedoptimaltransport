@@ -55,7 +55,7 @@ COMPRESSION_RATIO = (IMG_SIZE * IMG_SIZE * 3) / LATENT_DIM
 # ============================================================================
 # TRAINING HYPERPARAMETERS (base values, may be adjusted per device)
 # ============================================================================
-LR = 2e-4
+LR = 1e-4
 EPOCHS = 600
 WEIGHT_DECAY = 1e-4
 GRAD_CLIP = 1.0
@@ -176,28 +176,26 @@ USE_AMP = True
 # THREE-PHASE TRAINING SCHEDULE
 # ============================================================================
 # Adaptive switch points based on total epochs
-PHASE1_EPOCHS = 100
-PHASE2_EPOCHS = 400                    # We are currently at 534, so we will be in Phase 3
+PHASE1_EPOCHS = 150
+PHASE2_EPOCHS = 400                    
 # Phase 3 runs from PHASE2_EPOCHS to EPOCHS (Both train)
 
 # ============================================================================
 # TRAINING SCHEDULE DICTIONARY
 # ============================================================================
 SCHEDULE_MANUALLY_SET = False
-# Stabilization phase: epoch 570-620 = Phase 1 (VAE only)
-# Epoch 620+ = Phase 3 (Both)
-CUSTOM_SCHED = {e: 1 for e in range(570, 620)}
-for e in range(620, 1000): CUSTOM_SCHED[e] = 3
+# Use standard three-phase logic unless overridden
+CUSTOM_SCHED = {}
 
 TRAINING_SCHEDULE = {
-    'mode': 'custom',                        
+    'mode': 'three_phase',                        
     'force_phase': None,                     
     'custom_schedule': CUSTOM_SCHED,         
-    'switch_epoch': 50,                       
+    'switch_epoch': 150,                       
     'switch_epoch_1': PHASE1_EPOCHS,           
     'switch_epoch_2': PHASE2_EPOCHS,           
-    'vae_epochs': list(range(0, 50)),
-    'drift_epochs': list(range(50, 200)),
+    'vae_epochs': list(range(0, 150)),
+    'drift_epochs': list(range(150, 400)),
     'alternate_freq': 5,
 }
 
