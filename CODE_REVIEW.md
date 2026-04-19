@@ -12,12 +12,19 @@ This document tracks the technical integrity of the `enhancedoptimaltransport` p
 | **Multi-Source Data** | ✅ | STL10 + CIFAR10 integration. |
 | **Neural Tokenizer** | 🚧 | Byte-level encoding (In Development). |
 | **Shared Embedding Space** | 🚧 | Contrastive alignment (Planned). |
+| **Autonomous Engine** | ✅ | KPI-based phase switching and nudges. |
 
 ---
 
 ## 🏗️ Architecture Review
 
-### 1. Model Definitions (`models.py`)
+### 1. Autonomous Control (`app_processor.py`)
+- [ ] **Phase Transitions:** Verify SNR/SSIM thresholds correctly trigger 1->2->3 transitions.
+- [ ] **Stochastic Nudges:** Confirm temperature-scaled probability logic for weight boosts.
+- [ ] **Stability Guard:** Ensure Dynamic Controller pulls back weights if loss > 5.0.
+- [ ] **Momentum Reset:** Test chance of dropping from Phase 3 back to 2 for correction.
+
+### 2. Model Definitions (`models.py`)
 - [ ] **VAE Stability:** Check `PercentileRescale` logic for NaN prevention.
 - [ ] **Attention Efficiency:** Verify `SpatialSplitAttention` reduces memory overhead as expected.
 - [ ] **Conditioning:** Ensure FiLM modulation is applied at all critical decoder layers.

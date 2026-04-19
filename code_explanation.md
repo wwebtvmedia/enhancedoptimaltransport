@@ -10,9 +10,10 @@ This document provides a comprehensive technical walkthrough of the Enhanced Lab
 3. [Mathematical Foundations](#mathematical-foundations)
 4. [Model Architecture Details](#model-architecture-details)
 5. [Training Pipeline](#training-pipeline)
-6. [Inference & Multimodal Generation](#inference--generation)
-7. [GUI Interfaces (MCP Design)](#gui-interfaces)
-8. [Technical Innovations](#key-technical-innovations)
+6. [Autonomous Strategy Engine](#autonomous-strategy-engine)
+7. [Inference & Multimodal Generation](#inference--generation)
+8. [GUI Interfaces (MCP Design)](#gui-interfaces)
+9. [Technical Innovations](#key-technical-innovations)
 
 ---
 
@@ -21,9 +22,9 @@ This document provides a comprehensive technical walkthrough of the Enhanced Lab
 This project implements a generative model based on the **Latent Schrödinger Bridge (LSB)** problem, enabling category-specific image generation by learning optimal stochastic transport between a Gaussian prior and a learned latent data distribution.
 
 ### Key Features:
+- **Autonomous Intelligence**: Self-managing training phases and dynamic parameter scaling.
 - **Bidirectional Multimodal Engine**: Supports Text $\leftrightarrow$ Image and Text $\leftrightarrow$ Text translation.
 - **OU Reference Process**: Theoretically correct bridge velocity training targets.
-- **Three-Phase Curriculum**: Progresses from VAE training to Drift Matching and finally Joint Fine-tuning.
 - **Unified Hardware Engine**: Support for CUDA, MPS (Apple), and XPU (Intel).
 
 ---
@@ -34,13 +35,13 @@ This project implements a generative model based on the **Latent Schrödinger Br
 - **`main.py`**: Entry point with CLI and mode selection.
 - **`config.py`**: Centralized configuration, hyperparameters, and device detection.
 - **`models.py`**: Neural network architectures (VAE, U-Net Drift, Tokenizers).
-- **`training.py`**: Main training logic, loss functions, and phase management.
+- **`training.py`**: Core training logic, loss functions, and bridge mathematics.
 - **`inference.py`**: High-level generation and translation APIs.
 - **`data_management.py`**: Dataset handling (STL10, CIFAR10) and robust checkpoint loading.
 
 ### Application Layer (MCP Architecture)
 - **`app_context.py`**: Central state container for progress tracking.
-- **`app_processor.py`**: Middleware bridging UI and training logic.
+- **`app_processor.py`**: The **Intelligence Layer**. Houses the Autonomous Strategy Engine.
 - **`app_streamlit.py` / `appmain_tk.py`**: Web and Desktop interfaces.
 
 ---
@@ -79,11 +80,31 @@ $$f_{cfg} = f_{uncond} + s \cdot (f_{cond} - f_{uncond})$$
 ## Training Pipeline
 
 ### Three-Phase Curriculum
-| Phase | Duration | Focus |
-| :--- | :--- | :--- |
-| **Phase 1: VAE** | 0-50 Epochs | Reconstruction quality and latent organization (KL/SSIM). |
-| **Phase 2: Drift** | 50-100 Epochs | Learning transport dynamics between prior and data. |
-| **Phase 3: Joint** | 100-200 Epochs | Global optimization and perceptual fine-tuning. |
+The training progresses through three distinct states to ensure stability:
+1. **Phase 1: VAE Training**: Focuses on latent space reconstruction and organization.
+2. **Phase 2: Drift Matching**: Freezes VAE and trains the U-Net to match transport dynamics.
+3. **Phase 3: Joint Fine-tuning**: Unfreezes all components for final perceptual alignment.
+
+---
+
+## Autonomous Strategy Engine
+
+Located in `app_processor.py`, this layer acts as a "virtual researcher" to manage training:
+
+### 1. KPI-Driven Transitions
+Transitions between phases are handled automatically based on performance metrics:
+- **Phase 1 $\to$ 2**: Triggered when SNR > 20dB and SSIM < 0.26.
+- **Phase 2 $\to$ 3**: Triggered when Drift Loss < 1.25 and SSIM < 0.21.
+
+### 2. Dynamic Parameter Controller
+Monitors `total_loss` every epoch to balance sharpness and stability:
+- **Sharpness Push**: Increases `DRIFT_WEIGHT` and `CFG_SCALE` when loss is stable.
+- **Stability Guard**: Aggressively scales back weights if loss approaches the **5.0** threshold.
+
+### 3. Stochastic Quality Nudges
+Uses training **Temperature** to determine the probability of "nudges":
+- **Intensity Boosts**: Temporarily increases learning weights to help the model escape local minima.
+- **Momentum Resets**: Small probability to drop from Phase 3 back to Phase 2 to re-solidify trajectories.
 
 ---
 
@@ -91,7 +112,7 @@ $$f_{cfg} = f_{uncond} + s \cdot (f_{cond} - f_{uncond})$$
 
 ### Generation Logic
 1. Sample $z_0 \sim \mathcal{N}(0, I)$.
-2. Integrate $dz_t$ using Euler-Maruyama or Heun's method from $t=0 \to 1$.
+2. Integrate $dz_t$ using Euler-Maruyama, Heun, or RK4 methods from $t=0 \to 1$.
 3. Decode $z_1 \to \text{Image}$.
 
 ### Multimodal Modes
