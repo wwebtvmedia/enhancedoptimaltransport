@@ -66,16 +66,16 @@ GRAD_CLIP = 1.0
 KL_WEIGHT = 0.004              # Balanced for reconstruction vs latent organization
 RECON_WEIGHT = 5.0             # Reduced to allow Drift to dominate sharpness
 SUBPIXEL_INITIAL_MIX = 1.0     
-DRIFT_WEIGHT = 3.0             # Tripled to restore structural logic
-DIVERSITY_WEIGHT = 0.5         # Further reduced to stop noise motifs
+DRIFT_WEIGHT = 4.0             # Quadrupled for final trajectory refinement
+DIVERSITY_WEIGHT = 0.4         # Minimal to allow drift to fully dictate structure
 CONSISTENCY_WEIGHT = 1.0       
-PHASE3_RECON_SCALE = 0.05      # Further reduced for joint fine-tuning focus
+PHASE3_RECON_SCALE = 0.05      
 
-# NEW: Quality-focused loss weights
-PERCEPTUAL_WEIGHT = 2.0        # Increased for texture
-SSIM_WEIGHT = 3.0              # Tripled to fight blurriness
-LPIPS_WEIGHT = 0.5             
-EDGE_WEIGHT = 0.5              
+# NEW: High-fidelity quality settings
+PERCEPTUAL_WEIGHT = 3.0        # Increased for deep texture matching
+SSIM_WEIGHT = 4.0              # Quadrupled for edge sharpness
+LPIPS_WEIGHT = 0.8             # Stronger perceptual anchor
+EDGE_WEIGHT = 0.8              # Sharper boundaries
 TV_WEIGHT = 0.01               
 
 # ============================================================================

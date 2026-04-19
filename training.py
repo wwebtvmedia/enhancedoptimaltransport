@@ -149,6 +149,39 @@ class OUReference:
 # ============================================================
 # UTILITIES
 # ============================================================
+class EMAModel:
+    """Exponential Moving Average for model weights."""
+    def __init__(self, model, decay=0.999):
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+        self._register()
+
+    def _register(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+
+    def update(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
+                self.shadow[name] = new_average.clone()
+
+    def apply_shadow(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.backup[name] = param.data.clone()
+                param.data.copy_(self.shadow[name])
+
+    def restore(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                param.data.copy_(self.backup[name])
+        self.backup = {}
+
 def calc_snr(real: torch.Tensor, recon: torch.Tensor) -> float:
     """Calculate Signal-to-Noise Ratio."""
     mse = F.mse_loss(recon, real)
@@ -405,6 +438,10 @@ class EnhancedLabelTrainer:
         # OU reference process
         self.ou_ref = OUReference(theta=config.OU_THETA, sigma=config.OU_SIGMA) if config.USE_OU_BRIDGE else None
         
+        # EMA Models for smoother weights and better quality
+        self.ema_vae = EMAModel(self.vae, decay=0.999)
+        self.ema_drift = EMAModel(self.drift, decay=0.999)
+
         # AMP Scaler (Cross-backend support)
         self.scaler = None
         if config.USE_AMP and config.AMP_AVAILABLE:
@@ -1172,6 +1209,13 @@ class EnhancedLabelTrainer:
                 self.debug_counter += 1
                 batch_count += 1
                 
+                # Update EMA for smoother weights
+                if phase == 1:
+                    self.ema_vae.update()
+                else:
+                    self.ema_vae.update()
+                    self.ema_drift.update()
+                
                 # Update progress bar
                 if TQDM_AVAILABLE and batch_idx % 10 == 0:
                     current_loss_val = loss_dict['total'].item() if isinstance(loss_dict['total'], torch.Tensor) else loss_dict['total']
@@ -1370,21 +1414,28 @@ class EnhancedLabelTrainer:
         """Save real images and their reconstructions to check VAE quality."""
         self.vae.eval()
         
-        # Use provided batch or grab one from loader
-        if batch is None:
-            batch = next(iter(self.loader))
-            
-        images = batch['image'][:8].to(config.DEVICE)
-        labels = batch['label'][:8].to(config.DEVICE)
-        text_bytes = batch.get('text_bytes', None)
-        if text_bytes is not None:
-            text_bytes = text_bytes[:8].to(config.DEVICE)
-        source_id = batch.get('source_id', None)
-        if source_id is not None:
-            source_id = source_id[:8].to(config.DEVICE)
-            
-        with torch.no_grad():
-            recon, _, _ = self.vae(images, labels, text_bytes=text_bytes, source_id=source_id)
+        # Apply EMA weights for better visual quality
+        self.ema_vae.apply_shadow()
+        
+        try:
+            # Use provided batch or grab one from loader
+            if batch is None:
+                batch = next(iter(self.loader))
+                
+            images = batch['image'][:8].to(config.DEVICE)
+            labels = batch['label'][:8].to(config.DEVICE)
+            text_bytes = batch.get('text_bytes', None)
+            if text_bytes is not None:
+                text_bytes = text_bytes[:8].to(config.DEVICE)
+            source_id = batch.get('source_id', None)
+            if source_id is not None:
+                source_id = source_id[:8].to(config.DEVICE)
+                
+            with torch.no_grad():
+                recon, _, _ = self.vae(images, labels, text_bytes=text_bytes, source_id=source_id)
+        finally:
+            # Restore original weights
+            self.ema_vae.restore()
             
         # Combine into a single grid: top row real, bottom row recon
         combined = torch.cat([images, recon], dim=0)
@@ -1422,12 +1473,17 @@ class EnhancedLabelTrainer:
         self.vae.eval()
         self.drift.eval()
         
-        if labels is not None:
-            num_samples = len(labels)
-        else:
-            labels = [i % 10 for i in range(num_samples)]
+        # Apply EMA weights for better generative quality
+        self.ema_vae.apply_shadow()
+        self.ema_drift.apply_shadow()
         
-        with torch.no_grad():
+        try:
+            if labels is not None:
+                num_samples = len(labels)
+            else:
+                labels = [i % 10 for i in range(num_samples)]
+            
+            with torch.no_grad():
             labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
             
             # Neural Tokenizer support
@@ -1558,6 +1614,10 @@ class EnhancedLabelTrainer:
             config.logger.info(f"Images saved to: {grid_path}")
             
             return grid_path
+        finally:
+            # Restore original weights
+            self.ema_vae.restore()
+            self.ema_drift.restore()
 
     def list_available_snapshots(self) -> List[Path]:
         """List all available snapshots."""
