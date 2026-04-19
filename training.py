@@ -170,6 +170,7 @@ class EMAModel:
                 self.shadow[name].mul_(self.decay).add_(param.data, alpha=1.0 - self.decay)
 
     def apply_shadow(self):
+        self.backup = {}
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 self.backup[name] = param.data.clone()
@@ -178,8 +179,8 @@ class EMAModel:
     def restore(self):
         for name, param in self.model.named_parameters():
             if param.requires_grad:
-                param.data.copy_(self.backup[name])
-        self.backup = {}
+                if name in self.backup:
+                    param.data.copy_(self.backup[name])
 
 def calc_snr(real: torch.Tensor, recon: torch.Tensor) -> float:
     """Calculate Signal-to-Noise Ratio."""
