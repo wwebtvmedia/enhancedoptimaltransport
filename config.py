@@ -189,7 +189,7 @@ CUSTOM_SCHED = {}
 
 TRAINING_SCHEDULE = {
     'mode': 'manual',                        
-    'force_phase': 2,                     
+    'force_phase': 3,                     
     'custom_schedule': CUSTOM_SCHED,         
     'switch_epoch': 150,                       
     'switch_epoch_1': PHASE1_EPOCHS,           
