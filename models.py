@@ -302,20 +302,23 @@ class LabelConditionedBlock(nn.Module):
 class SubpixelUpsample(nn.Module):
     """
     Subpixel Convolution (PixelShuffle) for sharper upsampling.
-    Uses ICNR initialization to prevent checkerboard artifacts.
+    Uses ICNR initialization and Noise Injection to prevent periodic artifacts.
     """
     def __init__(self, in_channels, out_channels, upscale_factor=2):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels * (upscale_factor**2), kernel_size=3, stride=1, padding=1)
         self.shuffle = nn.PixelShuffle(upscale_factor)
         self.norm = nn.GroupNorm(min(8, out_channels), out_channels)
+        self.noise = NoiseInjection(out_channels)
         
         # Initialize with ICNR
         self.conv.weight.data.copy_(icnr_init(self.conv.weight.data, upscale_factor))
         nn.init.zeros_(self.conv.bias)
 
     def forward(self, x):
-        return F.silu(self.norm(self.shuffle(self.conv(x))))
+        x = self.shuffle(self.conv(x))
+        x = self.noise(x)
+        return F.silu(self.norm(x))
 
 # ============================================================
 # LABEL-CONDITIONED VAE

@@ -80,21 +80,21 @@ class TrainingProcessor:
 
         # 3. DIVERSITY_WEIGHT (Monitor Latent Variance)
         mu_std = losses.get('mu_std', 0.8)
-        if mu_std < 0.5:
+        if mu_std < 0.6:
             # Low diversity (risk of collapse), boost diversity loss
-            config.DIVERSITY_WEIGHT = min(5.0, config.DIVERSITY_WEIGHT * 1.1)
-        elif mu_std > 1.2:
-            # Too much chaos, relax diversity to favor reconstruction
+            config.DIVERSITY_WEIGHT = min(3.0, config.DIVERSITY_WEIGHT * 1.1)
+        elif mu_std > 1.1:
+            # Too much chaos (potential periodic motifs), relax diversity
             config.DIVERSITY_WEIGHT = max(0.1, config.DIVERSITY_WEIGHT * 0.9)
 
         # 4. SSIM_WEIGHT (Monitor Structural Integrity)
         ssim_loss = losses.get('ssim_loss', 0.3)
-        if ssim_loss > 0.4:
-            # Too blurry, increase importance of structural loss
-            config.SSIM_WEIGHT = min(5.0, config.SSIM_WEIGHT * 1.05)
-        elif ssim_loss < 0.15:
-            # Already very sharp, can slightly relax
-            config.SSIM_WEIGHT = max(0.5, config.SSIM_WEIGHT * 0.98)
+        if ssim_loss > 0.35:
+            # Blurry detected, aggressively increase importance of structural loss
+            config.SSIM_WEIGHT = min(6.0, config.SSIM_WEIGHT * 1.1)
+        elif ssim_loss < 0.2:
+            # High quality, can slightly relax to favor other metrics
+            config.SSIM_WEIGHT = max(0.5, config.SSIM_WEIGHT * 0.95)
             
         # Log significant changes to the terminal
         if (abs(config.DRIFT_WEIGHT - old_drift) > 0.01 or 

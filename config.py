@@ -66,14 +66,14 @@ GRAD_CLIP = 1.0
 KL_WEIGHT = 0.004              # Balanced for reconstruction vs latent organization
 RECON_WEIGHT = 10.0            # High weight for sharpness
 SUBPIXEL_INITIAL_MIX = 1.0     
-DRIFT_WEIGHT = 1.0             
-DIVERSITY_WEIGHT = 1.5         
+DRIFT_WEIGHT = 2.0             # Increased to prioritize trajectory structure
+DIVERSITY_WEIGHT = 0.7         # Reduced to prevent periodic 'motif' artifacts
 CONSISTENCY_WEIGHT = 1.0       
 PHASE3_RECON_SCALE = 0.1       # Reduced from 0.8 for smoother transition in Phase 3
 
 # NEW: Quality-focused loss weights
 PERCEPTUAL_WEIGHT = 1.5        
-SSIM_WEIGHT = 1.0              
+SSIM_WEIGHT = 2.0              # Doubled to fight blurriness
 LPIPS_WEIGHT = 0.3             
 EDGE_WEIGHT = 0.3              
 TV_WEIGHT = 0.02               
@@ -99,7 +99,7 @@ DIVERSITY_HIGH_PENALTY = 0.5
 DIVERSITY_BALANCE_WEIGHT = 0.4
 DIVERSITY_ADAPTIVE = True
 DIVERSITY_TARGET_START = 0.3
-DIVERSITY_TARGET_END = 1.0
+DIVERSITY_TARGET_END = 0.8         # Reduced from 1.0 to prevent noise-motif injection
 DIVERSITY_ADAPT_EPOCHS = 50
 KL_ANNEALING_EPOCHS = 40       # Slightly longer annealing
 LOGVAR_CLAMP_MIN = -4
