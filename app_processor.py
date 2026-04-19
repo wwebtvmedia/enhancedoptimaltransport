@@ -6,6 +6,7 @@ import os
 import sys
 import torch
 import threading
+import random
 from typing import Callable, Dict, Any, Optional
 
 # Local modules
@@ -103,6 +104,58 @@ class TrainingProcessor:
             
             config.logger.info(f"📊 [App Control] Dynamic Update: DriftW={config.DRIFT_WEIGHT:.2f}, CFG={config.CFG_SCALE:.1f}, DivW={config.DIVERSITY_WEIGHT:.2f}, SSIMW={config.SSIM_WEIGHT:.2f}")
 
+    def _run_autonomous_strategy(self, epoch: int, losses: Dict[str, Any]):
+        """
+        Autonomous training management:
+        - KPI-based phase transitions (1 -> 2 -> 3).
+        - Stochastic nudges/restarts to avoid local minima, scaled by temperature.
+        """
+        if not self.trainer:
+            return
+
+        current_phase = self.trainer.phase
+        # Use temperature as a proxy for 'settledness'
+        temp = losses.get('temperature', 0.5)
+        
+        # --- 1. PHASE TRANSITION LOGIC ---
+        # Goal: Optimize 1 -> 2 -> 3 transition based on quality targets
+        
+        if current_phase == 1:
+            snr = losses.get('snr', 0)
+            ssim = losses.get('ssim_loss', 1.0)
+            # Transition to Drift Matching if VAE is sharp and stable
+            if snr > 20.0 and ssim < 0.26 and epoch >= 80:
+                config.logger.info(f"✨ [Auto-Strategy] VAE Quality Target Reached (SNR: {snr:.1f}dB, SSIM: {ssim:.3f}).")
+                config.logger.info("🚀 Transitioning to Phase 2: Drift Matching.")
+                config.TRAINING_SCHEDULE['mode'] = 'manual'
+                config.TRAINING_SCHEDULE['force_phase'] = 2
+                
+        elif current_phase == 2:
+            drift = losses.get('drift', 10.0)
+            ssim = losses.get('ssim_loss', 1.0)
+            # Transition to Joint Fine-tuning if Bridge is accurate
+            if drift < 1.25 and ssim < 0.21 and epoch >= 160:
+                config.logger.info(f"✨ [Auto-Strategy] Drift Stability Target Reached (Loss: {drift:.3f}).")
+                config.logger.info("🚀 Transitioning to Phase 3: Joint Fine-tuning.")
+                config.TRAINING_SCHEDULE['mode'] = 'manual'
+                config.TRAINING_SCHEDULE['force_phase'] = 3
+
+        # --- 2. STOCHASTIC RESTART / NUDGE ---
+        # Probability peaks when temperature is high (searching harder when hot)
+        nudge_prob = 0.03 * (temp + 0.5) 
+        
+        if random.random() < nudge_prob:
+            config.logger.info(f"🎲 [Stochastic Control] Triggering quality nudge (p={nudge_prob:.3f}, temp={temp:.2f})")
+            
+            # "Increase a little bit" - temporary boost to learning intensity
+            config.DRIFT_WEIGHT = min(2.8, config.DRIFT_WEIGHT * 1.12)
+            config.RECON_WEIGHT = min(16.0, config.RECON_WEIGHT * 1.08)
+            
+            # "Restart" capability: small chance to go back a phase if in Phase 3
+            if current_phase == 3 and random.random() < 0.15:
+                config.logger.info("↩️ [Stochastic Control] Momentum Reset: Back-switching to Phase 2 for trajectory correction.")
+                config.TRAINING_SCHEDULE['force_phase'] = 2
+
     def _run_loop(self, on_epoch_done, force_fresh=False):
         try:
             loader = dm.load_data()
@@ -140,6 +193,12 @@ class TrainingProcessor:
                 
                 # Update context
                 self.ctx.update_metric(epoch, losses)
+                
+                # --- STRATEGY ENGINE ---
+                # Dynamic parameter scaling
+                self._adjust_dynamic_parameters(epoch, losses)
+                # Autonomous phase switching and stochastic nudges
+                self._run_autonomous_strategy(epoch, losses)
                 
                 if on_epoch_done:
                     on_epoch_done(epoch, losses)
