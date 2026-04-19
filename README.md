@@ -12,6 +12,7 @@ A state-of-the-art generative model implementation based on the **Latent Schröd
 - [Overview](#overview)
 - [Key Advancements (v2.1)](#-key-advancements-v21)
 - [Installation & Setup](#%EF%B8%8F-installation-and-setup)
+- [Pretrained Models](#-pretrained-models)
 - [Mathematical Foundations](#-mathematical-foundations)
 - [Model Architecture](#%EF%B8%8F-model-architecture)
 - [Training & Monitoring](#-training--monitoring)
@@ -46,17 +47,23 @@ python -m venv .venv
 source .venv/bin/activate  # Linux/macOS
 
 # Install core dependencies
-pip install torch torchvision numpy scipy tqdm onnx onnxruntime pillow streamlit pygal cairosvg
+pip install torch torchvision numpy scipy tqdm onnx onnxruntime pillow streamlit pygal cairosvg huggingface_hub
 ```
 
-### 3. Launching Interfaces
-The project supports three distinct modes via `main.py`:
+---
 
-| Mode | Command | Description |
+## 🤗 Pretrained Models
+The latest model weights are hosted on Hugging Face. You can download the `.pt` file and place it in `enhanced_label_sb/checkpoints/`.
+
+| Version | Checkpoint | Description |
 | :--- | :--- | :--- |
-| **Desktop GUI** | `python main.py --gui` | Full interactive control with real-time plotting. |
-| **Web Dashboard** | `python main.py --streamlit` | Streamlit-based remote monitoring and generation. |
-| **Terminal** | `python main.py` | Headless mode for high-performance training. |
+| **v2.1 (SharpFlow)** | [Download on HF](https://huggingface.co/models) | Latest Phase 3 joint fine-tuned weights. |
+
+### Uploading to Hugging Face
+If you want to host your own version, use the provided helper script:
+```bash
+python upload_to_hf.py
+```
 
 ---
 
