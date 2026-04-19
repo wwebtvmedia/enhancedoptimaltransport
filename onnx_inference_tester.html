@@ -359,7 +359,8 @@
             const latentSize = LATENT_SHAPE.reduce((a, b) => a * b, 1);
             const z0Data = new Float32Array(latentSize);
             let localSeed = seed;
-            for (let i = 0; i < latentSize; i++) z0Data[i] = normalRandom(localSeed++);
+            // Reduce initial scale (0.6) to prevent immediate saturation
+            for (let i = 0; i < latentSize; i++) z0Data[i] = normalRandom(localSeed++) * 0.6;
 
             let z = new ort.Tensor('float32', z0Data, LATENT_SHAPE);
             const labelTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(label)]), [1]);
@@ -372,8 +373,8 @@
                 
                 const nextZData = new Float32Array(z.data.length);
                 for (let j = 0; j < z.data.length; j++) {
-                    // Safety Clamp to prevent explosion
-                    nextZData[j] = Math.min(12, Math.max(-12, z.data[j] + drift.data[j] * dt));
+                    // Strict Safety Clamp to prevent Tanh saturation (White Image)
+                    nextZData[j] = Math.min(5.0, Math.max(-5.0, z.data[j] + drift.data[j] * dt));
                 }
                 z = new ort.Tensor('float32', nextZData, LATENT_SHAPE);
             }

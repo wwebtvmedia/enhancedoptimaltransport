@@ -366,7 +366,7 @@
 
                     const latentSize = LATENT_SHAPE.reduce((a, b) => a * b, 1);
                     const zData = new Float32Array(latentSize);
-                    for (let i = 0; i < latentSize; i++) zData[i] = normalRandom(0, temp);
+                    for (let i = 0; i < latentSize; i++) zData[i] = normalRandom(0, temp * 0.6); // Scale down starting noise
                     let z = createTensor(zData, LATENT_SHAPE);
 
                     for (let i = 0; i < steps; i++) {
@@ -375,8 +375,8 @@
                             const d = await runDrift(z, t, labelTensor);
                             const nextZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) {
-                                // Euler + Safety Clamp to prevent explosion (White Image)
-                                nextZ[j] = Math.min(12, Math.max(-12, z.data[j] + d.data[j] * dt));
+                                // Euler + Strict Safety Clamp to prevent Tanh saturation (White Image)
+                                nextZ[j] = Math.min(5.0, Math.max(-5.0, z.data[j] + d.data[j] * dt));
                             }
                             z = createTensor(nextZ, LATENT_SHAPE);
                         } else {
@@ -386,15 +386,15 @@
                             const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + dt, labelTensor);
                             const finalZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) {
-                                // Heun + Safety Clamp
-                                finalZ[j] = Math.min(12, Math.max(-12, z.data[j] + (dt/2) * (k1.data[j] + k2.data[j])));
+                                // Heun + Strict Safety Clamp
+                                finalZ[j] = Math.min(5.0, Math.max(-5.0, z.data[j] + (dt/2) * (k1.data[j] + k2.data[j])));
                             }
                             z = createTensor(finalZ, LATENT_SHAPE);
                         }
                         if (i % 10 === 0) {
                             statusEl.textContent = `Progress: ${Math.round((i/steps)*100)}%`;
                             await decodeAndRender(z, labelTensor);
-                            await new Promise(r => setTimeout(resolve, 0));
+                            await new Promise(resolve => setTimeout(resolve, 0));
                         }
                     }
                     await decodeAndRender(z, labelTensor);
