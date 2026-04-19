@@ -107,7 +107,7 @@
             background: #eee;
             border-radius: 4px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            width: 384px; /* Default display scale */
+            width: 384px; 
             height: 384px;
             image-rendering: pixelated;
         }
@@ -136,7 +136,6 @@
             margin-left: 8px;
         }
     </style>
-    <!-- Use the full bundle for better operator support and CPU fallback -->
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script>
 </head>
 <body>
@@ -164,10 +163,9 @@
             <div class="control-group">
                 <label for="resSelect">Resolution</label>
                 <select id="resSelect">
-                    <option value="32">32x32 (CIFAR)</option>
+                    <option value="32">32x32</option>
                     <option value="64">64x64</option>
                     <option value="96" selected>96x96 (STL-10)</option>
-                    <option value="128">128x128</option>
                 </select>
             </div>
 
@@ -230,22 +228,15 @@
             const loadDirBtn = document.getElementById('loadDirBtn');
             const dirInput = document.getElementById('dirInput');
 
-            // --- Dynamic Shape Detection ---
             function detectModelShapes() {
                 if (!vaeSession || !driftSession) return;
-
                 try {
-                    // 1. Detect Latent Shape from VAE input 'z'
                     const metadata = vaeSession.handler ? vaeSession.handler.inputMetadata : null;
-                    
                     if (metadata && metadata.z) {
                         const detectedDims = metadata.z.dims.map(d => typeof d === 'number' ? d : 1);
                         detectedDims[0] = 1;
                         LATENT_SHAPE = detectedDims;
-                        console.log("Detected Latent Shape:", LATENT_SHAPE);
                     }
-
-                    // 2. Detect Image Size from VAE output 'reconstruction'
                     const outMetadata = vaeSession.handler ? vaeSession.handler.outputMetadata : null;
                     if (outMetadata && outMetadata.reconstruction) {
                         const outDims = outMetadata.reconstruction.dims;
@@ -253,25 +244,11 @@
                             IMG_SIZE = outDims[2];
                             canvas.width = IMG_SIZE;
                             canvas.height = IMG_SIZE;
-                            console.log("Detected Image Size:", IMG_SIZE);
-                            
-                            const options = Array.from(resSelect.options);
-                            const matchingOption = options.find(o => parseInt(o.value) === IMG_SIZE);
-                            if (matchingOption) {
-                                resSelect.value = IMG_SIZE.toString();
-                            } else {
-                                const newOpt = document.createElement('option');
-                                newOpt.value = IMG_SIZE;
-                                newOpt.textContent = `${IMG_SIZE}x${IMG_SIZE} (Custom)`;
-                                resSelect.appendChild(newOpt);
-                                resSelect.value = IMG_SIZE.toString();
-                            }
                         }
                     }
-
                     statusEl.textContent = `Ready (Detected: ${LATENT_SHAPE[1]}ch latent, ${IMG_SIZE}px image).`;
                 } catch (e) {
-                    console.warn("Shape detection partially failed, using defaults:", e);
+                    console.warn("Shape detection failed:", e);
                 }
             }
 
@@ -282,8 +259,6 @@
                 LATENT_SHAPE = [1, channels, latentDim, latentDim];
                 canvas.width = IMG_SIZE;
                 canvas.height = IMG_SIZE;
-                canvas.style.width = '384px';
-                canvas.style.height = '384px';
             });
 
             tempSlider.addEventListener('input', () => tempValue.textContent = parseFloat(tempSlider.value).toFixed(2));
@@ -293,14 +268,11 @@
                 let u = 0, v = 0;
                 while (u === 0) u = Math.random();
                 while (v === 0) v = Math.random();
-                const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-                return mean + std * z;
+                return mean + std * (Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v));
             }
 
             function createTensor(data, dims, type = 'float32') {
-                if (type === 'int64') {
-                    return new ort.Tensor('int64', BigInt64Array.from(data, x => BigInt(x)), dims);
-                }
+                if (type === 'int64') return new ort.Tensor('int64', BigInt64Array.from(data, x => BigInt(x)), dims);
                 return new ort.Tensor('float32', new Float32Array(data), dims);
             }
 
@@ -310,116 +282,80 @@
                     if (file.name === 'generator.onnx') vaeFile = file;
                     if (file.name === 'drift.onnx') driftFile = file;
                 }
-
                 if (!vaeFile || !driftFile) {
-                    statusEl.textContent = 'Error: Missing generator.onnx or drift.onnx in selected folder.';
+                    statusEl.textContent = 'Error: Missing generator.onnx or drift.onnx.';
                     return;
                 }
-
                 try {
-                    statusEl.textContent = 'Loading selected neural networks...';
-                    
-                    if (vaeSession && vaeSession._url) URL.revokeObjectURL(vaeSession._url);
-                    if (driftSession && driftSession._url) URL.revokeObjectURL(driftSession._url);
-
-                    const vaeUrl = URL.createObjectURL(vaeFile);
-                    const driftUrl = URL.createObjectURL(driftFile);
-
-                    const providers = ['cpu', 'webgl'];
-                    
-                    vaeSession = await ort.InferenceSession.create(vaeUrl, {
-                        executionProviders: providers,
-                        graphOptimizationLevel: 'all'
-                    });
-                    vaeSession._url = vaeUrl;
-
-                    driftSession = await ort.InferenceSession.create(driftUrl, {
-                        executionProviders: providers,
-                        graphOptimizationLevel: 'all'
-                    });
-                    driftSession._url = driftUrl;
-
+                    statusEl.textContent = 'Loading models...';
+                    const providers = ['wasm', 'webgl'];
+                    vaeSession = await ort.InferenceSession.create(await vaeFile.arrayBuffer(), { executionProviders: providers });
+                    driftSession = await ort.InferenceSession.create(await driftFile.arrayBuffer(), { executionProviders: providers });
                     detectModelShapes();
-
-                    generateBtn.textContent = 'Generate Image';
                     generateBtn.disabled = false;
+                    generateBtn.textContent = 'Generate Image';
                 } catch (err) {
-                    statusEl.textContent = 'Error loading from folder: ' + err.message;
-                    console.error('Manual load failed:', err);
+                    statusEl.textContent = 'Load error: ' + err.message;
                 }
             }
 
             loadDirBtn.addEventListener('click', () => {
-                if (dirInput.files.length > 0) {
-                    loadFromFiles(dirInput.files);
-                } else {
-                    statusEl.textContent = 'Please select a directory first.';
-                }
+                if (dirInput.files.length > 0) loadFromFiles(dirInput.files);
+                else statusEl.textContent = 'Select directory first.';
             });
 
-            // Initial auto-load attempt
+            // Auto-load attempt (Only works via web server)
             try {
-                statusEl.textContent = 'Loading neural networks...';
-                const providers = ['cpu', 'webgl'];
-                
-                driftSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift.onnx', {
-                    executionProviders: providers,
-                    graphOptimizationLevel: 'all'
-                });
-                vaeSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/generator.onnx', {
-                    executionProviders: providers,
-                    graphOptimizationLevel: 'all'
-                });
-                
+                const providers = ['wasm', 'webgl'];
+                driftSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift.onnx', { executionProviders: providers });
+                vaeSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/generator.onnx', { executionProviders: providers });
                 detectModelShapes();
-
-                generateBtn.textContent = 'Generate Image';
                 generateBtn.disabled = false;
-            } catch (err) {
-                statusEl.textContent = 'Auto-load failed. Please use "Load Models from Directory".';
-                console.warn('Auto-load failed:', err);
+                generateBtn.textContent = 'Generate Image';
+            } catch (e) {
+                statusEl.textContent = 'CORS Blocked: Run via python server or use "Load Folder".';
             }
 
             async function runDrift(z, t, labelTensor) {
                 const feeds = { z, t: createTensor([t], [1, 1]), label: labelTensor };
                 const results = await driftSession.run(feeds);
                 let drift = results.drift;
-
-                let l2Norm = 0;
-                for (let i = 0; i < drift.data.length; i++) l2Norm += drift.data[i] * drift.data[i];
-                l2Norm = Math.sqrt(l2Norm);
                 
-                if (l2Norm > 15.0) {
-                    const scale = 15.0 / (l2Norm + 1e-8);
-                    const scaledData = new Float32Array(drift.data.length);
-                    for (let i = 0; i < drift.data.length; i++) scaledData[i] = drift.data[i] * scale;
-                    drift = createTensor(scaledData, drift.dims);
+                // Adaptive Normalization
+                let l2 = 0;
+                for (let i = 0; i < drift.data.length; i++) l2 += drift.data[i] * drift.data[i];
+                l2 = Math.sqrt(l2);
+                if (l2 > 20.0) {
+                    const scale = 20.0 / (l2 + 1e-8);
+                    const scaled = new Float32Array(drift.data.length);
+                    for (let i = 0; i < drift.data.length; i++) scaled[i] = drift.data[i] * scale;
+                    drift = createTensor(scaled, drift.dims);
                 }
-                
                 return drift;
             }
 
             async function decodeAndRender(z, labelTensor) {
-                const decodeResults = await vaeSession.run({ z, label: labelTensor });
-                const imgData = decodeResults.reconstruction.data;
+                const results = await vaeSession.run({ z, label: labelTensor });
+                const data = results.reconstruction.data;
                 const canvasData = ctx.createImageData(IMG_SIZE, IMG_SIZE);
                 const pixels = canvasData.data;
 
+                // --- Improved Contrast Mapping (Prevents "All White" images) ---
                 const planeSize = IMG_SIZE * IMG_SIZE;
                 for (let i = 0; i < planeSize; i++) {
-                    pixels[i*4 + 0] = Math.min(255, Math.max(0, Math.round((imgData[0*planeSize + i] + 1) / 2 * 255)));
-                    pixels[i*4 + 1] = Math.min(255, Math.max(0, Math.round((imgData[1*planeSize + i] + 1) / 2 * 255)));
-                    pixels[i*4 + 2] = Math.min(255, Math.max(0, Math.round((imgData[2*planeSize + i] + 1) / 2 * 255)));
-                    pixels[i*4 + 3] = 255;
+                    // Map [-1, 1] -> [0, 255] with safety clamping
+                    for (let c = 0; c < 3; c++) {
+                        const val = data[c * planeSize + i];
+                        pixels[i * 4 + c] = Math.min(255, Math.max(0, Math.round((val + 1.0) / 2.0 * 255)));
+                    }
+                    pixels[i * 4 + 3] = 255;
                 }
                 ctx.putImageData(canvasData, 0, 0);
             }
 
             generateBtn.addEventListener('click', async () => {
                 generateBtn.disabled = true;
-                generateBtn.textContent = 'Generating...';
-                statusEl.textContent = 'Simulating Schrödinger Bridge...';
-
+                statusEl.textContent = 'Simulating Bridge...';
                 try {
                     const label = parseInt(document.getElementById('labelSelect').value, 10);
                     const steps = parseInt(stepsSlider.value, 10);
@@ -428,60 +364,45 @@
                     const dt = 1.0 / steps;
                     const labelTensor = createTensor([label], [1], 'int64');
 
-                    const latentSize = LATENT_SHAPE[0] * LATENT_SHAPE[1] * LATENT_SHAPE[2] * LATENT_SHAPE[3];
-                    const z0Data = new Float32Array(latentSize);
-                    for (let i = 0; i < latentSize; i++) z0Data[i] = normalRandom(0, temp);
-                    let z = createTensor(z0Data, LATENT_SHAPE);
-
-                    let totalDriftMagnitude = 0;
+                    const latentSize = LATENT_SHAPE.reduce((a, b) => a * b, 1);
+                    const zData = new Float32Array(latentSize);
+                    for (let i = 0; i < latentSize; i++) zData[i] = normalRandom(0, temp);
+                    let z = createTensor(zData, LATENT_SHAPE);
 
                     for (let i = 0; i < steps; i++) {
                         const t = i * dt;
-                        let drift;
-                        
                         if (method === 'euler') {
-                            drift = await runDrift(z, t, labelTensor);
+                            const d = await runDrift(z, t, labelTensor);
                             const nextZ = new Float32Array(z.data.length);
-                            for (let j = 0; j < z.data.length; j++) nextZ[j] = z.data[j] + drift.data[j] * dt;
+                            for (let j = 0; j < z.data.length; j++) {
+                                // Euler + Safety Clamp to prevent explosion (White Image)
+                                nextZ[j] = Math.min(12, Math.max(-12, z.data[j] + d.data[j] * dt));
+                            }
                             z = createTensor(nextZ, LATENT_SHAPE);
-                        } else if (method === 'heun') {
+                        } else {
                             const k1 = await runDrift(z, t, labelTensor);
-                            const zTempData = new Float32Array(z.data.length);
-                            for (let j = 0; j < z.data.length; j++) zTempData[j] = z.data[j] + dt * k1.data[j];
-                            const k2 = await runDrift(createTensor(zTempData, LATENT_SHAPE), t + dt, labelTensor);
-                            
-                            const nextZ = new Float32Array(z.data.length);
-                            for (let j = 0; j < z.data.length; j++) nextZ[j] = z.data[j] + (dt / 2) * (k1.data[j] + k2.data[j]);
-                            z = createTensor(nextZ, LATENT_SHAPE);
-                            drift = k1;
+                            const z2Data = new Float32Array(z.data.length);
+                            for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + dt * k1.data[j];
+                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + dt, labelTensor);
+                            const finalZ = new Float32Array(z.data.length);
+                            for (let j = 0; j < z.data.length; j++) {
+                                // Heun + Safety Clamp
+                                finalZ[j] = Math.min(12, Math.max(-12, z.data[j] + (dt/2) * (k1.data[j] + k2.data[j])));
+                            }
+                            z = createTensor(finalZ, LATENT_SHAPE);
                         }
-
-                        let stepMag = 0;
-                        for(let j=0; j<drift.data.length; j++) stepMag += Math.abs(drift.data[j]);
-                        stepMag /= drift.data.length;
-                        totalDriftMagnitude += stepMag;
-
-                        statusEl.textContent = `Bridge Step: ${i+1}/${steps}`;
-                        statsEl.innerHTML = `Trajectory: Step ${i+1}/${steps} (${Math.round((i/steps)*100)}%)<br>Drift Magnitude: ${stepMag.toFixed(6)}`;
-                        
                         if (i % 10 === 0) {
+                            statusEl.textContent = `Progress: ${Math.round((i/steps)*100)}%`;
                             await decodeAndRender(z, labelTensor);
-                            await new Promise(resolve => setTimeout(resolve, 0)); 
+                            await new Promise(r => setTimeout(resolve, 0));
                         }
                     }
-
-                    statusEl.textContent = 'Final Decoding...';
                     await decodeAndRender(z, labelTensor);
-                    
-                    const avgDrift = totalDriftMagnitude / steps;
-                    statsEl.innerHTML = `Trajectory: Complete<br>Average Drift: ${avgDrift.toFixed(6)}`;
                     statusEl.textContent = 'Done!';
-                } catch (err) {
-                    statusEl.textContent = 'Error: ' + err.message;
-                    console.error('Generation failed:', err);
+                } catch (e) {
+                    statusEl.textContent = 'Error: ' + e.message;
                 } finally {
                     generateBtn.disabled = false;
-                    generateBtn.textContent = 'Generate Image';
                 }
             });
         })();

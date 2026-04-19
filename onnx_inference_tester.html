@@ -356,7 +356,7 @@
             const ctx = document.getElementById(canvasId).getContext('2d');
             const start = performance.now();
             
-            const latentSize = 1 * 8 * 12 * 12;
+            const latentSize = LATENT_SHAPE.reduce((a, b) => a * b, 1);
             const z0Data = new Float32Array(latentSize);
             let localSeed = seed;
             for (let i = 0; i < latentSize; i++) z0Data[i] = normalRandom(localSeed++);
@@ -372,7 +372,8 @@
                 
                 const nextZData = new Float32Array(z.data.length);
                 for (let j = 0; j < z.data.length; j++) {
-                    nextZData[j] = z.data[j] + drift.data[j] * dt;
+                    // Safety Clamp to prevent explosion
+                    nextZData[j] = Math.min(12, Math.max(-12, z.data[j] + drift.data[j] * dt));
                 }
                 z = new ort.Tensor('float32', nextZData, LATENT_SHAPE);
             }
@@ -413,6 +414,9 @@
             const seed = parseInt(document.getElementById('seedInput').value);
 
             try {
+                if (!sessions.fp32_drift || !sessions.fp32_gen) {
+                    throw new Error("FP32 models must be loaded.");
+                }
                 log(`Starting FP32 Reference generation (Seed: ${seed})...`);
                 const fp32Data = await runBridge(sessions.fp32_drift, sessions.fp32_gen, label, steps, seed, 'canvasFP32', 'timeFP32');
                 
@@ -426,7 +430,7 @@
                     log("INT8 models not available for comparison.", 'warn');
                 }
             } catch (e) {
-                log(`Error during generation: ${e.message}`, 'error');
+                log(`Error: ${e.message}`, 'error');
             } finally {
                 btn.disabled = false;
                 btn.textContent = '🚀 Generate & Compare';
