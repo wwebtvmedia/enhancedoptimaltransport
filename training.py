@@ -1692,7 +1692,9 @@ class EnhancedLabelTrainer:
                 super().__init__()
                 self.vae = vae
             def forward(self, z, labels):
-                return self.vae.decode(z, labels, None)
+                out = self.vae.decode(z, labels, None)
+                # Explicitly apply tanh for ONNX export to ensure [-1, 1] range
+                return torch.tanh(out) if not isinstance(out, tuple) else torch.tanh(out[0])
 
         try:
             self.vae.eval()
