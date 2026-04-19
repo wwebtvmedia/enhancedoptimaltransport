@@ -58,12 +58,23 @@ class TrainingProcessor:
             else:
                 config.logger.info("Force fresh start requested. Skipping checkpoint load.")
 
+            consecutive_failures = 0
             for epoch in range(self.trainer.epoch, self.ctx.config.EPOCHS):
                 if self.ctx.stop_signal:
                     break
                 
                 self.trainer.epoch = epoch
                 losses = self.trainer.train_epoch()
+                
+                # Check for critical failure
+                total_loss = losses.get('total', 0)
+                if total_loss >= 1e8:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        config.logger.error("🛑 Training stopped: 3 consecutive failed epochs (NaN/Inf).")
+                        break
+                else:
+                    consecutive_failures = 0
                 
                 # Update context
                 self.ctx.update_metric(epoch, losses)

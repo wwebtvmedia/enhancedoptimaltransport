@@ -34,8 +34,19 @@ class SnapshotManager:
         self.name = name
         self.interval = interval
         self.keep = keep
-        self.snapshots = []
         self.snapshot_dir = config.DIRS["snaps"]
+        
+        # Discover existing snapshots in the directory
+        self.snapshots = []
+        try:
+            existing_snaps = list(self.snapshot_dir.glob(f"{self.name}_snapshot_epoch_*.pt"))
+            # Sort by epoch number to keep the most recent ones last
+            existing_snaps.sort(key=lambda x: int(x.stem.split('_')[-1]))
+            self.snapshots = existing_snaps[-self.keep:]
+            if self.snapshots:
+                config.logger.info(f"Discovered {len(self.snapshots)} existing snapshots for {self.name}")
+        except Exception as e:
+            config.logger.warning(f"Failed to discover existing snapshots: {e}")
 
     
     def step(self) -> None:

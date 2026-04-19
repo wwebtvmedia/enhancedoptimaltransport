@@ -944,20 +944,24 @@ class EnhancedLabelTrainer:
         return True
 
     def calculate_fid_batch(self, real_features, fake_features):
-        """Calculate FID score using scipy for matrix square root."""
+        """Calculate FID score using torch linalg for better stability."""
         # Ensure correct shape [N, D]
         if real_features.dim() > 2:
             real_features = real_features.flatten(1)
         if fake_features.dim() > 2:
             fake_features = fake_features.flatten(1)
 
-        mu1 = real_features.mean(dim=0).cpu().numpy()
-        # torch.cov expects input where each row is a variable (dimension) and each column is an observation
-        # If input is [N, D], we transpose to [D, N]
-        sigma1 = torch.cov(real_features.T).cpu().numpy()
+        # Move to CPU for numpy/scipy operations
+        real_features = real_features.detach().cpu().to(torch.float64)
+        fake_features = fake_features.detach().cpu().to(torch.float64)
 
-        mu2 = fake_features.mean(dim=0).cpu().numpy()
-        sigma2 = torch.cov(fake_features.T).cpu().numpy()
+        mu1 = real_features.mean(dim=0).numpy()
+        mu2 = fake_features.mean(dim=0).numpy()
+        
+        # torch.cov expects variables as rows, observations as columns
+        # For [N, D], we transpose to [D, N]
+        sigma1 = torch.cov(real_features.T).numpy()
+        sigma2 = torch.cov(fake_features.T).numpy()
 
         diff = mu1 - mu2
         # Add regularization to prevent singularity with small batches
@@ -1199,11 +1203,9 @@ class EnhancedLabelTrainer:
             for key, value in losses.items():
                 avg_losses[key] = value / batch_count
 
-            if avg_losses:
-                avg_losses['total'] = sum(avg_losses.values())
-            else:
-                avg_losses['total'] = 0.0            
-            
+            # Use sum of individual average losses for total
+            avg_losses['total'] = sum(v for k, v in avg_losses.items() if k != 'total')
+
             if snr_values:
                 avg_losses['snr'] = np.mean(snr_values)
             if latent_std_values:
@@ -1211,10 +1213,16 @@ class EnhancedLabelTrainer:
             if channel_std_values:
                 avg_losses['min_channel_std'] = np.mean(channel_std_values)
         else:
-            avg_losses = {'total': float('inf')}
+            avg_losses = {'total': 1e9}
             config.logger.error("No batches were successfully processed in this epoch!")
-        
+
+        # Final safety check against NaN/Inf in avg_losses
+        if torch.tensor(avg_losses.get('total', 0)).isnan() or torch.tensor(avg_losses.get('total', 0)).isinf():
+            config.logger.error("⚠️ Average total loss is NaN/Inf! Overriding with high value to prevent corrupted checkpoint.")
+            avg_losses['total'] = 1e9
+
         # Log results
+
         config.logger.info(f"Epoch {current_epoch}/{config.EPOCHS} complete:")
         config.logger.info(f"  Total loss: {avg_losses.get('total', 0):.4f}")
         
