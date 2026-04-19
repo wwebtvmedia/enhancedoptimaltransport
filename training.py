@@ -167,7 +167,8 @@ class EMAModel:
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 assert name in self.shadow
-                self.shadow[name].mul_(self.decay).add_(param.data, alpha=1.0 - self.decay)
+                new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
+                self.shadow[name].copy_(new_average)
 
     def apply_shadow(self):
         self.backup = {}
