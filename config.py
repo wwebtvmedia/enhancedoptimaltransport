@@ -122,7 +122,7 @@ CHANNEL_DROPOUT_SURVIVAL = 0.8      # Probability of channel surviving when drop
 # CLASSIFIER-FREE GUIDANCE (CFG)
 # ============================================================================
 LABEL_DROPOUT_PROB = 0.1            # Probability of dropping label during training
-CFG_SCALE = 4.0                     # Scale for classifier-free guidance (1.0 = disabled)
+CFG_SCALE = 6.5                     # Scale for classifier-free guidance (1.0 = disabled)
 
 # ============================================================================
 # DRIFT NETWORK SPECIFIC

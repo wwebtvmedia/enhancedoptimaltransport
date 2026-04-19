@@ -897,11 +897,18 @@ class EnhancedLabelTrainer:
 
             consistency_decay = max(0.1, 1.0 - (self.epoch - drift_start_epoch) / (config.EPOCHS - drift_start_epoch))
             
+            # --- MONITORING METRICS FOR APP LAYER (Phase 2/3) ---
+            with torch.no_grad():
+                div_loss = self.vae._channel_diversity_loss(mu).item()
+                # Use mu for structural checking in drift phase
+                recon_for_ssim = self.vae.decode(mu, labels, text_bytes=text_bytes, source_id=source_id)
+                ssim_val = self.ssim_loss(recon_for_ssim, images).item()
+
             # PHASE 3 ENHANCEMENT: Also train the VAE to reconstruct from the latent mean
             if phase == 3:
                 # Use mu (the clean latent) for VAE stability in Phase 3
                 # This ensures the decoder stays sharp without being confused by bridge noise
-                recon_p3 = self.vae.decode(mu, labels, text_bytes=text_bytes, source_id=source_id)
+                recon_p3 = recon_for_ssim # already computed above
                 
                 # Scale recon loss down in Phase 3 so it doesn't overwhelm the Drift training
                 p3_scale = getattr(config, 'PHASE3_RECON_SCALE', 0.1)
@@ -913,6 +920,10 @@ class EnhancedLabelTrainer:
                     'drift': drift_loss_base.item(),
                     'consistency': consistency_loss.item(),
                     'recon_p3': recon_loss_p3.item(),
+                    'diversity': div_loss,
+                    'ssim_loss': ssim_val,
+                    'mu_std': mu_global_std,
+                    'z_std': z_global_std,
                     'temperature': temperature
                 }
             else:
@@ -921,6 +932,8 @@ class EnhancedLabelTrainer:
                     'total': total_loss,
                     'drift': drift_loss_base.item(),
                     'consistency': consistency_loss.item(),
+                    'diversity': div_loss,
+                    'ssim_loss': ssim_val,
                     'mu_std': mu_global_std,
                     'z_std': z_global_std,
                     'temperature': temperature
