@@ -225,24 +225,32 @@ LORA_TARGET_MODULES = ["Linear", "Conv2d"]
 # ============================================================================
 DEVICE = None
 DTYPE = torch.float32
+DTYPE_AMP = torch.float16  # Default
 BATCH_SIZE = 32
 AMP_AVAILABLE = False
 
 def initialize_hardware():
     """Determines best available hardware and updates global config."""
-    global DEVICE, AMP_AVAILABLE, BATCH_SIZE
+    global DEVICE, AMP_AVAILABLE, BATCH_SIZE, DTYPE_AMP
     
     if torch.cuda.is_available():
         DEVICE = torch.device("cuda")
-        # Check for AMP support (Tensor Cores generally available on most modern CUDA GPUs)
         AMP_AVAILABLE = True
-        info = f"🎮 CUDA: {torch.cuda.get_device_name(0)}"
+        
+        # Check for BFloat16 support (Ampere+ GPUs like RTX 3000/4000, A100, H100)
+        if torch.cuda.is_bf16_supported():
+            DTYPE_AMP = torch.bfloat16
+            info = f"🎮 CUDA: {torch.cuda.get_device_name(0)} (Using BF16)"
+        else:
+            DTYPE_AMP = torch.float16
+            info = f"🎮 CUDA: {torch.cuda.get_device_name(0)} (Using FP16)"
+            
         BATCH_SIZE = 64
     elif hasattr(torch, 'xpu') and torch.xpu.is_available():
         DEVICE = torch.device("xpu")
-        # Intel XPU (Arc/Data Center) supports AMP via torch.xpu.amp
         AMP_AVAILABLE = True
-        info = f"🔵 Intel Arc: {torch.xpu.get_device_name(0)}"
+        DTYPE_AMP = torch.bfloat16 # Intel Arc/Data Center GPUs prefer BF16
+        info = f"🔵 Intel Arc: {torch.xpu.get_device_name(0)} (Using BF16)"
         BATCH_SIZE = 64
     elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         DEVICE = torch.device("mps")

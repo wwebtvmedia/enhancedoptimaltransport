@@ -43,6 +43,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torch.amp
 import torchvision.utils as vutils
 import config
 import data_management
@@ -944,40 +945,49 @@ class EnhancedLabelTrainer:
         return True
 
     def calculate_fid_batch(self, real_features, fake_features):
-        """Calculate FID score using torch linalg for better stability."""
+        """Calculate FID score on GPU using float64 for stability."""
         # Ensure correct shape [N, D]
         if real_features.dim() > 2:
             real_features = real_features.flatten(1)
         if fake_features.dim() > 2:
             fake_features = fake_features.flatten(1)
 
-        # Move to CPU for numpy/scipy operations
-        real_features = real_features.detach().cpu().to(torch.float64)
-        fake_features = fake_features.detach().cpu().to(torch.float64)
+        # Stay on GPU but use high precision for the sensitive math
+        f_real = real_features.to(torch.float64)
+        f_fake = fake_features.to(torch.float64)
 
-        mu1 = real_features.mean(dim=0).numpy()
-        mu2 = fake_features.mean(dim=0).numpy()
+        mu1 = f_real.mean(dim=0)
+        mu2 = f_fake.mean(dim=0)
         
-        # torch.cov expects variables as rows, observations as columns
-        # For [N, D], we transpose to [D, N]
-        sigma1 = torch.cov(real_features.T).numpy()
-        sigma2 = torch.cov(fake_features.T).numpy()
+        # torch.cov expects variables as rows, observations as columns [D, N]
+        sigma1 = torch.cov(f_real.T)
+        sigma2 = torch.cov(f_fake.T)
 
         diff = mu1 - mu2
-        # Add regularization to prevent singularity with small batches
-        reg = 1e-5 * np.eye(sigma1.shape[0])
+        
+        # Add regularization to prevent singularity
+        reg = torch.eye(sigma1.shape[0], device=config.DEVICE, dtype=torch.float64) * 1e-6
         sigma1 += reg
         sigma2 += reg
         
-        # Matrix square root of (sigma1 @ sigma2)
-        covmean, _ = scipy.linalg.sqrtm(sigma1 @ sigma2, disp=False)
-        
-        # Handle imaginary parts from numerical instability
-        if np.iscomplexobj(covmean):
-            covmean = covmean.real
+        # Matrix square root via SVD: sqrt(sigma1 @ sigma2)
+        # For FID, we need Tr(sigma1 + sigma2 - 2*sqrt(sigma1 @ sigma2))
+        # A more stable way on GPU:
+        try:
+            # We use the property that Tr(A + B - 2*sqrt(A@B)) is equivalent to 
+            # the squared Fröbenius norm of (sqrt(A) - sqrt(B)) if they commute, 
+            # but generally we use the standard formula.
+            cov_prod = sigma1 @ sigma2
             
-        fid = diff @ diff + np.trace(sigma1 + sigma2 - 2 * covmean)
-        return float(fid)
+            # Use SVD for matrix square root on GPU
+            u, s, v = torch.linalg.svd(cov_prod)
+            covmean = u @ torch.diag(torch.sqrt(s)) @ v
+            
+            fid = diff @ diff + torch.trace(sigma1 + sigma2 - 2 * covmean)
+            return float(fid.real.item())
+        except Exception as e:
+            config.logger.warning(f"GPU FID math failed (SVD): {e}")
+            return 0.0
 
     def train_epoch(self) -> Dict:
         
@@ -1028,12 +1038,8 @@ class EnhancedLabelTrainer:
                 # Forward pass with AMP if enabled (Cross-backend autocast)
                 if self.scaler is not None:
                     device_type = config.DEVICE.type
-                    # Fallback to 'cuda' for autocast if 'xpu' not explicitly available in old torch versions
-                    autocast_ctx = torch.cuda.amp.autocast()
-                    if hasattr(torch, device_type) and hasattr(getattr(torch, device_type), 'amp'):
-                        autocast_ctx = getattr(torch, device_type).amp.autocast()
-                        
-                    with autocast_ctx:
+                    # Standard CUDA/XPU autocast supports dtype argument
+                    with torch.amp.autocast(device_type=device_type, enabled=config.USE_AMP, dtype=config.DTYPE_AMP):
                         loss_dict = self.compute_loss(batch_dict, phase=phase, batch_idx=batch_idx)
                 else:
                     loss_dict = self.compute_loss(batch_dict, phase=phase, batch_idx=batch_idx)
