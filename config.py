@@ -55,7 +55,7 @@ COMPRESSION_RATIO = (IMG_SIZE * IMG_SIZE * 3) / LATENT_DIM
 # ============================================================================
 # TRAINING HYPERPARAMETERS (base values, may be adjusted per device)
 # ============================================================================
-LR = 1e-4
+LR = 2e-4
 EPOCHS = 600
 WEIGHT_DECAY = 1e-4
 GRAD_CLIP = 1.0
@@ -63,8 +63,8 @@ GRAD_CLIP = 1.0
 # ============================================================================
 # LOSS WEIGHTS (ENHANCED FOR QUALITY)
 # ============================================================================
-KL_WEIGHT = 0.008              # Increased from 0.002 to further stabilize the latent space and avoid collapse.
-RECON_WEIGHT = 10.0            # Increased from 5.0 to prioritize sharpness
+KL_WEIGHT = 0.004              # Balanced for reconstruction vs latent organization
+RECON_WEIGHT = 10.0            # High weight for sharpness
 SUBPIXEL_INITIAL_MIX = 1.0     
 DRIFT_WEIGHT = 1.0             
 DIVERSITY_WEIGHT = 1.5         
@@ -183,13 +183,13 @@ PHASE2_EPOCHS = 400
 # ============================================================================
 # TRAINING SCHEDULE DICTIONARY
 # ============================================================================
-SCHEDULE_MANUALLY_SET = False
+SCHEDULE_MANUALLY_SET = True
 # Use standard three-phase logic unless overridden
 CUSTOM_SCHED = {}
 
 TRAINING_SCHEDULE = {
-    'mode': 'three_phase',                        
-    'force_phase': None,                     
+    'mode': 'manual',                        
+    'force_phase': 2,                     
     'custom_schedule': CUSTOM_SCHED,         
     'switch_epoch': 150,                       
     'switch_epoch_1': PHASE1_EPOCHS,           

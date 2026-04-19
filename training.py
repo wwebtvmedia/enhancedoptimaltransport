@@ -211,11 +211,13 @@ def set_training_phase(epoch: int) -> int:
         e1 = config.TRAINING_SCHEDULE['switch_epoch_1']
         e2 = config.TRAINING_SCHEDULE['switch_epoch_2']
         if epoch < e1:
-            return 1
+            phase = 1
         elif epoch < e2:
-            return 2
+            phase = 2
         else:
-            return 3
+            phase = 3
+        # config.logger.debug(f"Three-phase logic: epoch={epoch}, e1={e1}, e2={e2} -> phase={phase}")
+        return phase
     
     else:  # 'auto' mode (single switch)
         return 1 if epoch < config.TRAINING_SCHEDULE['switch_epoch'] else 2
@@ -779,7 +781,7 @@ class EnhancedLabelTrainer:
             }
             
             # Log gradient magnitude every 10 epochs for sharpness monitoring
-            if self.epoch % 10 == 0 and phase == 1:
+            if self.epoch % 10 == 0 and phase == 1 and batch_idx % 100 == 0:
                 with torch.no_grad():
                     # Check image sharpness via gradients
                     grad_x = torch.abs(recon[:, :, :, 1:] - recon[:, :, :, :-1]).mean().item()
@@ -1196,8 +1198,14 @@ class EnhancedLabelTrainer:
 
                         gen_images, _, _ = self.vae(real_images, real_labels, source_id)
                         gen_norm = (((gen_images + 1) / 2 - self.vgg_mean) / self.vgg_std).to(vgg_dtype)
-                        gen_feat = self.vgg(gen_norm)                        
-                        fid_score = self.calculate_fid_batch(real_feat.flatten(1), gen_feat.flatten(1))
+                        gen_feat = self.vgg(gen_norm)
+                        
+                        # Apply Global Average Pooling to reduce dimension for stability and speed
+                        # Shape change: [B, 256, 12, 12] -> [B, 256, 1, 1] -> [B, 256]
+                        real_feat_pooled = F.adaptive_avg_pool2d(real_feat, (1, 1)).flatten(1)
+                        gen_feat_pooled = F.adaptive_avg_pool2d(gen_feat, (1, 1)).flatten(1)
+                        
+                        fid_score = self.calculate_fid_batch(real_feat_pooled, gen_feat_pooled)
                         losses['fid'] = fid_score
                         config.logger.info(f"FID Score (approx): {fid_score:.2f}")
             except Exception as e:
