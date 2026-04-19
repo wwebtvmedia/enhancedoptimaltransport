@@ -1631,60 +1631,70 @@ class EnhancedLabelTrainer:
             gen_path = config.DIRS["onnx"] / "generator.onnx"
             vae_gen = VAEGenerator(vae_for_export)
             
-            config.logger.info("Exporting Generator (Simplified)...")
-            with torch.no_grad():
-                torch.onnx.export(
-                    vae_gen,
-                    (dummy_z, dummy_label),
-                    str(gen_path),
-                    export_params=True,
-                    opset_version=15,
-                    do_constant_folding=True,
-                    input_names=['z', 'label'],
-                    output_names=['reconstruction'],
-                    dynamic_axes={
-                        'z': {0: 'batch_size'},
-                        'label': {0: 'batch_size'},
-                        'reconstruction': {0: 'batch_size'}
-                    }
-                )
+            config.logger.info("Exporting Generator (STABLE-DUMB MODE)...")
+            try:
+                with torch.no_grad():
+                    torch.onnx.export(
+                        vae_gen,
+                        (dummy_z, dummy_label),
+                        str(gen_path),
+                        export_params=True,
+                        opset_version=18, 
+                        do_constant_folding=False, # Disable to avoid inliner bugs
+                        input_names=['z', 'label'],
+                        output_names=['reconstruction'],
+                        dynamic_axes={
+                            'z': {0: 'batch_size'},
+                            'label': {0: 'batch_size'},
+                            'reconstruction': {0: 'batch_size'}
+                        }
+                    )
+                config.logger.info(f"✅ Generator exported to {gen_path}")
+            except Exception as e:
+                config.logger.error(f"❌ Generator export failed: {e}")
             
             # --- Export Drift ---
             dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
             drift_path = config.DIRS["onnx"] / "drift.onnx"
             
-            config.logger.info("Exporting Drift (Simplified)...")
-            # Create a simple wrapper for drift too to strip source_id
+            config.logger.info("Exporting Drift (STABLE-DUMB MODE)...")
+            # Create a simple wrapper for drift too to handle source_id correctly
             class DriftWrapper(torch.nn.Module):
                 def __init__(self, drift):
                     super().__init__()
                     self.drift = drift
                 def forward(self, z, t, label):
-                    return self.drift(z, t, label, None, None)
+                    if config.USE_CONTEXT:
+                        dummy_source = torch.zeros_like(label)
+                        return self.drift(z, t, label, None, dummy_source)
+                    else:
+                        return self.drift(z, t, label, None, None)
 
             drift_gen = DriftWrapper(drift_for_export)
 
-            with torch.no_grad():
-                torch.onnx.export(
-                    drift_gen,
-                    (dummy_z, dummy_t, dummy_label),
-                    str(drift_path),
-                    export_params=True,
-                    opset_version=15, 
-                    do_constant_folding=True,
-                    input_names=['z', 't', 'label'],
-                    output_names=['drift'],
-                    dynamic_axes={
-                        'z': {0: 'batch_size'},
-                        't': {0: 'batch_size'},
-                        'label': {0: 'batch_size'},
-                        'drift': {0: 'batch_size'}
-                    }
-                )
-            
-            config.logger.info(f"✅ ONNX Export Successful: {gen_path}, {drift_path}")
+            try:
+                with torch.no_grad():
+                    torch.onnx.export(
+                        drift_gen,
+                        (dummy_z, dummy_t, dummy_label),
+                        str(drift_path),
+                        export_params=True,
+                        opset_version=18, 
+                        do_constant_folding=False, # Disable to avoid inliner bugs
+                        input_names=['z', 't', 'label'],
+                        output_names=['drift'],
+                        dynamic_axes={
+                            'z': {0: 'batch_size'},
+                            't': {0: 'batch_size'},
+                            'label': {0: 'batch_size'},
+                            'drift': {0: 'batch_size'}
+                        }
+                    )
+                config.logger.info(f"✅ Drift exported to {drift_path}")
+            except Exception as e:
+                config.logger.error(f"❌ Drift export failed: {e}")
 
-            # --- Auto-configure the HTML file to match the current dimensions ---
+            # --- Auto-configure the HTML file ---
             html_path = Path("onnx_generate_image.html")
             if html_path.exists():
                 try:
@@ -1692,11 +1702,8 @@ class EnhancedLabelTrainer:
                     with open(html_path, 'r', encoding='utf-8') as f:
                         content = f.read()
 
-                    # Correct Latent Shape
                     new_latent = f"[1, {config.LATENT_CHANNELS}, {config.LATENT_H}, {config.LATENT_W}]"
                     content = re.sub(r'LATENT_SHAPE\s*=\s*\[1,\s*\d+,\s*\d+,\s*\d+\]', f'LATENT_SHAPE = {new_latent}', content)
-                    
-                    # Correct Image Size
                     content = re.sub(r'(let|const)\s+IMG_SIZE\s*=\s*\d+', f'let IMG_SIZE = {config.IMG_SIZE}', content)
                     
                     with open(html_path, 'w', encoding='utf-8') as f:
@@ -1706,11 +1713,12 @@ class EnhancedLabelTrainer:
                     config.logger.warning(f"Could not auto-update HTML: {e}")
 
         except Exception as e:
-            config.logger.error(f"ONNX export failed: {e}")
+            config.logger.error(f"ONNX export process failed: {e}")
         finally:
             # Revert internal flags
             self.vae.apply(lambda m: set_export_mode(m, False))
             self.drift.apply(lambda m: set_export_mode(m, False))
+
 
 
 
