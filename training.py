@@ -1484,23 +1484,23 @@ class EnhancedLabelTrainer:
                 labels = [i % 10 for i in range(num_samples)]
             
             with torch.no_grad():
-            labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
-            
-            # Neural Tokenizer support
-            if config.USE_NEURAL_TOKENIZER:
-                text_bytes_list = []
-                for l in labels:
-                    desc = dm.CLASS_DESCRIPTIONS[l] if l < 10 else f"class_{l}"
-                    text_bytes_list.append(dm.text_to_bytes(desc))
-                text_bytes_tensor = torch.tensor(text_bytes_list, device=config.DEVICE)
-            else:
-                text_bytes_tensor = None
+                labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
+                
+                # Neural Tokenizer support
+                if config.USE_NEURAL_TOKENIZER:
+                    text_bytes_list = []
+                    for l in labels:
+                        desc = dm.CLASS_DESCRIPTIONS[l] if l < 10 else f"class_{l}"
+                        text_bytes_list.append(dm.text_to_bytes(desc))
+                    text_bytes_tensor = torch.tensor(text_bytes_list, device=config.DEVICE)
+                else:
+                    text_bytes_tensor = None
 
-            # Source ID context
-            if source_id is None:
-                s_id = torch.zeros(labels_tensor.shape[0], dtype=torch.long, device=config.DEVICE)
-            else:
-                s_id = torch.full((labels_tensor.shape[0],), source_id, dtype=torch.long, device=config.DEVICE)
+                # Source ID context
+                if source_id is None:
+                    s_id = torch.zeros(labels_tensor.shape[0], dtype=torch.long, device=config.DEVICE)
+                else:
+                    s_id = torch.full((labels_tensor.shape[0],), source_id, dtype=torch.long, device=config.DEVICE)
                         
             # Start from pure noise using the prior standard deviation from config
             z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO

@@ -24,13 +24,12 @@ A state-of-the-art generative model implementation based on the **Latent Schröd
 ## Overview
 This project enables high-quality, category-specific image generation by learning the optimal stochastic transport between a Gaussian prior and a learned latent data distribution. It leverages the **Ornstein-Uhlenbeck (OU) Reference Process** for superior stability and theoretical consistency.
 
-## 🚀 Key Advancements in v2.1 (SharpFlow Optimization)
+## 🚀 Key Advancements in v2.2 (Ultra-Sharp Refinement)
+- **Exponential Moving Average (EMA):** Smoothed weight tracking to eliminate digital grain and enhance photorealism.
+- **Refinement Decay:** Automatic 50% learning rate reduction in late Phase 3 to "lock in" micro-textures.
 - **Autonomous Strategy Engine:** KPI-driven phase transitions and stochastic "quality nudges" scaled by training temperature.
-- **Dynamic Parameter Controller:** Real-time adjustment of `DRIFT_WEIGHT` and `CFG_SCALE` to maximize sharpness while ensuring stability (< 5.0 loss).
-- **High-Resolution Latent Space:** Latent dimensions increased to **12x12** (from 6x6), providing 4x more spatial detail.
+- **Quadrupled Structural Weights:** `DRIFT_WEIGHT` and `SSIM_WEIGHT` boosted to 4.0 for razor-sharp object boundaries.
 - **Subpixel Convolution:** Replaced bilinear upsampling with PixelShuffle + ICNR initialization for artifact-free upscaling.
-- **Structural Similarity (SSIM) Loss:** Integrated SSIM into the objective to explicitly penalize structural blur.
-- **Theoretically Correct OU Bridge:** Uses exact time-derivatives of the OU bridge mean as the training target.
 
 ---
 

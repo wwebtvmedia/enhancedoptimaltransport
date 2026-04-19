@@ -101,10 +101,14 @@ Monitors `total_loss` every epoch to balance sharpness and stability:
 - **Sharpness Push**: Increases `DRIFT_WEIGHT` and `CFG_SCALE` when loss is stable.
 - **Stability Guard**: Aggressively scales back weights if loss approaches the **5.0** threshold.
 
-### 3. Stochastic Quality Nudges
-Uses training **Temperature** to determine the probability of "nudges":
-- **Intensity Boosts**: Temporarily increases learning weights to help the model escape local minima.
-- **Momentum Resets**: Small probability to drop from Phase 3 back to Phase 2 to re-solidify trajectories.
+### 3. Exponential Moving Average (EMA)
+Implements a 0.999 decay shadow weight system in `training.py`:
+- **Smoothing**: Reduces stochastic variance in weights, acting as a low-pass filter for image noise.
+- **Inference use**: Shadow weights are swapped in for sample generation and VAE reconstructions to maximize photorealism.
+
+### 4. Stochastic Quality Nudges & Refinement
+- **Intensity Boosts**: Temporarily increases learning weights (up to 4.0x) to help the model escape local minima.
+- **Final Polishing**: Automatically triggers a 50% learning rate decay past Epoch 250 to settle the weights into the sharpest possible optima.
 
 ---
 
