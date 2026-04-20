@@ -782,6 +782,7 @@ class EnhancedLabelTrainer:
                 'tv_loss': tv_loss.item(),
                 'snr': snr,
                 'latent_std': latent_std,
+                'sharpness': (recon_grad_x.mean() + recon_grad_y.mean()).item()
             }
             
             # Log gradient magnitude every 10 epochs for sharpness monitoring
@@ -907,6 +908,11 @@ class EnhancedLabelTrainer:
                 # Use mu for structural checking in drift phase
                 recon_for_ssim = self.vae.decode(mu, labels, text_bytes=text_bytes, source_id=source_id)
                 ssim_val = self.ssim_loss(recon_for_ssim, images).item()
+                
+                # Sharpness estimation from reconstruction
+                grad_x = torch.abs(recon_for_ssim[:, :, :, 1:] - recon_for_ssim[:, :, :, :-1]).mean()
+                grad_y = torch.abs(recon_for_ssim[:, :, 1:, :] - recon_for_ssim[:, :, :-1, :]).mean()
+                sharpness = (grad_x + grad_y).item()
 
             # PHASE 3 ENHANCEMENT: Also train the VAE to reconstruct from the latent mean
             if phase == 3:
@@ -926,6 +932,7 @@ class EnhancedLabelTrainer:
                     'recon_p3': recon_loss_p3.item(),
                     'diversity': div_loss,
                     'ssim_loss': ssim_val,
+                    'sharpness': sharpness,
                     'mu_std': mu_global_std,
                     'z_std': z_global_std,
                     'temperature': temperature
@@ -938,6 +945,7 @@ class EnhancedLabelTrainer:
                     'consistency': consistency_loss.item(),
                     'diversity': div_loss,
                     'ssim_loss': ssim_val,
+                    'sharpness': sharpness,
                     'mu_std': mu_global_std,
                     'z_std': z_global_std,
                     'temperature': temperature

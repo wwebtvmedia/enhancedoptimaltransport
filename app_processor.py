@@ -105,6 +105,7 @@ class TrainingProcessor:
         ssim_loss = losses.get('ssim_loss', 0.6)
         mu_std = losses.get('mu_std', 0.8)
         comp_score = losses.get('composite_score', -30)
+        sharpness = losses.get('sharpness', 0.08)
         
         # Stability Baseline
         STABILITY_LIMIT = 5.0
@@ -129,7 +130,20 @@ class TrainingProcessor:
             config.RECON_WEIGHT = max(4.0, config.RECON_WEIGHT * 0.95)
             config.CFG_SCALE = max(2.5, config.CFG_SCALE - 0.1)
 
-        # 3. CONTRAST & DETAIL (Based on Score Trend)
+        # 3. SHARPNESS-DRIVEN CONTROL (Direct gradient monitoring)
+        # Target sharpness range: 0.08 - 0.15
+        if sharpness < 0.075:
+            # BLURRY: Increase CFG and Langevin influence
+            config.CFG_SCALE = min(10.0, config.CFG_SCALE + 0.3)
+            config.LANGEVIN_SCORE_SCALE = min(0.8, config.LANGEVIN_SCORE_SCALE + 0.05)
+            config.logger.info(f"🔍 [App Control] Detected Blur (Sharp={sharpness:.4f}): Boosting CFG/LScale")
+        elif sharpness > 0.16:
+            # FRIED/ARTIFACTS: Pull back to restore structural integrity
+            config.CFG_SCALE = max(3.0, config.CFG_SCALE - 0.4)
+            config.LANGEVIN_SCORE_SCALE = max(0.1, config.LANGEVIN_SCORE_SCALE - 0.05)
+            config.logger.info(f"🔍 [App Control] Detected Over-sharpening (Sharp={sharpness:.4f}): Reducing CFG/LScale")
+
+        # 4. CONTRAST & DETAIL (Based on Score Trend)
         # If score is dropping, we might be "over-cooking"
         if comp_score < -45:
             # QUALITY DROP: Pull back slightly

@@ -136,7 +136,7 @@
             margin-left: 8px;
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.all.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.all.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -211,12 +211,12 @@
 
     <script>
         window.onload = async () => {
-            // Silence non-critical warnings (like WebGPU fallback messages)
+            // Silence non-critical warnings
             ort.env.logLevel = 'error';
 
-            // Configure ONNX Runtime to find its WASM files and favor performance
+            // Configure ONNX Runtime
             ort.env.wasm.numThreads = Math.min(navigator.hardwareConcurrency, 4);
-            ort.env.wasm.proxy = true;
+            ort.env.wasm.proxy = false; // Disable proxy to reduce complexity during debugging
 
             let IMG_SIZE = 96;
             let LATENT_SHAPE = [1, 8, 12, 12]; 
@@ -235,18 +235,26 @@
             const loadDirBtn = document.getElementById('loadDirBtn');
             const dirInput = document.getElementById('dirInput');
 
+            // Check for WebGPU availability
+            const hasWebGPU = !!navigator.gpu;
+            if (!hasWebGPU) {
+                console.warn("WebGPU not supported in this browser. Falling back to WASM/WebGL.");
+            }
+
             function detectModelShapes() {
                 if (!vaeSession || !driftSession) return;
                 try {
-                    const metadata = vaeSession.handler ? vaeSession.handler.inputMetadata : null;
-                    if (metadata && metadata.z) {
-                        const detectedDims = metadata.z.dims.map(d => typeof d === 'number' ? d : 1);
+                    const inputNames = vaeSession.inputNames;
+                    const inputMetadata = vaeSession.inputMetadata || (vaeSession.handler ? vaeSession.handler.inputMetadata : null);
+                    if (inputMetadata && inputMetadata.z) {
+                        const detectedDims = inputMetadata.z.dims.map(d => typeof d === 'number' ? d : 1);
                         detectedDims[0] = 1;
                         LATENT_SHAPE = detectedDims;
                     }
-                    const outMetadata = vaeSession.handler ? vaeSession.handler.outputMetadata : null;
-                    if (outMetadata && outMetadata.reconstruction) {
-                        const outDims = outMetadata.reconstruction.dims;
+
+                    const outputMetadata = vaeSession.outputMetadata || (vaeSession.handler ? vaeSession.handler.outputMetadata : null);
+                    if (outputMetadata && outputMetadata.reconstruction) {
+                        const outDims = outputMetadata.reconstruction.dims;
                         if (outDims.length === 4) {
                             IMG_SIZE = outDims[2];
                             canvas.width = IMG_SIZE;
@@ -283,6 +291,18 @@
                 return new ort.Tensor('float32', new Float32Array(data), dims);
             }
 
+            async function createSession(modelData) {
+                // Try WebGPU first if available, otherwise fallback to WASM. 
+                // WebGL is skipped as it often lacks support for newer opsets (like Opset 18 Split).
+                const providers = hasWebGPU ? ['webgpu', 'wasm'] : ['wasm'];
+                try {
+                    return await ort.InferenceSession.create(modelData, { executionProviders: providers });
+                } catch (e) {
+                    console.warn("Primary providers failed, trying pure WASM:", e.message);
+                    return await ort.InferenceSession.create(modelData, { executionProviders: ['wasm'] });
+                }
+            }
+
             async function loadFromFiles(files) {
                 let vaeFile, driftFile;
                 for (const file of files) {
@@ -295,14 +315,14 @@
                 }
                 try {
                     statusEl.textContent = 'Loading models...';
-                    const providers = ['webgpu', 'webgl', 'wasm'];
-                    vaeSession = await ort.InferenceSession.create(await vaeFile.arrayBuffer(), { executionProviders: providers });
-                    driftSession = await ort.InferenceSession.create(await driftFile.arrayBuffer(), { executionProviders: providers });
+                    vaeSession = await createSession(await vaeFile.arrayBuffer());
+                    driftSession = await createSession(await driftFile.arrayBuffer());
                     detectModelShapes();
                     generateBtn.disabled = false;
                     generateBtn.textContent = 'Generate Image';
                 } catch (err) {
                     statusEl.textContent = 'Load error: ' + err.message;
+                    console.error(err);
                 }
             }
 
@@ -311,24 +331,26 @@
                 else statusEl.textContent = 'Select directory first.';
             });
 
-            // Auto-load attempt (Only works via web server)
-            try {
-                const providers = ['webgpu', 'webgl', 'wasm'];
-                driftSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift.onnx', { executionProviders: providers });
-                vaeSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/generator.onnx', { executionProviders: providers });
-                
-                // Show active backend
-                let activeBackend = 'WASM';
-                if (vaeSession.handler && vaeSession.handler.constructor.name.includes('WebG')) activeBackend = 'GPU';
-                statusEl.innerHTML = `Ready <span class="badge" style="background:var(--google-blue);color:white;">🚀 ${activeBackend}</span>`;
-                
-                detectModelShapes();
-                generateBtn.disabled = false;
-                generateBtn.textContent = 'Generate Image';
-            } catch (e) {
-                statusEl.textContent = 'Models not found automatically. Use "Load Folder" to select the onnx directory.';
-                console.warn("Auto-load failed:", e.message);
-            }
+            // Auto-load attempt
+            (async function autoLoad() {
+                try {
+                    driftSession = await createSession('./enhanced_label_sb/onnx/drift.onnx');
+                    vaeSession = await createSession('./enhanced_label_sb/onnx/generator.onnx');
+                    
+                    let activeBackend = 'WASM';
+                    const usedProviders = vaeSession.handler ? (vaeSession.handler.executionProvider || '') : '';
+                    if (usedProviders.includes('webgpu')) activeBackend = 'WebGPU';
+                    
+                    statusEl.innerHTML = `Ready <span class="badge" style="background:var(--google-blue);color:white;">🚀 ${activeBackend}</span>`;
+                    
+                    detectModelShapes();
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = 'Generate Image';
+                } catch (e) {
+                    statusEl.textContent = 'Models not found automatically. Use "Load Folder" to select the onnx directory.';
+                    console.warn("Auto-load failed:", e.message);
+                }
+            })();
 
             async function runDrift(z, t, labelTensor) {
                 const feeds = { z, t: createTensor([t], [1, 1]), label: labelTensor };
