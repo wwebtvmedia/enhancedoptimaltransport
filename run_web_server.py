@@ -10,9 +10,21 @@ Handler = http.server.SimpleHTTPRequestHandler
 # Enable CORS and standard headers
 class CORSRequestHandler(Handler):
     def end_headers(self):
+        # Enable Cross-Origin Isolation for high-performance WASM multi-threading
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+        
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         super().end_headers()
+
+    def do_GET(self):
+        # Silently handle favicon.ico to prevent console noise
+        if self.path == '/favicon.ico':
+            self.send_response(204)
+            self.end_headers()
+            return
+        return super().do_GET()
 
 def run_server():
     print(f"🚀 Launching Schrödinger Bridge Web Server on port {PORT}...")

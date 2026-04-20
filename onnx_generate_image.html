@@ -210,7 +210,7 @@
     </div>
 
     <script>
-        (async () => {
+        window.onload = async () => {
             // Configure ONNX Runtime to find its WASM files and favor performance
             ort.env.wasm.numThreads = Math.min(navigator.hardwareConcurrency, 4);
             ort.env.wasm.proxy = true;
@@ -311,13 +311,14 @@
             // Auto-load attempt (Only works via web server)
             try {
                 const providers = ['webgpu', 'webgl', 'wasm'];
-                driftSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift.onnx', { executionProviders: providers });
-                vaeSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/generator.onnx', { executionProviders: providers });
+                driftSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift.onnx', { executionProviders: providers, logSeverityLevel: 3 });
+                vaeSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/generator.onnx', { executionProviders: providers, logSeverityLevel: 3 });
                 detectModelShapes();
                 generateBtn.disabled = false;
                 generateBtn.textContent = 'Generate Image';
             } catch (e) {
-                statusEl.textContent = 'CORS Blocked: Run via python server or use "Load Folder".';
+                statusEl.textContent = 'Models not found automatically. Use "Load Folder" to select the onnx directory.';
+                console.warn("Auto-load failed:", e.message);
             }
 
             async function runDrift(z, t, labelTensor) {
@@ -409,7 +410,7 @@
                     generateBtn.disabled = false;
                 }
             });
-        })();
+        };
     </script>
 </body>
 </html>
