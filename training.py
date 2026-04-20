@@ -1667,8 +1667,8 @@ class EnhancedLabelTrainer:
                         (dummy_z, dummy_label),
                         str(gen_path),
                         export_params=True,
-                        opset_version=18, 
-                        do_constant_folding=False, # Disable to avoid inliner bugs
+                        opset_version=15, 
+                        do_constant_folding=True, 
                         input_names=['z', 'label'],
                         output_names=['reconstruction'],
                         dynamic_axes={
@@ -1708,8 +1708,8 @@ class EnhancedLabelTrainer:
                         (dummy_z, dummy_t, dummy_label),
                         str(drift_path),
                         export_params=True,
-                        opset_version=18, 
-                        do_constant_folding=False, # Disable to avoid inliner bugs
+                        opset_version=15, 
+                        do_constant_folding=True, 
                         input_names=['z', 't', 'label'],
                         output_names=['drift'],
                         dynamic_axes={
