@@ -96,16 +96,17 @@ Transitions between phases are handled automatically based on performance metric
 - **Phase 1 $\to$ 2**: Triggered when SNR > 20dB and SSIM < 0.26.
 - **Phase 2 $\to$ 3**: Triggered when Drift Loss < 1.25 and SSIM < 0.21.
 
-### 2. Dynamic Parameter Controller
-Monitors `total_loss` every epoch to balance sharpness and stability:
-- **Sharpness Push**: Increases `DRIFT_WEIGHT` and `CFG_SCALE` when loss is stable.
-- **Stability Guard**: Aggressively scales back weights if loss approaches the **5.0** threshold.
+### 2. Dynamic Parameter Controller (Bidirectional)
+Monitors multiple health signals to balance reconstruction, contrast, and smoothing:
+- **Fade & Blurry Detection**: If SSIM loss is high (>0.25), the system boosts `CFG_SCALE` (up to 14.0) and `RECON_WEIGHT` (up to 25.0) to restore lost contrast and detail.
+- **Anti-Artifact Control**: If latent chaos (`mu_std` > 1.2) or Drift loss is high, the system increases Langevin steps and lowers `LANGEVIN_SCORE_SCALE` to smooth out noise.
+- **Panic Button (Baseline Restoration)**: If the composite KPI score collapses below -100, the system automatically resets all weights to known-good safe defaults to prevent total training divergence.
 
-
-
-### 4. Stochastic Quality Nudges & Refinement
-- **Intensity Boosts**: Temporarily increases learning weights (up to 4.0x) to help the model escape local minima.
-- **Final Polishing**: Automatically triggers a 50% learning rate decay past Epoch 250 to settle the weights into the sharpest possible optima.
+### 3. Training Type Jitter
+To prevent network "forgetting," the system stochastically switches between three training focuses:
+- **VAE Focus (10%)**: Forces the decoder to re-align with the current latent distribution.
+- **Drift Focus (10%)**: Prioritizes trajectory accuracy.
+- **Joint Fine-tuning (80%)**: The standard mode for global optimization.
 
 ---
 
@@ -115,6 +116,9 @@ Monitors `total_loss` every epoch to balance sharpness and stability:
 1. Sample $z_0 \sim \mathcal{N}(0, I)$.
 2. Integrate $dz_t$ using Euler-Maruyama, Heun, or RK4 methods from $t=0 \to 1$.
 3. Decode $z_1 \to \text{Image}$.
+
+### Memory-Optimized Sampling
+The sampling process uses a `torch.no_grad()` scoped integration loop. This allows for very high-step counts (RK4 with 100+ steps) with **constant memory overhead**, preventing the "CUDA Out of Memory" errors typically associated with long-trajectory ODE solvers.
 
 ### Multimodal Modes
 - **Text-to-Image**: Guided generation from text prompts.
