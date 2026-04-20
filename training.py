@@ -1450,93 +1450,95 @@ class EnhancedLabelTrainer:
             else:
                 s_id = torch.full((labels_tensor.shape[0],), source_id, dtype=torch.long, device=config.DEVICE)
 
-        # Start from pure noise using the prior standard deviation from config
-        z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
+        with torch.no_grad():
+            # Start from pure noise using the prior standard deviation from config
+            z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
 
-        config.logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
+            config.logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
 
-        steps = config.DEFAULT_STEPS
-        dt = 1.0 / steps
+            steps = config.DEFAULT_STEPS
+            dt = 1.0 / steps
 
-        # ----- ODE integration -----
-        for i in range(steps):
-            t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
+            # ----- ODE integration -----
+            for i in range(steps):
+                t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
 
-            # Predict drift with context
-            drift = self.drift(z, t_cur, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                # Predict drift with context
+                drift = self.drift(z, t_cur, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
 
-            # Monitor drift magnitude (adaptive clipping is inside the drift network)
-            drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
+                # Monitor drift magnitude (adaptive clipping is inside the drift network)
+                drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
 
-            if method == 'euler':
-                z = z + drift * dt
-            elif method == 'heun':
-                k1 = drift
-                t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
-                z_pred = z + dt * k1
-                k2 = self.drift(z_pred, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
-                z = z + (dt / 2.0) * (k1 + k2)
-            elif method == 'rk4':
-                k1 = drift
-                t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
-                z_half = z + 0.5 * dt * k1
-                k2 = self.drift(z_half, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
-                z_half2 = z + 0.5 * dt * k2
-                k3 = self.drift(z_half2, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
-                t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
-                z_next = z + dt * k3
-                k4 = self.drift(z_next, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
-                z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+                if method == 'euler':
+                    z = z + drift * dt
+                elif method == 'heun':
+                    k1 = drift
+                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
+                    z_pred = z + dt * k1
+                    k2 = self.drift(z_pred, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    z = z + (dt / 2.0) * (k1 + k2)
+                elif method == 'rk4':
+                    k1 = drift
+                    t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
+                    z_half = z + 0.5 * dt * k1
+                    k2 = self.drift(z_half, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    z_half2 = z + 0.5 * dt * k2
+                    k3 = self.drift(z_half2, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
+                    z_next = z + dt * k3
+                    k4 = self.drift(z_next, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
-            z = torch.clamp(z, -10, 10)   # gentle clamping
+                z = torch.clamp(z, -10, 10)   # gentle clamping
 
-            if i % 10 == 0:
-                config.logger.info(f"Step {i:3d}, t={i*dt:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std():.4f}")
+                if i % 10 == 0:
+                    config.logger.info(f"Step {i:3d}, t={i*dt:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std():.4f}")
 
-            if torch.isnan(z).any():
-                config.logger.error(f"NaN detected at step {i}!")
-                break
+                if torch.isnan(z).any():
+                    config.logger.error(f"NaN detected at step {i}!")
+                    break
 
-        # ----- Refined Langevin Refinement -----
-        if langevin_steps > 0:
-            config.logger.info(f"Starting {langevin_steps} Refined Langevin steps...")
-            t_one = torch.full((num_samples, 1), 1.0, device=config.DEVICE)
+            # ----- Refined Langevin Refinement -----
+            if langevin_steps > 0:
+                config.logger.info(f"Starting {langevin_steps} Refined Langevin steps...")
+                t_one = torch.full((num_samples, 1), 1.0, device=config.DEVICE)
 
-            # Adaptive step size: start strong, end gentle
-            base_lr = langevin_step_size
+                # Adaptive step size: start strong, end gentle
+                base_lr = langevin_step_size
 
-            for step in range(langevin_steps):
-                # 1. Compute Score Proxy 
-                # Using drift at t=1 is theoretically the 'terminal' velocity
-                drift_at_end = self.drift(z, t_one, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
+                for step in range(langevin_steps):
+                    # 1. Compute Score Proxy 
+                    # Using drift at t=1 is theoretically the 'terminal' velocity
+                    drift_at_end = self.drift(z, t_one, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
 
-                # 2. Add Annealed Noise
-                # We decay the noise scale as we converge to the manifold
-                step_ratio = step / langevin_steps
-                current_noise_scale = np.sqrt(2 * base_lr) * (1 - 0.5 * step_ratio)
-                noise = torch.randn_like(z) * current_noise_scale
+                    # 2. Add Annealed Noise
+                    # We decay the noise scale as we converge to the manifold
+                    step_ratio = step / langevin_steps
+                    current_noise_scale = np.sqrt(2 * base_lr) * (1 - 0.5 * step_ratio)
+                    noise = torch.randn_like(z) * current_noise_scale
 
-                # 3. Stochastic Gradient Update (MALA style)
-                # We treat the drift as the gradient of the log-probability
-                z = z.detach() + 0.5 * base_lr * langevin_score_scale * drift_at_end + noise
+                    # 3. Stochastic Gradient Update (MALA style)
+                    # We treat the drift as the gradient of the log-probability
+                    z = z.detach() + 0.5 * base_lr * langevin_score_scale * drift_at_end + noise
 
-                # 4. Gentle Manifold Constraint
-                # Prevents latents from escaping the range expected by the VAE decoder
-                z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
+                    # 4. Gentle Manifold Constraint
+                    # Prevents latents from escaping the range expected by the VAE decoder
+                    z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
 
-                if (step + 1) % 5 == 0:
-                    config.logger.info(f" Langevin Step {step+1}: z_std={z.std():.4f}")
+                    if (step + 1) % 5 == 0:
+                        config.logger.info(f" Langevin Step {step+1}: z_std={z.std():.4f}")
 
-            z = z.detach() # Final cleanup
-        config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
+                z = z.detach() # Final cleanup
+            config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
 
-        # Decode
-        self.vae.set_force_active(True)
-        images = self.vae.decode(z, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
-        self.vae.set_force_active(False)
-        images = torch.clamp(images, -1, 1)
+            # Decode
+            self.vae.set_force_active(True)
+            images = self.vae.decode(z, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
+            self.vae.set_force_active(False)
+            images = torch.clamp(images, -1, 1)
 
-        config.logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")
+            config.logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")
+
 
         # Save images
         images_display = (images + 1) / 2
