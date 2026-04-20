@@ -128,8 +128,17 @@ class TrainingProcessor:
             config.DEFAULT_LANGEVIN_STEPS = 60
             config.LANGEVIN_SCORE_SCALE = 0.4
 
-        # Log changes
-        if any(abs(getattr(config, k.upper()) - prev[k.lower()[:2]]) > 0.01 for k in prev):
+        # Log changes if any significant parameter was adjusted
+        has_changed = (
+            abs(config.DRIFT_WEIGHT - prev['dw']) > 0.01 or
+            abs(config.RECON_WEIGHT - prev['rw']) > 0.1 or
+            abs(config.CFG_SCALE - prev['cfg']) > 0.1 or
+            abs(config.SSIM_WEIGHT - prev['sw']) > 0.05 or
+            abs(config.DEFAULT_LANGEVIN_STEPS - prev['ls']) >= 5 or
+            abs(config.LANGEVIN_SCORE_SCALE - prev['lc']) > 0.02
+        )
+
+        if has_changed:
              config.logger.info(f"📊 [App Control] Update: DW={config.DRIFT_WEIGHT:.2f}, RW={config.RECON_WEIGHT:.1f}, "
                                 f"CFG={config.CFG_SCALE:.1f}, SSIMW={config.SSIM_WEIGHT:.2f}, LSteps={config.DEFAULT_LANGEVIN_STEPS}")
 
