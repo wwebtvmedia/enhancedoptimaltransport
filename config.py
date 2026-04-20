@@ -64,7 +64,7 @@ GRAD_CLIP = 1.0
 # LOSS WEIGHTS (ENHANCED FOR QUALITY)
 # ============================================================================
 KL_WEIGHT = 0.004              # Balanced for reconstruction vs latent organization
-RECON_WEIGHT = 5.0             # Reduced to allow Drift to dominate sharpness
+RECON_WEIGHT = 5.0             # Restore to stable baseline
 SUBPIXEL_INITIAL_MIX = 1.0     
 DRIFT_WEIGHT = 2.0             # Balanced for structural logic
 DIVERSITY_WEIGHT = 0.5         # Further reduced to stop noise motifs
@@ -122,7 +122,7 @@ CHANNEL_DROPOUT_SURVIVAL = 0.8      # Probability of channel surviving when drop
 # CLASSIFIER-FREE GUIDANCE (CFG)
 # ============================================================================
 LABEL_DROPOUT_PROB = 0.1            # Probability of dropping label during training
-CFG_SCALE = 3.5                     # Reduced to prevent burn-in and emphasize global structure
+CFG_SCALE = 3.5                     # Restore to stable baseline
 
 # ============================================================================
 # DRIFT NETWORK SPECIFIC

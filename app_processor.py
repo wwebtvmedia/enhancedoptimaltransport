@@ -93,14 +93,15 @@ class TrainingProcessor:
         """
         Refined KPI-driven logic to adjust parameters and training mode.
         Fixes "Fade and Blurry" issues by balancing reconstruction vs smoothing.
+        Bi-directional: Can decrease values if performance is already high.
         """
         if not self.trainer: return
 
         # 1. KPI EXTRACTION
         drift_loss = losses.get('drift', 5.0)
-        ssim_loss = losses.get('ssim_loss', 0.3)
+        ssim_loss = losses.get('ssim_loss', 0.6)
         mu_std = losses.get('mu_std', 0.8)
-        comp_score = losses.get('composite_score', -50)
+        comp_score = losses.get('composite_score', -30)
         
         # Stability Baseline
         STABILITY_LIMIT = 5.0
@@ -112,82 +113,81 @@ class TrainingProcessor:
             'ls': config.DEFAULT_LANGEVIN_STEPS, 'lc': config.LANGEVIN_SCORE_SCALE
         }
 
-        # 2. FIX FADE & BLURRY (The "Contrast & Detail" Block)
-        if ssim_loss > 0.25 or comp_score < -40:
-            # BLURRY/FADE: Increase intensity and guidance
-            # Pro: Restores lost details and contrast. Con: Can increase noise.
-            config.CFG_SCALE = min(14.0, config.CFG_SCALE + 0.4)
-            config.RECON_WEIGHT = min(25.0, config.RECON_WEIGHT * 1.1)
-            config.LANGEVIN_SCORE_SCALE = min(0.8, config.LANGEVIN_SCORE_SCALE * 1.1)
-            
-            # If weight is too high, it causes "averaging" blur, so we pull back slightly
-            if config.SSIM_WEIGHT > 5.0:
-                 config.SSIM_WEIGHT *= 0.9
-        
-        elif ssim_loss < 0.15:
-            # SHARP: Can afford to relax and increase diversity
-            # Pro: Faster training, more varied samples. Con: Risk of losing focus.
-            config.CFG_SCALE = max(2.5, config.CFG_SCALE - 0.2)
-            config.RECON_WEIGHT = max(2.0, config.RECON_WEIGHT * 0.95)
-            config.SSIM_WEIGHT = max(0.5, config.SSIM_WEIGHT * 0.98)
+        # 2. SSIM-BASED STRUCTURAL CONTROL (Realistic Thresholds for Phase 3)
+        # SSIM around 0.6 is common in Phase 3. 
+        if ssim_loss > 0.65:
+            # BLURRY: Increase intensity
+            # Pro: Sharpens boundaries. Con: Risk of artifacts.
+            config.RECON_WEIGHT = min(20.0, config.RECON_WEIGHT * 1.05)
+            config.CFG_SCALE = min(12.0, config.CFG_SCALE + 0.2)
+        elif ssim_loss < 0.55:
+            # SHARP: Can relax to favor diversity
+            # Pro: More creative generations. Con: Risk of getting "soft".
+            config.RECON_WEIGHT = max(4.0, config.RECON_WEIGHT * 0.95)
+            config.CFG_SCALE = max(2.5, config.CFG_SCALE - 0.1)
 
-        # 3. ANTI-ARTIFACT & STABILITY (The "Noise & Chaos" Block)
-        if mu_std > 1.2 or drift_loss > STABILITY_LIMIT * 0.8:
-            # NOISY/INSTABLE: Increase smoothing and lower intensity
-            # Pro: Prevents NaN and "grainy" images. Con: Makes images softer.
-            config.DRIFT_WEIGHT = max(0.5, config.DRIFT_WEIGHT * 0.85)
-            config.DEFAULT_LANGEVIN_STEPS = min(150, config.DEFAULT_LANGEVIN_STEPS + 10)
-            config.LANGEVIN_SCORE_SCALE *= 0.9
-        
+        # 3. CONTRAST & DETAIL (Based on Score Trend)
+        # If score is dropping, we might be "over-cooking"
+        if comp_score < -45:
+            # QUALITY DROP: Pull back slightly
+            # Pro: Prevents burn-in artifacts. Con: Temporary lower contrast.
+            config.CFG_SCALE = max(3.0, config.CFG_SCALE * 0.9)
+            config.RECON_WEIGHT = max(5.0, config.RECON_WEIGHT * 0.9)
+            config.LANGEVIN_SCORE_SCALE = max(0.1, config.LANGEVIN_SCORE_SCALE * 0.9)
+        elif comp_score > -25:
+            # HIGH QUALITY: Can push for extra detail
+            # Pro: Professional-level micro-textures. Con: GPU heat/time.
+            config.LANGEVIN_SCORE_SCALE = min(0.6, config.LANGEVIN_SCORE_SCALE * 1.05)
+
+        # 4. ANTI-ARTIFACT & STABILITY (The "Noise & Chaos" Block)
+        if mu_std > 1.1 or drift_loss > STABILITY_LIMIT * 0.8:
+            # NOISY/INSTABLE: Increase smoothing
+            # Pro: Cleaner backgrounds. Con: Less high-freq detail.
+            config.DRIFT_WEIGHT = max(0.8, config.DRIFT_WEIGHT * 0.9)
+            config.DEFAULT_LANGEVIN_STEPS = min(120, config.DEFAULT_LANGEVIN_STEPS + 5)
         elif mu_std < 0.7 and drift_loss < 1.0:
             # STABLE: Push for faster learning
-            # Pro: Quick convergence. Con: Risk of overshooting.
-            config.DRIFT_WEIGHT = min(3.0, config.DRIFT_WEIGHT * 1.05)
-            config.DEFAULT_LANGEVIN_STEPS = max(40, config.DEFAULT_LANGEVIN_STEPS - 5)
+            config.DRIFT_WEIGHT = min(3.0, config.DRIFT_WEIGHT * 1.02)
+            config.DEFAULT_LANGEVIN_STEPS = max(30, config.DEFAULT_LANGEVIN_STEPS - 2)
 
-        # 4. TRAINING TYPE JITTER (VAE vs DRIFT vs BOTH)
-        # Randomly switch focus to prevent the model from "forgetting" one part
-        # Pro: Keeps both networks fresh. Con: Short-term loss fluctuations.
-        if random.random() < 0.03: # 3% chance per epoch
+        # 5. TRAINING TYPE JITTER (VAE vs DRIFT vs BOTH)
+        # Pro: Prevents network "laziness". Con: Slight epoch jitter.
+        if random.random() < 0.04: # 4% chance per epoch
             current_mode = config.TRAINING_SCHEDULE.get('force_phase', 3)
-            # Weights: 10% VAE only, 10% Drift only, 80% Joint
             r = random.random()
-            if r < 0.10:
-                new_mode = 1 # VAE Focus (Fixes "Fade" by retraining decoder)
-                config.logger.info("🎲 [App Control] Jitter: VAE Focus mode enabled.")
-            elif r < 0.20:
-                new_mode = 2 # Drift Focus (Fixes "Structural error" in bridge)
-                config.logger.info("🎲 [App Control] Jitter: Drift Focus mode enabled.")
+            if r < 0.15:
+                new_mode = 1 # VAE Focus (Repair Fade)
+                config.logger.info("🎲 [App Control] Jitter: VAE focus (Repair Fade).")
+            elif r < 0.30:
+                new_mode = 2 # Drift Focus (Repair Structure)
+                config.logger.info("🎲 [App Control] Jitter: Drift focus (Repair Structure).")
             else:
                 new_mode = 3 # Joint Fine-tuning
-                config.logger.info("🎲 [App Control] Jitter: Joint Fine-tuning restored.")
-            
+                config.logger.info("🎲 [App Control] Jitter: Joint fine-tuning.")
             config.TRAINING_SCHEDULE['force_phase'] = new_mode
 
-        # 5. BASELINE RESTORATION (The "Panic" Button)
-        # If score is catastrophically low, reset to safe defaults
-        if comp_score < -100:
-            config.logger.warning("🚨 [App Control] KPI COLLAPSE: Restoring stable baselines.")
-            config.CFG_SCALE = 5.0
-            config.DRIFT_WEIGHT = 1.0
-            config.RECON_WEIGHT = 5.0
-            config.SSIM_WEIGHT = 1.0
+        # 6. PANIC BUTTON (Catastrophic divergence)
+        if comp_score < -120 or drift_loss > 15.0:
+            config.logger.warning("🚨 [App Control] EMERGENCY RESTORE: Training diverging.")
+            config.CFG_SCALE = 4.0
+            config.DRIFT_WEIGHT = 1.5
+            config.RECON_WEIGHT = 6.0
+            config.LANGEVIN_SCORE_SCALE = 0.3
             config.DEFAULT_LANGEVIN_STEPS = 60
-            config.LANGEVIN_SCORE_SCALE = 0.4
 
         # Log changes if any significant parameter was adjusted
         has_changed = (
             abs(config.DRIFT_WEIGHT - prev['dw']) > 0.01 or
             abs(config.RECON_WEIGHT - prev['rw']) > 0.1 or
             abs(config.CFG_SCALE - prev['cfg']) > 0.1 or
-            abs(config.SSIM_WEIGHT - prev['sw']) > 0.05 or
-            abs(config.DEFAULT_LANGEVIN_STEPS - prev['ls']) >= 5 or
+            abs(config.DEFAULT_LANGEVIN_STEPS - prev['ls']) >= 2 or
             abs(config.LANGEVIN_SCORE_SCALE - prev['lc']) > 0.02
         )
 
         if has_changed:
              config.logger.info(f"📊 [App Control] Update: DW={config.DRIFT_WEIGHT:.2f}, RW={config.RECON_WEIGHT:.1f}, "
-                                f"CFG={config.CFG_SCALE:.1f}, SSIMW={config.SSIM_WEIGHT:.2f}, LSteps={config.DEFAULT_LANGEVIN_STEPS}")
+                                f"CFG={config.CFG_SCALE:.1f}, LSteps={config.DEFAULT_LANGEVIN_STEPS}, LScale={config.LANGEVIN_SCORE_SCALE:.2f}")
+
 
     def _run_autonomous_strategy(self, epoch: int, losses: Dict[str, Any]):
         """
