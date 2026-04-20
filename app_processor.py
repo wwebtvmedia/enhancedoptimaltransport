@@ -87,30 +87,32 @@ class TrainingProcessor:
             # Too much chaos (potential periodic motifs), relax diversity
             config.DIVERSITY_WEIGHT = max(0.1, config.DIVERSITY_WEIGHT * 0.9)
 
-        # 4. SSIM_WEIGHT (Monitor Structural Integrity)
+        # 4. SSIM_WEIGHT & SHARPNESS CONTROL (Structural Integrity)
         ssim_loss = losses.get('ssim_loss', 0.3)
-        if ssim_loss > 0.35:
-            # Blurry detected, aggressively increase importance of structural loss
-            config.SSIM_WEIGHT = min(6.0, config.SSIM_WEIGHT * 1.1)
-        elif ssim_loss < 0.2:
-            # High quality, can slightly relax to favor other metrics
-            config.SSIM_WEIGHT = max(0.5, config.SSIM_WEIGHT * 0.95)
-
-        # 5. ANTI-ARTIFACT CONTROL (NEW: Automatic Langevin Tuning)
-        # Uses SSIM and Drift as proxies for reconstruction artifacts
-        old_l_steps = config.DEFAULT_LANGEVIN_STEPS
-        old_l_scale = config.LANGEVIN_SCORE_SCALE
-        
         if ssim_loss > 0.28:
-            # Structural noise detected: Increase smoothing refinement
-            config.DEFAULT_LANGEVIN_STEPS = min(120, config.DEFAULT_LANGEVIN_STEPS + 5)
-            config.LANGEVIN_SCORE_SCALE = max(0.15, config.LANGEVIN_SCORE_SCALE * 0.9)
-            # Also lower CFG to reduce artifact amplification
-            config.CFG_SCALE = max(2.0, config.CFG_SCALE - 0.2)
-        elif ssim_loss < 0.18 and current_loss < 1.0:
-            # High fidelity: Can afford to reduce refinement steps for speed
-            config.DEFAULT_LANGEVIN_STEPS = max(30, config.DEFAULT_LANGEVIN_STEPS - 2)
+            # BLURRY DETECTED: Push for sharper structural reconstruction
+            config.SSIM_WEIGHT = min(6.0, config.SSIM_WEIGHT * 1.08)
+            # Increase CFG to force the model to follow structural guidance more strictly
+            config.CFG_SCALE = min(12.0, config.CFG_SCALE + 0.3)
+            # Increase Langevin Score Scale to allow stronger refinement
             config.LANGEVIN_SCORE_SCALE = min(0.6, config.LANGEVIN_SCORE_SCALE * 1.05)
+        elif ssim_loss < 0.18:
+            # SHARP: Can slightly relax constraints
+            config.SSIM_WEIGHT = max(0.5, config.SSIM_WEIGHT * 0.95)
+            
+        # 5. ANTI-ARTIFACT CONTROL (Based on Latent Chaos/Drift)
+        # Use mu_std and Drift loss as proxies for noise/instability rather than SSIM
+        mu_std = losses.get('mu_std', 0.8)
+        if mu_std > 1.2 or current_loss > STABILITY_LIMIT * 0.9:
+            # INSTABILITY/NOISE DETECTED: Increase smoothing refinement
+            config.DEFAULT_LANGEVIN_STEPS = min(150, config.DEFAULT_LANGEVIN_STEPS + 10)
+            config.LANGEVIN_SCORE_SCALE = max(0.1, config.LANGEVIN_SCORE_SCALE * 0.85)
+            # Pull back CFG slightly only if unstable, to prevent artifact amplification
+            config.CFG_SCALE = max(2.5, config.CFG_SCALE * 0.9)
+        elif mu_std < 0.8 and current_loss < 1.0:
+            # STABLE: Can reduce refinement steps for efficiency
+            config.DEFAULT_LANGEVIN_STEPS = max(40, config.DEFAULT_LANGEVIN_STEPS - 5)
+
             
         # Log significant changes to the terminal
         if (abs(config.DRIFT_WEIGHT - old_drift) > 0.01 or 
