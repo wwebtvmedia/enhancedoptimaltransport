@@ -36,19 +36,39 @@ class ResidualBlock(nn.Module):
         out += shortcut
         return F.silu(out)
 
+class SimpleMHA(nn.Module):
+    """A simplified MHA that decomposes to basic matmuls for ONNX compatibility."""
+    def __init__(self, c, num_heads=4):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = c // num_heads
+        self.scale = self.head_dim ** -0.5
+        self.qkv = nn.Linear(c, c * 3)
+        self.proj = nn.Linear(c, c)
+
+    def forward(self, x):
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        return self.proj(x)
+
 class SelfAttention(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
-        self.mha = nn.MultiheadAttention(in_channels, num_heads=4, batch_first=True)
-        self.ln = nn.LayerNorm(in_channels)
+        self.mha = SimpleMHA(in_channels, num_heads=4)
+        self.norm = nn.GroupNorm(1, in_channels)
     def forward(self, x):
         b, c, h, w = x.shape
-        # Ensure contiguous before reshape
         res = x.reshape(b, c, -1).permute(0, 2, 1).contiguous()
-        attn_out, _ = self.mha(res, res, res)
-        out = self.ln(res + attn_out)
-        # Ensure contiguous before reshape
-        return out.permute(0, 2, 1).contiguous().reshape(b, c, h, w)
+        attn_out = self.mha(res)
+        out = res + attn_out
+        out = self.norm(out.permute(0, 2, 1).contiguous().reshape(b, c, h, w))
+        return out
 
 class SpatialSplitAttention(nn.Module):
     """
@@ -58,35 +78,34 @@ class SpatialSplitAttention(nn.Module):
     def __init__(self, in_channels, num_heads=4):
         super().__init__()
         self.num_heads = num_heads
-        self.ln_h = nn.LayerNorm(in_channels)
-        self.ln_w = nn.LayerNorm(in_channels)
-        
+        self.norm_h = nn.GroupNorm(1, in_channels)
+        self.norm_w = nn.GroupNorm(1, in_channels)
+
         # Vertical (Height) Attention: Attend along H for each W
-        self.h_mha = nn.MultiheadAttention(in_channels, num_heads, batch_first=True)
+        self.h_mha = SimpleMHA(in_channels, num_heads)
         # Horizontal (Width) Attention: Attend along W for each H
-        self.w_mha = nn.MultiheadAttention(in_channels, num_heads, batch_first=True)
-        
+        self.w_mha = SimpleMHA(in_channels, num_heads)
+
     def forward(self, x):
         b, c, h, w = x.shape
-        
+
         # 1. Vertical Split Attention (Attend along H for each W)
         # Shape: [B, C, H, W] -> [B, W, H, C] -> [B*W, H, C]
         v = x.permute(0, 3, 2, 1).reshape(b * w, h, c).contiguous()
-        v_norm = self.ln_h(v)
-        v_attn, _ = self.h_mha(v_norm, v_norm, v_norm)
+        v_attn = self.h_mha(v)
         # Correct residual: only add the attention delta back to the original x
         x = x + v_attn.reshape(b, w, h, c).permute(0, 3, 2, 1).contiguous()
-        
+        x = self.norm_h(x)
+
         # 2. Horizontal Split Attention (Attend along W for each H)
         # Shape: [B, C, H, W] -> [B, H, W, C] -> [B*H, W, C]
         h_in = x.permute(0, 2, 3, 1).reshape(b * h, w, c).contiguous()
-        h_norm = self.ln_w(h_in)
-        h_attn, _ = self.w_mha(h_norm, h_norm, h_norm)
+        h_attn = self.w_mha(h_in)
         # Correct residual: only add the attention delta back to the original x
         x = x + h_attn.reshape(b, h, w, c).permute(0, 3, 1, 2).contiguous()
-        
-        return x
+        x = self.norm_w(x)
 
+        return x
 # ============================================================================
 # NEURAL TOKENIZER AND SHARED EMBEDDING (NEW)
 # ============================================================================
