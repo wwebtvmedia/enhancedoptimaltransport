@@ -156,14 +156,6 @@ class TrainingProcessor:
                 config.logger.info("↩️ [Stochastic Control] Momentum Reset: Back-switching to Phase 2 for trajectory correction.")
                 config.TRAINING_SCHEDULE['force_phase'] = 2
 
-        # --- 3. FINAL REFINEMENT DECAY ---
-        # Sharp drop in learning rate for final polishing
-        if current_phase == 3 and epoch >= 250 and not hasattr(self, '_refinement_decay_active'):
-            config.logger.info("💎 [Auto-Strategy] Final Refinement Triggered. Dropping Learning Rates by 50%.")
-            for pg in self.trainer.opt_vae.param_groups: pg['lr'] *= 0.5
-            for pg in self.trainer.opt_drift.param_groups: pg['lr'] *= 0.5
-            self._refinement_decay_active = True
-
     def _run_loop(self, on_epoch_done, force_fresh=False):
         try:
             loader = dm.load_data()
