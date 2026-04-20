@@ -136,7 +136,7 @@
             margin-left: 8px;
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.all.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -211,6 +211,10 @@
 
     <script>
         (async () => {
+            // Configure ONNX Runtime to find its WASM files and favor performance
+            ort.env.wasm.numThreads = Math.min(navigator.hardwareConcurrency, 4);
+            ort.env.wasm.proxy = true;
+
             let IMG_SIZE = 96;
             let LATENT_SHAPE = [1, 8, 12, 12]; 
             let driftSession, vaeSession;
@@ -288,7 +292,7 @@
                 }
                 try {
                     statusEl.textContent = 'Loading models...';
-                    const providers = ['wasm', 'webgl'];
+                    const providers = ['webgpu', 'webgl', 'wasm'];
                     vaeSession = await ort.InferenceSession.create(await vaeFile.arrayBuffer(), { executionProviders: providers });
                     driftSession = await ort.InferenceSession.create(await driftFile.arrayBuffer(), { executionProviders: providers });
                     detectModelShapes();
@@ -306,7 +310,7 @@
 
             // Auto-load attempt (Only works via web server)
             try {
-                const providers = ['wasm', 'webgl'];
+                const providers = ['webgpu', 'webgl', 'wasm'];
                 driftSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/drift.onnx', { executionProviders: providers });
                 vaeSession = await ort.InferenceSession.create('./enhanced_label_sb/onnx/generator.onnx', { executionProviders: providers });
                 detectModelShapes();
