@@ -44,139 +44,131 @@ class TrainingProcessor:
 
     def _adjust_dynamic_parameters(self, epoch: int, losses: Dict[str, Any]):
         """
-        Application-layer logic to adjust model parameters based on training health.
-        Monitors loss trends to push for sharpness while ensuring stability.
+        Refined KPI-driven logic to adjust parameters and training mode.
+        Fixes "Fade and Blurry" issues by balancing reconstruction vs smoothing.
         """
-        # Ensure we are in Phase 2 or 3 (where drift is active)
-        if not self.trainer or self.trainer.phase < 2:
-            return
+        if not self.trainer: return
 
-        # Target metric for Schrödinger Bridge (Phase 2/3)
-        current_loss = losses.get('drift', losses.get('total', 10.0))
+        # 1. KPI EXTRACTION
+        drift_loss = losses.get('drift', 5.0)
+        ssim_loss = losses.get('ssim_loss', 0.3)
+        mu_std = losses.get('mu_std', 0.8)
+        comp_score = losses.get('composite_score', -50)
         
-        # requested 5.0 stability threshold
+        # Stability Baseline
         STABILITY_LIMIT = 5.0
         
-        old_drift = config.DRIFT_WEIGHT
-        old_cfg = config.CFG_SCALE
-        old_div = config.DIVERSITY_WEIGHT
-        old_ssim = config.SSIM_WEIGHT
+        # Store old values for logging
+        prev = {
+            'dw': config.DRIFT_WEIGHT, 'rw': config.RECON_WEIGHT,
+            'cfg': config.CFG_SCALE, 'sw': config.SSIM_WEIGHT,
+            'ls': config.DEFAULT_LANGEVIN_STEPS, 'lc': config.LANGEVIN_SCORE_SCALE
+        }
+
+        # 2. FIX FADE & BLURRY (The "Contrast & Detail" Block)
+        if ssim_loss > 0.25 or comp_score < -40:
+            # BLURRY/FADE: Increase intensity and guidance
+            # Pro: Restores lost details and contrast. Con: Can increase noise.
+            config.CFG_SCALE = min(14.0, config.CFG_SCALE + 0.4)
+            config.RECON_WEIGHT = min(25.0, config.RECON_WEIGHT * 1.1)
+            config.LANGEVIN_SCORE_SCALE = min(0.8, config.LANGEVIN_SCORE_SCALE * 1.1)
+            
+            # If weight is too high, it causes "averaging" blur, so we pull back slightly
+            if config.SSIM_WEIGHT > 5.0:
+                 config.SSIM_WEIGHT *= 0.9
         
-        # 1. DRIFT_WEIGHT adjustment for learning sharpness
-        if current_loss < STABILITY_LIMIT * 0.4:
-            # Very stable, push for even sharper gradients (max 2.5)
-            config.DRIFT_WEIGHT = min(2.5, config.DRIFT_WEIGHT * 1.05)
-        elif current_loss > STABILITY_LIMIT * 0.8:
-            # Approaching danger zone, pull back for safety (min 0.5)
-            config.DRIFT_WEIGHT = max(0.5, config.DRIFT_WEIGHT * 0.8)
-            
-        # 2. CFG_SCALE adjustment for generation sharpness
-        if current_loss < STABILITY_LIMIT * 0.3:
-            # Low loss implies good manifold learning, we can push guidance (max 12.0)
-            config.CFG_SCALE = min(12.0, config.CFG_SCALE + 0.2)
-        elif current_loss > STABILITY_LIMIT * 0.9:
-            # High loss suggests unstable integration, dial down guidance
-            config.CFG_SCALE = max(1.0, config.CFG_SCALE - 0.5)
+        elif ssim_loss < 0.15:
+            # SHARP: Can afford to relax and increase diversity
+            # Pro: Faster training, more varied samples. Con: Risk of losing focus.
+            config.CFG_SCALE = max(2.5, config.CFG_SCALE - 0.2)
+            config.RECON_WEIGHT = max(2.0, config.RECON_WEIGHT * 0.95)
+            config.SSIM_WEIGHT = max(0.5, config.SSIM_WEIGHT * 0.98)
 
-        # 3. DIVERSITY_WEIGHT (Monitor Latent Variance)
-        mu_std = losses.get('mu_std', 0.8)
-        if mu_std < 0.6:
-            # Low diversity (risk of collapse), boost diversity loss
-            config.DIVERSITY_WEIGHT = min(3.0, config.DIVERSITY_WEIGHT * 1.1)
-        elif mu_std > 1.1:
-            # Too much chaos (potential periodic motifs), relax diversity
-            config.DIVERSITY_WEIGHT = max(0.1, config.DIVERSITY_WEIGHT * 0.9)
-
-        # 4. SSIM_WEIGHT & SHARPNESS CONTROL (Structural Integrity)
-        ssim_loss = losses.get('ssim_loss', 0.3)
-        if ssim_loss > 0.28:
-            # BLURRY DETECTED: Push for sharper structural reconstruction
-            config.SSIM_WEIGHT = min(6.0, config.SSIM_WEIGHT * 1.08)
-            # Increase CFG to force the model to follow structural guidance more strictly
-            config.CFG_SCALE = min(12.0, config.CFG_SCALE + 0.3)
-            # Increase Langevin Score Scale to allow stronger refinement
-            config.LANGEVIN_SCORE_SCALE = min(0.6, config.LANGEVIN_SCORE_SCALE * 1.05)
-        elif ssim_loss < 0.18:
-            # SHARP: Can slightly relax constraints
-            config.SSIM_WEIGHT = max(0.5, config.SSIM_WEIGHT * 0.95)
-            
-        # 5. ANTI-ARTIFACT CONTROL (Based on Latent Chaos/Drift)
-        # Use mu_std and Drift loss as proxies for noise/instability rather than SSIM
-        mu_std = losses.get('mu_std', 0.8)
-        if mu_std > 1.2 or current_loss > STABILITY_LIMIT * 0.9:
-            # INSTABILITY/NOISE DETECTED: Increase smoothing refinement
+        # 3. ANTI-ARTIFACT & STABILITY (The "Noise & Chaos" Block)
+        if mu_std > 1.2 or drift_loss > STABILITY_LIMIT * 0.8:
+            # NOISY/INSTABLE: Increase smoothing and lower intensity
+            # Pro: Prevents NaN and "grainy" images. Con: Makes images softer.
+            config.DRIFT_WEIGHT = max(0.5, config.DRIFT_WEIGHT * 0.85)
             config.DEFAULT_LANGEVIN_STEPS = min(150, config.DEFAULT_LANGEVIN_STEPS + 10)
-            config.LANGEVIN_SCORE_SCALE = max(0.1, config.LANGEVIN_SCORE_SCALE * 0.85)
-            # Pull back CFG slightly only if unstable, to prevent artifact amplification
-            config.CFG_SCALE = max(2.5, config.CFG_SCALE * 0.9)
-        elif mu_std < 0.8 and current_loss < 1.0:
-            # STABLE: Can reduce refinement steps for efficiency
+            config.LANGEVIN_SCORE_SCALE *= 0.9
+        
+        elif mu_std < 0.7 and drift_loss < 1.0:
+            # STABLE: Push for faster learning
+            # Pro: Quick convergence. Con: Risk of overshooting.
+            config.DRIFT_WEIGHT = min(3.0, config.DRIFT_WEIGHT * 1.05)
             config.DEFAULT_LANGEVIN_STEPS = max(40, config.DEFAULT_LANGEVIN_STEPS - 5)
 
+        # 4. TRAINING TYPE JITTER (VAE vs DRIFT vs BOTH)
+        # Randomly switch focus to prevent the model from "forgetting" one part
+        # Pro: Keeps both networks fresh. Con: Short-term loss fluctuations.
+        if random.random() < 0.03: # 3% chance per epoch
+            current_mode = config.TRAINING_SCHEDULE.get('force_phase', 3)
+            # Weights: 10% VAE only, 10% Drift only, 80% Joint
+            r = random.random()
+            if r < 0.10:
+                new_mode = 1 # VAE Focus (Fixes "Fade" by retraining decoder)
+                config.logger.info("🎲 [App Control] Jitter: VAE Focus mode enabled.")
+            elif r < 0.20:
+                new_mode = 2 # Drift Focus (Fixes "Structural error" in bridge)
+                config.logger.info("🎲 [App Control] Jitter: Drift Focus mode enabled.")
+            else:
+                new_mode = 3 # Joint Fine-tuning
+                config.logger.info("🎲 [App Control] Jitter: Joint Fine-tuning restored.")
             
-        # Log significant changes to the terminal
-        if (abs(config.DRIFT_WEIGHT - old_drift) > 0.01 or 
-            abs(config.CFG_SCALE - old_cfg) > 0.1 or
-            abs(config.DIVERSITY_WEIGHT - old_div) > 0.05 or
-            abs(config.SSIM_WEIGHT - old_ssim) > 0.05 or
-            abs(config.DEFAULT_LANGEVIN_STEPS - old_l_steps) >= 5 or
-            abs(config.LANGEVIN_SCORE_SCALE - old_l_scale) > 0.02):
-            
-            config.logger.info(f"📊 [App Control] Dynamic Update: DriftW={config.DRIFT_WEIGHT:.2f}, CFG={config.CFG_SCALE:.1f}, "
-                               f"SSIMW={config.SSIM_WEIGHT:.2f}, LangevinSteps={config.DEFAULT_LANGEVIN_STEPS}, "
-                               f"LangevinScale={config.LANGEVIN_SCORE_SCALE:.2f}")
+            config.TRAINING_SCHEDULE['force_phase'] = new_mode
+
+        # 5. BASELINE RESTORATION (The "Panic" Button)
+        # If score is catastrophically low, reset to safe defaults
+        if comp_score < -100:
+            config.logger.warning("🚨 [App Control] KPI COLLAPSE: Restoring stable baselines.")
+            config.CFG_SCALE = 5.0
+            config.DRIFT_WEIGHT = 1.0
+            config.RECON_WEIGHT = 5.0
+            config.SSIM_WEIGHT = 1.0
+            config.DEFAULT_LANGEVIN_STEPS = 60
+            config.LANGEVIN_SCORE_SCALE = 0.4
+
+        # Log changes
+        if any(abs(getattr(config, k.upper()) - prev[k.lower()[:2]]) > 0.01 for k in prev):
+             config.logger.info(f"📊 [App Control] Update: DW={config.DRIFT_WEIGHT:.2f}, RW={config.RECON_WEIGHT:.1f}, "
+                                f"CFG={config.CFG_SCALE:.1f}, SSIMW={config.SSIM_WEIGHT:.2f}, LSteps={config.DEFAULT_LANGEVIN_STEPS}")
 
     def _run_autonomous_strategy(self, epoch: int, losses: Dict[str, Any]):
         """
         Autonomous training management:
         - KPI-based phase transitions (1 -> 2 -> 3).
-        - Stochastic nudges/restarts to avoid local minima, scaled by temperature.
+        - Stochastic nudges/restarts to avoid local minima.
         """
         if not self.trainer:
             return
 
         current_phase = self.trainer.phase
-        # Use temperature as a proxy for 'settledness'
         temp = losses.get('temperature', 0.5)
         
         # --- 1. PHASE TRANSITION LOGIC ---
-        # Goal: Optimize 1 -> 2 -> 3 transition based on quality targets
-        
         if current_phase == 1:
             snr = losses.get('snr', 0)
             ssim = losses.get('ssim_loss', 1.0)
-            # Transition to Drift Matching if VAE is sharp and stable
             if snr > 20.0 and ssim < 0.26 and epoch >= 80:
-                config.logger.info(f"✨ [Auto-Strategy] VAE Quality Target Reached (SNR: {snr:.1f}dB, SSIM: {ssim:.3f}).")
-                config.logger.info("🚀 Transitioning to Phase 2: Drift Matching.")
+                config.logger.info(f"✨ [Auto-Strategy] VAE Sharpness reached. Transitioning to Phase 2.")
                 config.TRAINING_SCHEDULE['mode'] = 'manual'
                 config.TRAINING_SCHEDULE['force_phase'] = 2
                 
         elif current_phase == 2:
             drift = losses.get('drift', 10.0)
             ssim = losses.get('ssim_loss', 1.0)
-            # Transition to Joint Fine-tuning if Bridge is accurate
             if drift < 1.25 and ssim < 0.21 and epoch >= 160:
-                config.logger.info(f"✨ [Auto-Strategy] Drift Stability Target Reached (Loss: {drift:.3f}).")
-                config.logger.info("🚀 Transitioning to Phase 3: Joint Fine-tuning.")
+                config.logger.info(f"✨ [Auto-Strategy] Drift Stability reached. Transitioning to Phase 3.")
                 config.TRAINING_SCHEDULE['mode'] = 'manual'
                 config.TRAINING_SCHEDULE['force_phase'] = 3
 
-        # --- 2. STOCHASTIC RESTART / NUDGE ---
-        # Probability peaks when temperature is high (searching harder when hot)
-        nudge_prob = 0.03 * (temp + 0.5) 
-        
-        if random.random() < nudge_prob:
-            config.logger.info(f"🎲 [Stochastic Control] Triggering quality nudge (p={nudge_prob:.3f}, temp={temp:.2f})")
-            
-            # "Increase a little bit" - temporary boost to learning intensity
-            config.DRIFT_WEIGHT = min(2.8, config.DRIFT_WEIGHT * 1.12)
-            config.RECON_WEIGHT = min(16.0, config.RECON_WEIGHT * 1.08)
-            
-            # "Restart" capability: small chance to go back a phase if in Phase 3
-            if current_phase == 3 and random.random() < 0.15:
-                config.logger.info("↩️ [Stochastic Control] Momentum Reset: Back-switching to Phase 2 for trajectory correction.")
+        # --- 2. STOCHASTIC RESTART capability (Back-switching) ---
+        # Very small proba to go back a phase if fine-tuning is failing
+        if current_phase == 3 and losses.get('composite_score', 0) < -60:
+            if random.random() < 0.05:
+                config.logger.info("↩️ [Auto-Strategy] Fine-tuning regression: Reverting to Phase 2 for trajectory fix.")
                 config.TRAINING_SCHEDULE['force_phase'] = 2
+
 
     def _run_loop(self, on_epoch_done, force_fresh=False):
         try:
