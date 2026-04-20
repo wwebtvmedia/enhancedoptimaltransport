@@ -66,14 +66,14 @@ GRAD_CLIP = 1.0
 KL_WEIGHT = 0.004              # Balanced for reconstruction vs latent organization
 RECON_WEIGHT = 5.0             # Reduced to allow Drift to dominate sharpness
 SUBPIXEL_INITIAL_MIX = 1.0     
-DRIFT_WEIGHT = 3.0             # Tripled to restore structural logic
+DRIFT_WEIGHT = 2.0             # Balanced for structural logic
 DIVERSITY_WEIGHT = 0.5         # Further reduced to stop noise motifs
 CONSISTENCY_WEIGHT = 1.0       
 PHASE3_RECON_SCALE = 0.05      # Further reduced for joint fine-tuning focus
 
 # NEW: Quality-focused loss weights
 PERCEPTUAL_WEIGHT = 2.0        # Increased for texture
-SSIM_WEIGHT = 3.0              # Tripled to fight blurriness
+SSIM_WEIGHT = 2.0              # Balanced to fight blurriness without over-constraining
 LPIPS_WEIGHT = 0.5             
 EDGE_WEIGHT = 0.5              
 TV_WEIGHT = 0.01               
@@ -83,10 +83,10 @@ TV_WEIGHT = 0.01
 # ============================================================================
 DEFAULT_STEPS = 100            
 DEFAULT_SEED = 42
-INFERENCE_TEMPERATURE = 0.5    
-DEFAULT_LANGEVIN_STEPS = 10    
+INFERENCE_TEMPERATURE = 0.4    
+DEFAULT_LANGEVIN_STEPS = 60    # Increased for smoother convergence and artifact removal
 LANGEVIN_STEP_SIZE = 0.01      
-LANGEVIN_SCORE_SCALE = 1.2     
+LANGEVIN_SCORE_SCALE = 0.4     # Reduced slightly to prevent over-shooting and grid artifacts
 
 # ============================================================================
 # VAE SPECIFIC (ENHANCED)
@@ -122,7 +122,7 @@ CHANNEL_DROPOUT_SURVIVAL = 0.8      # Probability of channel surviving when drop
 # CLASSIFIER-FREE GUIDANCE (CFG)
 # ============================================================================
 LABEL_DROPOUT_PROB = 0.1            # Probability of dropping label during training
-CFG_SCALE = 6.5                     # Scale for classifier-free guidance (1.0 = disabled)
+CFG_SCALE = 3.5                     # Reduced to prevent burn-in and emphasize global structure
 
 # ============================================================================
 # DRIFT NETWORK SPECIFIC

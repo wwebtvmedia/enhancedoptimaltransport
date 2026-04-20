@@ -116,8 +116,8 @@ class OUReference:
         mean = numerator / denominator
         
         # Variance
-        var = (self.sigma**2 / (2 * self.theta)) * \
-              ((1 - exp_neg_theta_t**2) * (1 - exp_neg_theta_1_t**2)) / (1 - exp_neg_theta**2)
+        # Corrected the variance calculation to be a single expression
+        var = (self.sigma**2 / (2 * self.theta)) * ((1 - exp_neg_theta_t**2) * (1 - exp_neg_theta_1_t**2)) / (1 - exp_neg_theta**2)
         var = var.clamp(min=0)
         
         return mean, var
@@ -149,43 +149,6 @@ class OUReference:
 # ============================================================
 # UTILITIES
 # ============================================================
-<<<<<<< HEAD
-class EMAModel:
-    """Exponential Moving Average for model weights."""
-    def __init__(self, model, decay=0.999):
-        self.model = model
-        self.decay = decay
-        self.shadow = {}
-        self.backup = {}
-        self._register()
-
-    def _register(self):
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                self.shadow[name] = param.data.clone()
-
-    def update(self):
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                assert name in self.shadow
-                new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
-                self.shadow[name].copy_(new_average)
-
-    def apply_shadow(self):
-        self.backup = {}
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                self.backup[name] = param.data.clone()
-                param.data.copy_(self.shadow[name])
-
-    def restore(self):
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                if name in self.backup:
-                    param.data.copy_(self.backup[name])
-
-=======
->>>>>>> parent of fc2ed9d (feat: implement EMA and high-fidelity refinement strategy)
 def calc_snr(real: torch.Tensor, recon: torch.Tensor) -> float:
     """Calculate Signal-to-Noise Ratio."""
     mse = F.mse_loss(recon, real)
@@ -710,8 +673,12 @@ class EnhancedLabelTrainer:
         sigma_y_sq = torch.clamp(sigma_y_sq, min=0)
         
         # SSIM map per channel
-        ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / \
-                ((mu_x_sq + mu_y_sq + C1) * (sigma_x_sq + sigma_y_sq + C2))
+        # Explicitly group numerator and denominator with parentheses for clarity and safety
+        ssim_map = (
+            (2 * mu_xy + C1) * (2 * sigma_xy + C2)
+        ) / (
+            (mu_x_sq + mu_y_sq + C1) * (sigma_x_sq + sigma_y_sq + C2)
+        )
         
         # Average over spatial dimensions and channels -> per-image SSIM
         ssim_per_image = ssim_map.mean(dim=[1, 2, 3])
@@ -1459,17 +1426,6 @@ class EnhancedLabelTrainer:
         self.vae.eval()
         self.drift.eval()
         
-<<<<<<< HEAD
-        # Apply EMA weights for better generative quality
-        self.ema_vae.apply_shadow()
-        self.ema_drift.apply_shadow()
-
-        try:
-            if labels is not None:
-                num_samples = len(labels)
-            else:
-                labels = [i % 10 for i in range(num_samples)]
-=======
         if labels is not None:
             num_samples = len(labels)
         else:
@@ -1487,147 +1443,126 @@ class EnhancedLabelTrainer:
                 text_bytes_tensor = torch.tensor(text_bytes_list, device=config.DEVICE)
             else:
                 text_bytes_tensor = None
->>>>>>> parent of fc2ed9d (feat: implement EMA and high-fidelity refinement strategy)
 
-            with torch.no_grad():
-                labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
+            # Source ID context
+            if source_id is None:
+                s_id = torch.zeros(labels_tensor.shape[0], dtype=torch.long, device=config.DEVICE)
+            else:
+                s_id = torch.full((labels_tensor.shape[0],), source_id, dtype=torch.long, device=config.DEVICE)
 
-                # Neural Tokenizer support
-                if config.USE_NEURAL_TOKENIZER:
-                    text_bytes_list = []
-                    for l in labels:
-                        desc = dm.CLASS_DESCRIPTIONS[l] if l < 10 else f"class_{l}"
-                        text_bytes_list.append(dm.text_to_bytes(desc))
-                    text_bytes_tensor = torch.tensor(text_bytes_list, device=config.DEVICE)
-                else:
-                    text_bytes_tensor = None
+        # Start from pure noise using the prior standard deviation from config
+        z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
 
-                # Source ID context
-                if source_id is None:
-                    s_id = torch.zeros(labels_tensor.shape[0], dtype=torch.long, device=config.DEVICE)
-                else:
-                    s_id = torch.full((labels_tensor.shape[0],), source_id, dtype=torch.long, device=config.DEVICE)
+        config.logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
 
-            # Start from pure noise using the prior standard deviation from config
-            z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
+        steps = config.DEFAULT_STEPS
+        dt = 1.0 / steps
 
-            config.logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
+        # ----- ODE integration -----
+        for i in range(steps):
+            t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
 
-            steps = config.DEFAULT_STEPS
-            dt = 1.0 / steps
+            # Predict drift with context
+            drift = self.drift(z, t_cur, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
 
-            # ----- ODE integration -----
-            for i in range(steps):
-                t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
+            # Monitor drift magnitude (adaptive clipping is inside the drift network)
+            drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
 
-                # Predict drift with context
-                drift = self.drift(z, t_cur, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+            if method == 'euler':
+                z = z + drift * dt
+            elif method == 'heun':
+                k1 = drift
+                t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
+                z_pred = z + dt * k1
+                k2 = self.drift(z_pred, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                z = z + (dt / 2.0) * (k1 + k2)
+            elif method == 'rk4':
+                k1 = drift
+                t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
+                z_half = z + 0.5 * dt * k1
+                k2 = self.drift(z_half, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                z_half2 = z + 0.5 * dt * k2
+                k3 = self.drift(z_half2, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
+                z_next = z + dt * k3
+                k4 = self.drift(z_next, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
-                # Monitor drift magnitude (adaptive clipping is inside the drift network)
-                drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
+            z = torch.clamp(z, -10, 10)   # gentle clamping
 
-                if method == 'euler':
-                    z = z + drift * dt
-                elif method == 'heun':
-                    k1 = drift
-                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
-                    z_pred = z + dt * k1
-                    k2 = self.drift(z_pred, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
-                    z = z + (dt / 2.0) * (k1 + k2)
-                elif method == 'rk4':
-                    k1 = drift
-                    t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
-                    z_half = z + 0.5 * dt * k1
-                    k2 = self.drift(z_half, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
-                    z_half2 = z + 0.5 * dt * k2
-                    k3 = self.drift(z_half2, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
-                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
-                    z_next = z + dt * k3
-                    k4 = self.drift(z_next, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
-                    z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+            if i % 10 == 0:
+                config.logger.info(f"Step {i:3d}, t={i*dt:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std():.4f}")
 
-                z = torch.clamp(z, -10, 10)   # gentle clamping
+            if torch.isnan(z).any():
+                config.logger.error(f"NaN detected at step {i}!")
+                break
 
-                if i % 10 == 0:
-                    config.logger.info(f"Step {i:3d}, t={i*dt:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std():.4f}")
+        # ----- Refined Langevin Refinement -----
+        if langevin_steps > 0:
+            config.logger.info(f"Starting {langevin_steps} Refined Langevin steps...")
+            t_one = torch.full((num_samples, 1), 1.0, device=config.DEVICE)
 
-                if torch.isnan(z).any():
-                    config.logger.error(f"NaN detected at step {i}!")
-                    break
+            # Adaptive step size: start strong, end gentle
+            base_lr = langevin_step_size
 
-            # ----- Refined Langevin Refinement -----
-            if langevin_steps > 0:
-                config.logger.info(f"Starting {langevin_steps} Refined Langevin steps...")
-                t_one = torch.full((num_samples, 1), 1.0, device=config.DEVICE)
+            for step in range(langevin_steps):
+                # 1. Compute Score Proxy 
+                # Using drift at t=1 is theoretically the 'terminal' velocity
+                drift_at_end = self.drift(z, t_one, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
 
-                # Adaptive step size: start strong, end gentle
-                base_lr = langevin_step_size
+                # 2. Add Annealed Noise
+                # We decay the noise scale as we converge to the manifold
+                step_ratio = step / langevin_steps
+                current_noise_scale = np.sqrt(2 * base_lr) * (1 - 0.5 * step_ratio)
+                noise = torch.randn_like(z) * current_noise_scale
 
-                for step in range(langevin_steps):
-                    # 1. Compute Score Proxy 
-                    # Using drift at t=1 is theoretically the 'terminal' velocity
-                    drift_at_end = self.drift(z, t_one, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
+                # 3. Stochastic Gradient Update (MALA style)
+                # We treat the drift as the gradient of the log-probability
+                z = z.detach() + 0.5 * base_lr * langevin_score_scale * drift_at_end + noise
 
-                    # 2. Add Annealed Noise
-                    # We decay the noise scale as we converge to the manifold
-                    step_ratio = step / langevin_steps
-                    current_noise_scale = np.sqrt(2 * base_lr) * (1 - 0.5 * step_ratio)
-                    noise = torch.randn_like(z) * current_noise_scale
+                # 4. Gentle Manifold Constraint
+                # Prevents latents from escaping the range expected by the VAE decoder
+                z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
 
-                    # 3. Stochastic Gradient Update (MALA style)
-                    # We treat the drift as the gradient of the log-probability
-                    z = z.detach() + 0.5 * base_lr * langevin_score_scale * drift_at_end + noise
+                if (step + 1) % 5 == 0:
+                    config.logger.info(f" Langevin Step {step+1}: z_std={z.std():.4f}")
 
-                    # 4. Gentle Manifold Constraint
-                    # Prevents latents from escaping the range expected by the VAE decoder
-                    z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
+            z = z.detach() # Final cleanup
+        config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
 
-                    if (step + 1) % 5 == 0:
-                        config.logger.info(f" Langevin Step {step+1}: z_std={z.std():.4f}")
+        # Decode
+        self.vae.set_force_active(True)
+        images = self.vae.decode(z, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
+        self.vae.set_force_active(False)
+        images = torch.clamp(images, -1, 1)
 
-                z = z.detach() # Final cleanup
-            config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
+        config.logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")
 
-            # Decode
-            self.vae.set_force_active(True)
-            images = self.vae.decode(z, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
-            self.vae.set_force_active(False)
-            images = torch.clamp(images, -1, 1)
+        # Save images
+        images_display = (images + 1) / 2
+        images_display = torch.clamp(images_display, 0, 1)
 
-            config.logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")
+        grid = vutils.make_grid(images_display, nrow=4, padding=2)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        grid_path = config.DIRS["samples"] / f"gen_epoch{self.epoch+1}_{timestamp}.png"
+        vutils.save_image(grid, grid_path)
 
-            # Save images
-            images_display = (images + 1) / 2
-            images_display = torch.clamp(images_display, 0, 1)
+        for idx, img in enumerate(images_display):
+            individual_path = config.DIRS["samples"] / f"gen_{idx}_label{labels[idx]}_epoch{self.epoch+1}.png"
+            vutils.save_image(img, individual_path)
 
-            grid = vutils.make_grid(images_display, nrow=4, padding=2)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            grid_path = config.DIRS["samples"] / f"gen_epoch{self.epoch+1}_{timestamp}.png"
-            vutils.save_image(grid, grid_path)
+        debug_path = config.DIRS["samples"] / f"raw_epoch{self.epoch+1}_{timestamp}.pt"
+        torch.save({
+            'z': z.cpu(),
+            'images': images.cpu(),
+            'labels': labels
+        }, debug_path)
 
-            for idx, img in enumerate(images_display):
-                individual_path = config.DIRS["samples"] / f"gen_{idx}_label{labels[idx]}_epoch{self.epoch+1}.png"
-                vutils.save_image(img, individual_path)
+        config.logger.info(f"Generated {num_samples} samples for labels {labels}")
+        config.logger.info(f"Images saved to: {grid_path}")
 
-            debug_path = config.DIRS["samples"] / f"raw_epoch{self.epoch+1}_{timestamp}.pt"
-            torch.save({
-                'z': z.cpu(),
-                'images': images.cpu(),
-                'labels': labels
-            }, debug_path)
-
-            config.logger.info(f"Generated {num_samples} samples for labels {labels}")
-            config.logger.info(f"Images saved to: {grid_path}")
-
-            return grid_path
-<<<<<<< HEAD
-        finally:
-            # Restore original weights
-            self.ema_vae.restore()
-            self.ema_drift.restore()
-=======
-
->>>>>>> parent of fc2ed9d (feat: implement EMA and high-fidelity refinement strategy)
+        return grid_path
+    
     def list_available_snapshots(self) -> List[Path]:
         """List all available snapshots."""
         snap_files = list(config.DIRS["snaps"].glob("*_snapshot_epoch_*.pt"))
@@ -1824,12 +1759,12 @@ def train_model(num_epochs: int = config.EPOCHS, resume_from_snapshot: Optional[
     trainer = EnhancedLabelTrainer(loader)
     
     if resume_from_snapshot:
-        print(f"\n Resuming from snapshot: {resume_from_snapshot}")
+        print(f"Resuming from snapshot: {resume_from_snapshot}")
         trainer.load_from_snapshot(resume_from_snapshot)
     else:
         latest_checkpoint = config.DIRS["ckpt"] / "latest.pt"
         if latest_checkpoint.exists():
-            resume = input("\n Found existing checkpoint. Resume training? (y/n): ").strip().lower()
+            resume = input("Found existing checkpoint. Resume training? (y/n): ").strip().lower()
             if resume == 'y':
                 trainer.load_checkpoint()
             else:
@@ -1869,7 +1804,7 @@ def train_model(num_epochs: int = config.EPOCHS, resume_from_snapshot: Optional[
             if (epoch + 1) % 5 == 0:
                 conv_stats = trainer.kpi_tracker.compute_convergence()
                 if 'loss_trend' in conv_stats:
-                    trend_symbol = "\\" if conv_stats['loss_trend'] < 0 else "//"
+                    trend_symbol = "" if conv_stats['loss_trend'] < 0 else "//"
                     config.logger.info(
                         f"Convergence Stats {trend_symbol} | Loss trend: {conv_stats['loss_trend']:.6f} | "
                         f"Stability Score: {conv_stats.get('convergence_score', 0):.4f}"

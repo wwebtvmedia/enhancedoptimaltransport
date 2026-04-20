@@ -809,7 +809,7 @@ class SchrödingerBridgeGUI:
             ("📅 Training Schedule", ["PHASE1_EPOCHS", "PHASE2_EPOCHS"]),
             ("🧠 Neural Tokenizer", ["USE_NEURAL_TOKENIZER", "TEXT_EMBEDDING_DIM", "CONTRASTIVE_WEIGHT"]),
             ("🔮 Inference", ["DEFAULT_STEPS", "DEFAULT_SEED", "INFERENCE_TEMPERATURE",
-                             "LANGEVIN_STEP_SIZE", "LANGEVIN_SCORE_SCALE"]),
+                             "LANGEVIN_STEP_SIZE", "LANGEVIN_SCORE_SCALE", "DEFAULT_LANGEVIN_STEPS", "CFG_SCALE"]),
             ("✨ Enhanced Features", ["USE_SUBPIXEL_CONV", "USE_PERCENTILE", "USE_SNAPSHOTS", "USE_AMP"]),
         ]
 

@@ -20,8 +20,7 @@ This document tracks the technical integrity of the `enhancedoptimaltransport` p
 ## 🏗️ Architecture Review
 
 ### 1. High-Fidelity Control
-- [ ] **EMA Stability:** Verify shadow weights are updated every batch and correctly applied during inference.
-- [ ] **Refinement Decay:** Confirm LR halving triggers correctly at Epoch 250 in Phase 3.
+    [ ] **Refinement Decay:** Confirm LR halving triggers correctly at Epoch 250 in Phase 3.
 - [ ] **Weight Balance:** Ensure `DRIFT_WEIGHT=4.0` does not cause gradient explosions in early Phase 3.
 - [ ] **Phase Transitions:** Verify SNR/SSIM thresholds correctly trigger 1->2->3 transitions.
 

@@ -95,14 +95,34 @@ class TrainingProcessor:
         elif ssim_loss < 0.2:
             # High quality, can slightly relax to favor other metrics
             config.SSIM_WEIGHT = max(0.5, config.SSIM_WEIGHT * 0.95)
+
+        # 5. ANTI-ARTIFACT CONTROL (NEW: Automatic Langevin Tuning)
+        # Uses SSIM and Drift as proxies for reconstruction artifacts
+        old_l_steps = config.DEFAULT_LANGEVIN_STEPS
+        old_l_scale = config.LANGEVIN_SCORE_SCALE
+        
+        if ssim_loss > 0.28:
+            # Structural noise detected: Increase smoothing refinement
+            config.DEFAULT_LANGEVIN_STEPS = min(120, config.DEFAULT_LANGEVIN_STEPS + 5)
+            config.LANGEVIN_SCORE_SCALE = max(0.15, config.LANGEVIN_SCORE_SCALE * 0.9)
+            # Also lower CFG to reduce artifact amplification
+            config.CFG_SCALE = max(2.0, config.CFG_SCALE - 0.2)
+        elif ssim_loss < 0.18 and current_loss < 1.0:
+            # High fidelity: Can afford to reduce refinement steps for speed
+            config.DEFAULT_LANGEVIN_STEPS = max(30, config.DEFAULT_LANGEVIN_STEPS - 2)
+            config.LANGEVIN_SCORE_SCALE = min(0.6, config.LANGEVIN_SCORE_SCALE * 1.05)
             
         # Log significant changes to the terminal
         if (abs(config.DRIFT_WEIGHT - old_drift) > 0.01 or 
             abs(config.CFG_SCALE - old_cfg) > 0.1 or
             abs(config.DIVERSITY_WEIGHT - old_div) > 0.05 or
-            abs(config.SSIM_WEIGHT - old_ssim) > 0.05):
+            abs(config.SSIM_WEIGHT - old_ssim) > 0.05 or
+            abs(config.DEFAULT_LANGEVIN_STEPS - old_l_steps) >= 5 or
+            abs(config.LANGEVIN_SCORE_SCALE - old_l_scale) > 0.02):
             
-            config.logger.info(f"📊 [App Control] Dynamic Update: DriftW={config.DRIFT_WEIGHT:.2f}, CFG={config.CFG_SCALE:.1f}, DivW={config.DIVERSITY_WEIGHT:.2f}, SSIMW={config.SSIM_WEIGHT:.2f}")
+            config.logger.info(f"📊 [App Control] Dynamic Update: DriftW={config.DRIFT_WEIGHT:.2f}, CFG={config.CFG_SCALE:.1f}, "
+                               f"SSIMW={config.SSIM_WEIGHT:.2f}, LangevinSteps={config.DEFAULT_LANGEVIN_STEPS}, "
+                               f"LangevinScale={config.LANGEVIN_SCORE_SCALE:.2f}")
 
     def _run_autonomous_strategy(self, epoch: int, losses: Dict[str, Any]):
         """
