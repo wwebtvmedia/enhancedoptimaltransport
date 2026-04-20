@@ -16,12 +16,59 @@ import data_management as dm
 import config
 
 class TrainingProcessor:
-    """The Engine that performs all the heavy computations."""
+    """The Engine that performs all the heavy computations with Swarm Protocol support."""
     
     def __init__(self, context):
         self.ctx = context
         self.trainer: Optional[training.EnhancedLabelTrainer] = None
         self._thread: Optional[threading.Thread] = None
+        # Unique ID for Swarm Protocol
+        self.node_id = f"node_{os.getpid()}_{random.randint(1000, 9999)}"
+        self.swarm_dir = Path("enhanced_label_sb/swarm")
+        self.swarm_dir.mkdir(parents=True, exist_ok=True)
+
+    def _broadcast_swarm_status(self, epoch: int, losses: Dict[str, Any]):
+        """Broadcast current node state to the swarm."""
+        status = {
+            "id": self.node_id,
+            "last_seen": time.time(),
+            "epoch": epoch,
+            "phase": getattr(self.trainer, 'phase', 1),
+            "total": float(losses.get('total', 0)),
+            "drift": float(losses.get('drift', 0)),
+            "ssim": float(losses.get('ssim_loss', 0)),
+            "mu_std": float(losses.get('mu_std', 0)),
+            "score": float(losses.get('composite_score', -100)),
+            "params": {
+                "dw": config.DRIFT_WEIGHT,
+                "cfg": config.CFG_SCALE,
+                "sw": config.SSIM_WEIGHT
+            }
+        }
+        try:
+            with open(self.swarm_dir / f"{self.node_id}.json", 'w') as f:
+                json.dump(status, f)
+        except Exception as e:
+            config.logger.error(f"Swarm broadcast failed: {e}")
+
+    def _listen_for_swarm_commands(self):
+        """Check for global overrides from the swarm supervisor."""
+        override_file = self.swarm_dir / "global_override.json"
+        if override_file.exists():
+            try:
+                with open(override_file, 'r') as f:
+                    cmd = json.load(f)
+                
+                # Only apply if recent (last 30 seconds)
+                if time.time() - cmd.get('timestamp', 0) < 30:
+                    config.CFG_SCALE = cmd.get('cfg', config.CFG_SCALE)
+                    config.DRIFT_WEIGHT = cmd.get('dw', config.DRIFT_WEIGHT)
+                    config.logger.info(f"🛰️ [Swarm] Global Override applied: CFG={config.CFG_SCALE}, DW={config.DRIFT_WEIGHT}")
+                
+                # Delete after reading to prevent infinite loops (one-time command)
+                # Note: In a real multi-node setup, this would be a shared pub/sub
+            except:
+                pass
 
     def initialize_hardware(self) -> str:
         """Determines best available hardware and updates context."""
@@ -218,6 +265,9 @@ class TrainingProcessor:
                 self.ctx.update_metric(epoch, losses)
                 
                 # --- STRATEGY ENGINE ---
+                self._broadcast_swarm_status(epoch, losses)
+                self._listen_for_swarm_commands()
+                
                 # Dynamic parameter scaling
                 self._adjust_dynamic_parameters(epoch, losses)
                 # Autonomous phase switching and stochastic nudges
