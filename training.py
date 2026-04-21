@@ -339,6 +339,8 @@ class EnhancedLabelTrainer:
     
     def __init__(self, loader):
         self.loader = loader
+        # Multimodal Alignment Loss
+        self.contrastive_criterion = ContrastiveLoss()
         
         # Clear cache before large allocations
         if torch.cuda.is_available():
@@ -371,12 +373,12 @@ class EnhancedLabelTrainer:
                 except (AttributeError, ImportError):
                     self.scaler = torch.cuda.amp.GradScaler() # Fallback
         
-        # Initialize phase and move models to correct device
-        current_epoch = self.epoch + 1
-        self.phase = self.get_training_phase(current_epoch)
-
+        # Initialize phase - this will trigger _switch_to_phase correctly
         self.vae = models.LabelConditionedVAE().to(config.DEVICE)
         self.drift = models.LabelConditionedDrift().to(config.DEVICE)
+        
+        current_epoch = self.epoch + 1
+        self.get_training_phase(current_epoch)
 
         # Apply LoRA if enabled in config
         if config.USE_LORA:
@@ -421,9 +423,6 @@ class EnhancedLabelTrainer:
         else:
             self.snapshot_vae = None
             self.snapshot_drift = None
-
-        # Multimodal Alignment Loss
-        self.contrastive_criterion = ContrastiveLoss().to(config.DEVICE)
             
         config.logger.info(f"💓 Epoch 0 | Batch 0/{len(self.loader)}")
         config.logger.info(f"Models initialized on {config.DEVICE}:")
@@ -535,6 +534,13 @@ class EnhancedLabelTrainer:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             
+        # Ensure contrastive criterion is moved to GPU if needed
+        if hasattr(self, 'contrastive_criterion'):
+            if new_phase == 1:
+                self.contrastive_criterion.to(config.DEVICE)
+            else:
+                self.contrastive_criterion.to('cpu')
+            
         if new_phase == 1:
             # Phase 1: VAE only
             self.vae.train()
@@ -641,11 +647,18 @@ class EnhancedLabelTrainer:
    
     def get_training_phase(self, epoch):
         phase = set_training_phase(epoch)
-        if phase != self.phase:
-            config.logger.info(f" Phase changed from {self.phase} to {phase} at epoch {epoch+1}")
-            self._switch_to_phase(phase)
+        # Check if phase attribute exists before comparing
+        if not hasattr(self, 'phase') or phase != self.phase:
+            if hasattr(self, 'phase'):
+                config.logger.info(f" Phase changed from {self.phase} to {phase} at epoch {epoch+1}")
+            else:
+                config.logger.info(f" Initializing training at Phase {phase}")
+            
+            # Update state before calling switch logic
             self.phase = phase
-        return phase
+            self._switch_to_phase(phase)
+            
+        return self.phase
 
     def ssim_loss(self, x, y):
         """
