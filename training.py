@@ -505,6 +505,10 @@ class EnhancedLabelTrainer:
 
     def generate_samples(self, labels=None, num_samples=8, temperature=None, cfg_scale=1.0, 
                          langevin_steps=0, langevin_step_size=0.1, langevin_score_scale=1.0, method='euler'):
+        # Determine actual number of samples
+        if labels is not None:
+            num_samples = len(labels)
+            
         # Determine current devices
         vae_device = next(self.vae.parameters()).device
         drift_device = next(self.drift.parameters()).device
@@ -566,14 +570,22 @@ class EnhancedLabelTrainer:
                         noise = torch.randn_like(z)
                         z = z + langevin_step_size * score * langevin_score_scale + math.sqrt(2 * langevin_step_size) * noise
 
-                # 4. Move to VAE device for decoding
-                z = z.to(vae_device)
-                lbl_t = lbl_t.to(vae_device)
-                imgs = torch.clamp(self.vae.decode(z, lbl_t), -1, 1)
+            # 4. Move to VAE device for decoding
+            z = z.to(vae_device)
+            lbl_t = lbl_t.to(vae_device)
+            imgs = torch.clamp(self.vae.decode(z, lbl_t), -1, 1)
+            
+            # Save individual images with detailed naming
+            for i in range(num_samples):
+                label_val = labels[i]
+                sample_path = config.DIRS["samples"] / f"gen_{i}_label{label_val}_epoch{self.epoch}.png"
+                vutils.save_image((imgs[i:i+1] + 1)/2, sample_path)
                 
-            grid_path = config.DIRS["samples"] / f"gen_ep{self.epoch}.png"
+            # Save a summary grid for convenience
+            grid_path = config.DIRS["samples"] / f"grid_epoch{self.epoch}.png"
             vutils.save_image((imgs + 1)/2, grid_path, nrow=4)
-            config.logger.info(f"✅ Samples generated: {grid_path.name}")
+            
+            config.logger.info(f"✅ Generated {num_samples} samples and summary grid for Epoch {self.epoch}")
             return grid_path
         finally:
             if temp_gpu_move:
