@@ -288,21 +288,36 @@ class EnhancedLabelTrainer:
         return F.mse_loss(recon_feat, target_feat)
 
     def _switch_to_phase(self, new_phase: int):
-        """Handle transitions with surgical VRAM management."""
+        """Handle transition between training phases with adaptive VRAM management."""
         if torch.cuda.is_available(): torch.cuda.empty_cache()
             
+        # Check available memory to decide if we can afford both on GPU
+        can_afford_both = False
+        if config.DEVICE.type == 'cuda':
+            try:
+                free_mem, _ = torch.cuda.mem_get_info()
+                # Need ~2.5GB free for safe double-model training
+                can_afford_both = free_mem > 2.5 * 1024**3
+            except:
+                can_afford_both = False
+
         if new_phase == 1:
             self.vae.to(config.DEVICE)
-            self.drift.to('cpu')
+            if can_afford_both:
+                self.drift.to(config.DEVICE)
+                config.logger.info("🚀 VRAM: Both networks active on GPU (Memory sufficient).")
+            else:
+                self.drift.to('cpu')
+                config.logger.info("⚡ VRAM: Surgical Mode - Drift offloaded to CPU (Memory low).")
+                
             self.contrastive_criterion.to(config.DEVICE)
             if hasattr(self, 'vgg'): self.vgg.to(config.DEVICE)
-            config.logger.info("⚡ VRAM: VAE/VGG active on GPU. Drift offloaded to CPU.")
         else:
             self.vae.to(config.DEVICE)
             self.drift.to(config.DEVICE)
             self.contrastive_criterion.to('cpu')
             if hasattr(self, 'vgg'): self.vgg.to('cpu')
-            config.logger.info("⚡ VRAM: Both networks active on GPU. Aux modules offloaded.")
+            config.logger.info("⚡ VRAM: Core networks on GPU. Aux modules offloaded.")
             
         self.vae.train() if new_phase != 2 else self.vae.train() # VAE train mode for encoding
         self.drift.train() if new_phase >= 2 else self.drift.eval()
