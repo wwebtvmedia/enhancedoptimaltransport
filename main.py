@@ -11,10 +11,6 @@ from pathlib import Path
 
 # Local modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gpu_utils import clean_gpu
-
-# Clean GPU immediately before any significant logic
-clean_gpu(verbose=True)
 
 # Set environment variable for better memory management before torch import
 if 'PYTORCH_ALLOC_CONF' not in os.environ:

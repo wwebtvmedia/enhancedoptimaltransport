@@ -234,13 +234,6 @@ def initialize_hardware():
     """Determines best available hardware and updates global config."""
     global DEVICE, AMP_AVAILABLE, BATCH_SIZE, DTYPE_AMP
     
-    # Try standalone cleaning first
-    try:
-        from gpu_utils import clean_gpu
-        clean_gpu(verbose=False)
-    except:
-        pass
-    
     if torch.cuda.is_available():
         try:
             # Use CUDA but with a warning if low
