@@ -376,9 +376,6 @@ class EnhancedLabelTrainer:
         # Initialize phase - this will trigger _switch_to_phase correctly
         self.vae = models.LabelConditionedVAE().to(config.DEVICE)
         self.drift = models.LabelConditionedDrift().to(config.DEVICE)
-        
-        current_epoch = self.epoch + 1
-        self.get_training_phase(current_epoch)
 
         # Apply LoRA if enabled in config
         if config.USE_LORA:
@@ -435,16 +432,13 @@ class EnhancedLabelTrainer:
         self.register_buffer('vgg_mean', torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1))
         self.register_buffer('vgg_std', torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1))
 
-        # Pre-compute SSIM Gaussian Window
-        window_size = 11
-        sigma = 1.5
-        gauss = torch.arange(window_size, dtype=torch.float32)
-        gauss = torch.exp(-(gauss - window_size//2)**2 / (2 * sigma**2))
-        gauss = gauss / gauss.sum()
-        window = gauss[:, None] * gauss[None, :]
-        window = window[None, None, :, :]
         # Cache it for the 3 channels - Registered as buffer
         self.register_buffer('ssim_window', window.expand(3, -1, -1, -1).contiguous())
+        
+        # Finally, initialize phase - this will trigger _switch_to_phase correctly
+        # now that all optimizers and trackers are ready.
+        current_epoch = self.epoch + 1
+        self.get_training_phase(current_epoch)
 
 
     def register_buffer(self, name, tensor):
