@@ -460,21 +460,53 @@ class EnhancedLabelTrainer:
     
     def generate_reconstructions(self, batch=None):
         self.vae.eval()
+        # Get the device the VAE is actually on (it might be CPU)
+        vae_device = next(self.vae.parameters()).device
+        
         batch = batch or next(iter(self.loader))
-        imgs, lbls = batch['image'][:8].to(config.DEVICE), batch['label'][:8].to(config.DEVICE)
-        with torch.no_grad(): recon, _, _ = self.vae(imgs, lbls, text_bytes=batch.get('text_bytes')[:8].to(config.DEVICE) if batch.get('text_bytes') is not None else None)
-        dm.save_image_grid(torch.cat([imgs, recon], dim=0), config.DIRS["samples"] / f"recon_ep{self.epoch}.png", nrow=8)
+        imgs = batch['image'][:8].to(vae_device)
+        lbls = batch['label'][:8].to(vae_device)
+        
+        text_bytes = None
+        if batch.get('text_bytes') is not None:
+            text_bytes = batch.get('text_bytes')[:8].to(vae_device)
+            
+        with torch.no_grad():
+            recon, _, _ = self.vae(imgs, lbls, text_bytes=text_bytes)
+        
+        grid_path = config.DIRS["samples"] / f"recon_ep{self.epoch}.png"
+        vutils.save_image(torch.cat([(imgs+1)/2, (recon+1)/2], dim=0), grid_path, nrow=8)
 
     def generate_samples(self, labels=None, num_samples=8):
-        self.vae.eval(); self.drift.eval()
+        # Determine devices
+        vae_device = next(self.vae.parameters()).device
+        drift_device = next(self.drift.parameters()).device
+        
+        # If in Phase 1, we might skip samples because Drift is on CPU and untrained
+        if self.phase == 1 and drift_device.type == 'cpu':
+            config.logger.info("⏩ Skipping samples in Phase 1 (Drift network is offloaded to CPU).")
+            return None
+
+        self.vae.eval()
+        self.drift.eval()
+        
         labels = labels or [i % 10 for i in range(num_samples)]
-        lbl_t = torch.tensor(labels, device=config.DEVICE)
+        lbl_t = torch.tensor(labels, device=drift_device)
+        
         with torch.no_grad():
-            z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
+            # Initial noise on drift device
+            z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=drift_device) * config.CST_COEF_GAUSSIAN_PRIO
+            
+            # ODE Integration
             for i in range(config.DEFAULT_STEPS):
-                t = torch.full((num_samples, 1), i / config.DEFAULT_STEPS, device=config.DEVICE)
+                t = torch.full((num_samples, 1), i / config.DEFAULT_STEPS, device=drift_device)
                 z = z + self.drift(z, t, lbl_t) * (1.0 / config.DEFAULT_STEPS)
+            
+            # Move to VAE device for decoding
+            z = z.to(vae_device)
+            lbl_t = lbl_t.to(vae_device)
             imgs = torch.clamp(self.vae.decode(z, lbl_t), -1, 1)
+            
         grid_path = config.DIRS["samples"] / f"gen_ep{self.epoch}.png"
         vutils.save_image((imgs + 1)/2, grid_path, nrow=4)
         return grid_path
