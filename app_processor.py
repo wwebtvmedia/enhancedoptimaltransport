@@ -255,10 +255,8 @@ class TrainingProcessor:
                     try:
                         self.trainer.load_checkpoint()
                         # Clean up any memory spikes from loading
-                        if torch.cuda.is_available():
-                            import gc
-                            gc.collect()
-                            torch.cuda.empty_cache()
+                        from gpu_utils import clean_gpu
+                        clean_gpu(verbose=False)
                     except Exception as e:
                         config.logger.error(f"Failed to auto-resume from checkpoint: {e}")
                         config.logger.info("Starting fresh training instead.")

@@ -11,25 +11,10 @@ from pathlib import Path
 
 # Local modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-def clean_gpu():
-    """Aggressively reclaim GPU memory before startup."""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
-            # Try to release memory held by any lingering tensors
-            for i in range(torch.cuda.device_count()):
-                torch.cuda.reset_peak_memory_stats(i)
-                torch.cuda.ipc_collect()
-            print("🧹 GPU Memory cleaned.")
-    except Exception as e:
-        print(f"⚠️ GPU clean failed: {e}")
+from gpu_utils import clean_gpu
 
 # Clean GPU immediately before any significant logic
-clean_gpu()
+clean_gpu(verbose=True)
 
 # Set environment variable for better memory management before torch import
 if 'PYTORCH_ALLOC_CONF' not in os.environ:

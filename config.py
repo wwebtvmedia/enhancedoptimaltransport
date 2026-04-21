@@ -234,19 +234,15 @@ def initialize_hardware():
     """Determines best available hardware and updates global config."""
     global DEVICE, AMP_AVAILABLE, BATCH_SIZE, DTYPE_AMP
     
+    # Try standalone cleaning first
+    try:
+        from gpu_utils import clean_gpu
+        clean_gpu(verbose=False)
+    except:
+        pass
+    
     if torch.cuda.is_available():
         try:
-            # Try to reclaim any fragmented memory before checking
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-            
-            # Explicitly clear all devices
-            for i in range(torch.cuda.device_count()):
-                torch.cuda.reset_peak_memory_stats(i)
-                torch.cuda.empty_cache()
-            
             # Use CUDA but with a warning if low
             DEVICE = torch.device("cuda")
             AMP_AVAILABLE = True
