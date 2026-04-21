@@ -392,30 +392,67 @@ class EnhancedLabelTrainer:
         count = 0
         for idx, batch in enumerate(pbar):
             try:
+                # 1. Forward Pass
                 if self.scaler:
                     with torch.amp.autocast('cuda', enabled=config.USE_AMP, dtype=config.DTYPE_AMP):
                         loss_dict = self.compute_loss(batch, phase, idx)
-                    self.opt_vae.zero_grad(); self.opt_drift.zero_grad()
-                    self.scaler.scale(loss_dict['total']).backward()
-                    self.scaler.unscale_(self.opt_vae); self.scaler.unscale_(self.opt_drift)
-                    torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
-                    torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP*2)
-                    self.scaler.step(self.opt_vae); self.scaler.step(self.opt_drift); self.scaler.update()
                 else:
                     loss_dict = self.compute_loss(batch, phase, idx)
-                    self.opt_vae.zero_grad(); self.opt_drift.zero_grad()
+                
+                # 2. Backward Pass
+                self.opt_vae.zero_grad(set_to_none=True)
+                self.opt_drift.zero_grad(set_to_none=True)
+                
+                if self.scaler:
+                    self.scaler.scale(loss_dict['total']).backward()
+                    
+                    # 3. Surgical Unscale and Clip (Phase-aware)
+                    if phase == 1:
+                        self.scaler.unscale_(self.opt_vae)
+                        torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
+                        self.scaler.step(self.opt_vae)
+                    else:
+                        # Phases 2 and 3: Both might have gradients
+                        self.scaler.unscale_(self.opt_vae)
+                        self.scaler.unscale_(self.opt_drift)
+                        torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
+                        torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP*2)
+                        self.scaler.step(self.opt_vae)
+                        self.scaler.step(self.opt_drift)
+                    
+                    # 4. Final Scale Update
+                    self.scaler.update()
+                else:
                     loss_dict['total'].backward()
-                    self.opt_vae.step(); self.opt_drift.step()
+                    torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
+                    torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP*2)
+                    self.opt_vae.step()
+                    self.opt_drift.step()
+
+                # Metrics logging
                 for k, v in loss_dict.items():
                     if isinstance(v, (int, float)): epoch_losses[k] += v
                     elif isinstance(v, torch.Tensor): epoch_losses[k] += v.item()
                 count += 1
+                
             except Exception as e:
+                # CRITICAL: If an optimization step failed, the scaler might be in a bad state.
+                # We must update it to reset internal flags even on failure.
+                if self.scaler:
+                    try:
+                        self.scaler.update()
+                    except:
+                        # If update fails too, recreate the scaler to be safe
+                        if config.DEVICE.type == 'cuda':
+                            self.scaler = torch.cuda.amp.GradScaler()
+                
                 config.logger.error(f"Batch {idx} error: {e}")
-                if "out of memory" in str(e): torch.cuda.empty_cache()
+                if "out of memory" in str(e): 
+                    torch.cuda.empty_cache()
                 continue
+        
         self.epoch += 1
-        return {k: v/count for k, v in epoch_losses.items()}
+        return {k: v/count for k, v in epoch_losses.items()} if count > 0 else {}
 
     def save_checkpoint(self, is_best=False, is_best_overall=False): return dm.save_checkpoint(self, is_best, is_best_overall)
     def load_checkpoint(self, path=None): return dm.load_checkpoint(self, path)
