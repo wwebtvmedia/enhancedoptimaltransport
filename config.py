@@ -175,7 +175,7 @@ USE_AMP = True
 # ============================================================================
 # THREE-PHASE TRAINING SCHEDULE
 # ============================================================================
-PHASE1_BATCH_SIZE = 32  # Restore Phase 1 batch size to 32
+PHASE1_BATCH_SIZE = 16  # Reduced to 16 for better VRAM safety during VAE training
 # Adaptive switch points based on total epochs
 PHASE1_EPOCHS = 150
 PHASE2_EPOCHS = 400                    
@@ -236,8 +236,18 @@ def initialize_hardware():
     
     if torch.cuda.is_available():
         try:
-            # Force CUDA context initialization to catch immediate OOMs
-            _ = torch.zeros(1, device="cuda")
+            # Try to reclaim any fragmented memory before checking
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            
+            # Explicitly clear all devices
+            for i in range(torch.cuda.device_count()):
+                torch.cuda.reset_peak_memory_stats(i)
+                torch.cuda.empty_cache()
+            
+            # Use CUDA but with a warning if low
             DEVICE = torch.device("cuda")
             AMP_AVAILABLE = True
             
@@ -245,11 +255,11 @@ def initialize_hardware():
             free_mem, total_mem = torch.cuda.mem_get_info()
             logger.info(f"📊 GPU Memory: {free_mem/1024**3:.2f}GB free / {total_mem/1024**3:.2f}GB total")
             
-            if free_mem < 500 * 1024**2:  # Less than 500MB free
-                logger.warning(f"⚠️ CRITICAL: Very low GPU memory ({free_mem/1024**2:.1f} MB free). Training will likely fail with OOM.")
-                logger.warning(f"⚠️ Please close other GPU-intensive applications (e.g., browsers, LLMs) to free up VRAM.")
+            if free_mem < 400 * 1024**2:  # Less than 400MB free
+                logger.warning(f"⚠️ CRITICAL: Very low GPU memory ({free_mem/1024**2:.1f} MB free).")
+                logger.warning(f"⚠️ Please close Ollama or Firefox to free up VRAM.")
                 
-            # Check for BFloat16 support (Ampere+ GPUs like RTX 3000/4000, A100, H100)
+            # Check for BFloat16 support
             if torch.cuda.is_bf16_supported():
                 DTYPE_AMP = torch.bfloat16
                 info = f"🎮 CUDA: {torch.cuda.get_device_name(0)} (Using BF16)"
@@ -257,14 +267,11 @@ def initialize_hardware():
                 DTYPE_AMP = torch.float16
                 info = f"🎮 CUDA: {torch.cuda.get_device_name(0)} (Using FP16)"
                 
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower():
-                DEVICE = torch.device("cpu")
-                AMP_AVAILABLE = False
-                info = "💻 CPU (Fallback: GPU Out of Memory)"
-                logger.error("❌ GPU is completely full! Falling back to CPU. Please close applications to free VRAM.")
-            else:
-                raise e
+        except Exception as e:
+            logger.error(f"❌ CUDA Initialization failed: {e}. Falling back to CPU.")
+            DEVICE = torch.device("cpu")
+            AMP_AVAILABLE = False
+            info = "💻 CPU (Slow)"
             
         BATCH_SIZE = 64
     elif hasattr(torch, 'xpu') and torch.xpu.is_available():
