@@ -902,35 +902,55 @@ class EnhancedLabelTrainer:
 
             consistency_decay = max(0.1, 1.0 - (self.epoch - drift_start_epoch) / (config.EPOCHS - drift_start_epoch))
             
-            # --- MONITORING METRICS FOR APP LAYER (Phase 2/3) ---
-            with torch.no_grad():
-                div_loss = self.vae._channel_diversity_loss(mu).item()
-                # Use mu for structural checking in drift phase
-                recon_for_ssim = self.vae.decode(mu, labels, text_bytes=text_bytes, source_id=source_id)
-                ssim_val = self.ssim_loss(recon_for_ssim, images).item()
+            # --- MONITORING METRICS AND PHASE 3 TRAINING ---
+            if phase == 3:
+                # In Phase 3, we need gradients for recon_p3 to train the VAE
+                div_loss = self.vae._channel_diversity_loss(mu)
+                div_loss_val = div_loss.item()
                 
-                # Sharpness estimation from reconstruction
+                # Decoder pass for joint fine-tuning
+                recon_for_ssim = self.vae.decode(mu, labels, text_bytes=text_bytes, source_id=source_id)
+                
+                # Quality metrics
+                ssim_val_tensor = self.ssim_loss(recon_for_ssim, images)
+                ssim_val = ssim_val_tensor.item()
+                
                 grad_x = torch.abs(recon_for_ssim[:, :, :, 1:] - recon_for_ssim[:, :, :, :-1]).mean()
                 grad_y = torch.abs(recon_for_ssim[:, :, 1:, :] - recon_for_ssim[:, :, :-1, :]).mean()
                 sharpness = (grad_x + grad_y).item()
+            else:
+                with torch.no_grad():
+                    div_loss = self.vae._channel_diversity_loss(mu)
+                    div_loss_val = div_loss.item()
+                    # Use mu for structural checking in drift phase
+                    recon_for_ssim = self.vae.decode(mu, labels, text_bytes=text_bytes, source_id=source_id)
+                    ssim_val = self.ssim_loss(recon_for_ssim, images).item()
+                    
+                    # Sharpness estimation from reconstruction
+                    grad_x = torch.abs(recon_for_ssim[:, :, :, 1:] - recon_for_ssim[:, :, :, :-1]).mean()
+                    grad_y = torch.abs(recon_for_ssim[:, :, 1:, :] - recon_for_ssim[:, :, :-1, :]).mean()
+                    sharpness = (grad_x + grad_y).item()
 
             # PHASE 3 ENHANCEMENT: Also train the VAE to reconstruct from the latent mean
             if phase == 3:
                 # Use mu (the clean latent) for VAE stability in Phase 3
                 # This ensures the decoder stays sharp without being confused by bridge noise
-                recon_p3 = recon_for_ssim # already computed above
+                recon_p3 = recon_for_ssim 
                 
                 # Scale recon loss down in Phase 3 so it doesn't overwhelm the Drift training
                 p3_scale = getattr(config, 'PHASE3_RECON_SCALE', 0.1)
                 recon_loss_p3 = F.l1_loss(recon_p3, images) * config.RECON_WEIGHT * p3_scale
                 
-                total_loss = drift_loss_base + (consistency_loss * config.CONSISTENCY_WEIGHT * consistency_decay) + recon_loss_p3
+                # Add diversity loss in Phase 3 as well to maintain latent organization
+                total_loss = drift_loss_base + (consistency_loss * config.CONSISTENCY_WEIGHT * consistency_decay) + \
+                             recon_loss_p3 + (div_loss * config.DIVERSITY_WEIGHT)
+                
                 loss_dict = {
                     'total': total_loss,
                     'drift': drift_loss_base.item(),
                     'consistency': consistency_loss.item(),
                     'recon_p3': recon_loss_p3.item(),
-                    'diversity': div_loss,
+                    'diversity': div_loss_val,
                     'ssim_loss': ssim_val,
                     'sharpness': sharpness,
                     'mu_std': mu_global_std,
@@ -943,7 +963,7 @@ class EnhancedLabelTrainer:
                     'total': total_loss,
                     'drift': drift_loss_base.item(),
                     'consistency': consistency_loss.item(),
-                    'diversity': div_loss,
+                    'diversity': div_loss_val,
                     'ssim_loss': ssim_val,
                     'sharpness': sharpness,
                     'mu_std': mu_global_std,
@@ -1198,6 +1218,8 @@ class EnhancedLabelTrainer:
             except Exception as e:
                 import traceback
                 config.logger.error(f"Error processing batch {batch_idx}: {e}")
+                if "CUDA out of memory" in str(e) and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 config.logger.error(traceback.format_exc())
                 continue
                         
@@ -1831,6 +1853,12 @@ def train_model(num_epochs: int = config.EPOCHS, resume_from_snapshot: Optional[
             config.logger.info("Generating samples...")
             trainer.generate_samples()
         
+        # Periodic memory cleanup
+        if torch.cuda.is_available():
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            
         # Check early stopping
         if config.USE_KPI_TRACKING and trainer.phase == 2:
             if trainer.kpi_tracker.should_stop(phase=trainer.phase):

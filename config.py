@@ -275,6 +275,8 @@ def initialize_hardware():
             info = "💻 CPU (Slow)"
             BATCH_SIZE = 16
             
+    # Global override for safety on shared GPUs
+    BATCH_SIZE = 32
     return info
 
 # ============================================================================

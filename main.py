@@ -11,6 +11,11 @@ from pathlib import Path
 
 # Local modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Set environment variable for better memory management before torch import
+if 'PYTORCH_ALLOC_CONF' not in os.environ:
+    os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
+
 from app_context import AppContext
 from app_processor import TrainingProcessor
 import config
