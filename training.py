@@ -387,23 +387,52 @@ class EnhancedLabelTrainer:
             total = recon_loss + kl_loss + ssim_loss + edge_loss + total_variation_loss(recon, config.TV_WEIGHT) + div_loss + c_loss * config.CONTRASTIVE_WEIGHT
             return {'total': total, 'recon': recon_loss.item(), 'kl': kl_loss.item(), 'diversity': div_loss.item(), 'contrastive': c_loss.item(), 'ssim_loss': ssim_loss.item(), 'snr': calc_snr(images, recon)}
         else:
-            with torch.no_grad(): mu_ref, _ = self.vae_ref.encode(images, labels, text_bytes, source_id)
+            with torch.no_grad(): 
+                mu_ref, _ = self.vae_ref.encode(images, labels, text_bytes, source_id)
+            
             mu, logvar = self.vae.encode(images, labels, text_bytes, source_id)
-            z1 = mu + torch.exp(0.5*logvar) * torch.randn_like(logvar) * (config.TEMPERATURE_START + (config.TEMPERATURE_END-config.TEMPERATURE_START)*(self.epoch/config.EPOCHS))
+            
+            # CRITICAL: Detach latents for Drift target to prevent VAE corruption
+            mu_for_drift = mu.detach()
+            logvar_for_drift = logvar.detach()
+            
+            temp_anneal = config.TEMPERATURE_START + (config.TEMPERATURE_END - config.TEMPERATURE_START) * (self.epoch / config.EPOCHS)
+            z1 = mu_for_drift + torch.exp(0.5 * logvar_for_drift) * torch.randn_like(logvar_for_drift) * temp_anneal
+            
             z0 = torch.randn_like(z1) * config.CST_COEF_GAUSSIAN_PRIO
             t = torch.rand(images.shape[0], 1, device=config.DEVICE)
-            zt = (1 - t.reshape(-1,1,1,1)) * z0 + t.reshape(-1,1,1,1) * z1
+            t_reshaped = t.reshape(-1, 1, 1, 1).contiguous()
+            
+            zt = (1 - t_reshaped) * z0 + t_reshaped * z1
             target = z1 - z0
+            
             pred = self.drift(zt, t, labels, text_bytes, source_id)
-            drift_loss = F.huber_loss(pred, target) * config.DRIFT_WEIGHT
+            
+            # Restore Time-weighted loss for stability
+            time_weights = 1.0 + config.TIME_WEIGHT_FACTOR * t_reshaped
+            drift_loss = F.huber_loss(pred * time_weights, target * time_weights, delta=1.0) * config.DRIFT_WEIGHT
+            
             consistency_loss = F.mse_loss(mu, mu_ref) * config.CONSISTENCY_WEIGHT
+            
             if phase == 3:
                 recon_p3 = self.vae.decode(mu, labels, text_bytes, source_id)
-                recon_loss_p3 = F.l1_loss(recon_p3, images) * config.RECON_WEIGHT * 0.1
+                # Increase Phase 3 recon scale to maintain integrity
+                recon_loss_p3 = F.l1_loss(recon_p3, images) * config.RECON_WEIGHT * 0.5
                 total = drift_loss + consistency_loss + recon_loss_p3 + (self.vae._channel_diversity_loss(mu) * config.DIVERSITY_WEIGHT)
-                return {'total': total, 'drift': drift_loss.item(), 'consistency': consistency_loss.item(), 'recon_p3': recon_loss_p3.item(), 'mu_std': mu.std().item()}
+                return {
+                    'total': total, 
+                    'drift': drift_loss.item(), 
+                    'consistency': consistency_loss.item(), 
+                    'recon_p3': recon_loss_p3.item(), 
+                    'mu_std': mu.std().item()
+                }
             else:
-                return {'total': drift_loss + consistency_loss, 'drift': drift_loss.item(), 'consistency': consistency_loss.item(), 'mu_std': mu.std().item()}
+                return {
+                    'total': drift_loss + consistency_loss, 
+                    'drift': drift_loss.item(), 
+                    'consistency': consistency_loss.item(), 
+                    'mu_std': mu.std().item()
+                }
 
     def train_epoch(self) -> Dict:
         phase = self.get_training_phase(self.epoch)
@@ -592,7 +621,7 @@ class EnhancedLabelTrainer:
                         noise = torch.randn_like(z) * current_noise_scale
                         
                         # 3. Stochastic Gradient Update
-                        z = z + 0.5 * langevin_step_size * langevin_score_scale * score + noise
+                        z = z.detach() + 0.5 * langevin_step_size * langevin_score_scale * score + noise
                         
                         # 4. Gentle Manifold Constraint (Keep latents in VAE-friendly range)
                         z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
