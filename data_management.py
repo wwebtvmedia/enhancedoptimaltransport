@@ -491,8 +491,15 @@ class LabeledImageDataset(Dataset):
 # ============================================================
 def get_dataloader_config() -> Dict:
     """Get dataloader configuration optimized for current device."""
+    batch_size = config.BATCH_SIZE
+    
+    # Manual override for Phase 1 VRAM optimization
+    if config.TRAINING_SCHEDULE.get('mode') == 'manual' and config.TRAINING_SCHEDULE.get('force_phase') == 1:
+        batch_size = getattr(config, 'PHASE1_BATCH_SIZE', batch_size)
+        config.logger.info(f"⚡ VRAM Optimization: Using Phase 1 batch size: {batch_size}")
+        
     config_dict = {
-        'batch_size': config.BATCH_SIZE,
+        'batch_size': batch_size,
         'shuffle': True,
         'drop_last': True,
     }

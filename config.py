@@ -175,6 +175,7 @@ USE_AMP = True
 # ============================================================================
 # THREE-PHASE TRAINING SCHEDULE
 # ============================================================================
+PHASE1_BATCH_SIZE = 16  # Force smaller batch for VAE-only training to save VRAM
 # Adaptive switch points based on total epochs
 PHASE1_EPOCHS = 150
 PHASE2_EPOCHS = 400                    
@@ -189,7 +190,7 @@ CUSTOM_SCHED = {}
 
 TRAINING_SCHEDULE = {
     'mode': 'manual',                        
-    'force_phase': 3,                     
+    'force_phase': 1,                     
     'custom_schedule': CUSTOM_SCHED,         
     'switch_epoch': 150,                       
     'switch_epoch_1': PHASE1_EPOCHS,           

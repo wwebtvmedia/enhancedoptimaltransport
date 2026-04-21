@@ -339,14 +339,55 @@ class EnhancedLabelTrainer:
     
     def __init__(self, loader):
         self.loader = loader
-
+        
         # Clear cache before large allocations
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        self.vae = models.LabelConditionedVAE().to(config.DEVICE)
-        self.drift = models.LabelConditionedDrift().to(config.DEVICE)
+        # Phase will be determined by get_training_phase later
+        self.epoch = 0
+        self.step = 0
+        self.best_loss = float('inf')
+        self.best_composite_score = float('-inf')
+        self.debug_counter = 0
+        self.debug_interval = 10
+        self.phase2_start_epoch = None
         
+        # Reference for Phase 2
+        self.vae_ref = None
+        
+        # OU reference process
+        self.ou_ref = OUReference(theta=config.OU_THETA, sigma=config.OU_SIGMA) if config.USE_OU_BRIDGE else None
+        
+        # AMP Scaler (Cross-backend support)
+        self.scaler = None
+        if config.USE_AMP and config.AMP_AVAILABLE:
+            if config.DEVICE.type == 'cuda':
+                self.scaler = torch.cuda.amp.GradScaler()
+            elif config.DEVICE.type == 'xpu':
+                # Intel XPU uses the same GradScaler API or its own depending on torch version
+                try:
+                    self.scaler = torch.xpu.amp.GradScaler()
+                except (AttributeError, ImportError):
+                    self.scaler = torch.cuda.amp.GradScaler() # Fallback
+        
+        # Initialize phase and move models to correct device
+        current_epoch = self.epoch + 1
+        self.phase = self.get_training_phase(current_epoch)
+
+        self.vae = models.LabelConditionedVAE()
+        self.drift = models.LabelConditionedDrift()
+
+        # Move to GPU based on phase
+        if self.phase == 1:
+            self.vae.to(config.DEVICE)
+            self.drift.to('cpu') 
+            config.logger.info("VAE initialized on GPU. Drift network held on CPU (VRAM optimization).")
+        else:
+            self.vae.to(config.DEVICE)
+            self.drift.to(config.DEVICE)
+            config.logger.info("Both networks initialized on GPU.")
+
         # Apply LoRA if enabled in config
         if config.USE_LORA:
             import lora
@@ -392,35 +433,10 @@ class EnhancedLabelTrainer:
             self.snapshot_drift = None
 
         # Multimodal Alignment Loss
-        self.contrastive_criterion = ContrastiveLoss().to(config.DEVICE)
-        
-        self.epoch = 0
-        self.step = 0
-        self.phase = 1
-        self.best_loss = float('inf')
-        self.best_composite_score = float('-inf')
-        self.debug_counter = 0
-        self.debug_interval = 10
-        self.phase2_start_epoch = None
-        
-        # Reference for Phase 2
-        self.vae_ref = None
-        
-        # OU reference process
-        self.ou_ref = OUReference(theta=config.OU_THETA, sigma=config.OU_SIGMA) if config.USE_OU_BRIDGE else None
-        
-        # AMP Scaler (Cross-backend support)
-        self.scaler = None
-        if config.USE_AMP and config.AMP_AVAILABLE:
-            if config.DEVICE.type == 'cuda':
-                self.scaler = torch.cuda.amp.GradScaler()
-            elif config.DEVICE.type == 'xpu':
-                # Intel XPU uses the same GradScaler API or its own depending on torch version
-                try:
-                    self.scaler = torch.xpu.amp.GradScaler()
-                except (AttributeError, ImportError):
-                    self.scaler = torch.cuda.amp.GradScaler() # Fallback
-        
+        self.contrastive_criterion = ContrastiveLoss()
+        if self.phase == 1:
+            self.contrastive_criterion.to(config.DEVICE)
+            
         config.logger.info(f"💓 Epoch 0 | Batch 0/{len(self.loader)}")
         config.logger.info(f"Models initialized:")
         config.logger.info(f"  VAE params: {sum(p.numel() for p in self.vae.parameters()):,}")
@@ -494,12 +510,26 @@ class EnhancedLabelTrainer:
         if not hasattr(self, 'vgg'):
             try:
                 import torchvision.models as models
-                self.vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features[:16].to(config.DEVICE)
+                # Initialize but don't move to GPU yet
+                self.vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features[:16]
+                if self.phase == 1:
+                    self.vgg.to(config.DEVICE)
                 for param in self.vgg.parameters():
                     param.requires_grad = False
                 self.vgg.eval()
             except:
                 return torch.tensor(0.0, device=config.DEVICE)
+        
+        # Ensure vgg is on correct device if we switched phase
+        # Check current device using a parameter
+        vgg_device = next(self.vgg.parameters()).device
+        if self.phase == 1 and vgg_device.type == 'cpu':
+            self.vgg.to(config.DEVICE)
+        elif self.phase != 1 and vgg_device.type != 'cpu':
+            self.vgg.to('cpu')
+            
+        if self.phase != 1:
+            return torch.tensor(0.0, device=config.DEVICE)
     
         # Ensure mean/std match the precision of recon (Crucial for AMP)
         mean = self.vgg_mean.to(recon.dtype)
@@ -525,6 +555,21 @@ class EnhancedLabelTrainer:
 
     def _switch_to_phase(self, new_phase: int):
         """Handle transition between training phases."""
+        # Strategic device placement to save VRAM
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        if new_phase == 1:
+            self.vae.to(config.DEVICE)
+            self.drift.to('cpu')
+            self.contrastive_criterion.to(config.DEVICE)
+            config.logger.info("VAE active on GPU. Drift network moved to CPU.")
+        else:
+            self.vae.to(config.DEVICE)
+            self.drift.to(config.DEVICE)
+            self.contrastive_criterion.to('cpu')
+            config.logger.info("Both networks active on GPU. ContrastiveLoss moved to CPU.")
+            
         if new_phase == 1:
             # Phase 1: VAE only
             self.vae.train()
