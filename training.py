@@ -293,17 +293,21 @@ class EnhancedLabelTrainer:
             
         # Check available memory to decide if we can afford both on GPU
         can_afford_both = False
+        is_gpu = config.DEVICE.type in ['cuda', 'xpu', 'mps']
+        
         if config.DEVICE.type == 'cuda':
             try:
                 free_mem, _ = torch.cuda.mem_get_info()
-                # Need ~2.5GB free for safe double-model training
                 can_afford_both = free_mem > 2.5 * 1024**3
             except:
                 can_afford_both = False
 
         if new_phase == 1:
             self.vae.to(config.DEVICE)
-            if can_afford_both:
+            if not is_gpu:
+                self.drift.to(config.DEVICE)
+                config.logger.info(f"💻 Device: {config.DEVICE.type.upper()} Mode.")
+            elif can_afford_both:
                 self.drift.to(config.DEVICE)
                 config.logger.info("🚀 VRAM: Both networks active on GPU (Memory sufficient).")
             else:
@@ -315,9 +319,12 @@ class EnhancedLabelTrainer:
         else:
             self.vae.to(config.DEVICE)
             self.drift.to(config.DEVICE)
-            self.contrastive_criterion.to('cpu')
-            if hasattr(self, 'vgg'): self.vgg.to('cpu')
-            config.logger.info("⚡ VRAM: Core networks on GPU. Aux modules offloaded.")
+            if is_gpu:
+                self.contrastive_criterion.to('cpu')
+                if hasattr(self, 'vgg'): self.vgg.to('cpu')
+                config.logger.info("⚡ VRAM: Core networks on GPU. Aux modules offloaded.")
+            else:
+                config.logger.info(f"💻 Device: {config.DEVICE.type.upper()} Mode.")
             
         self.vae.train() if new_phase != 2 else self.vae.train() # VAE train mode for encoding
         self.drift.train() if new_phase >= 2 else self.drift.eval()
@@ -496,62 +503,79 @@ class EnhancedLabelTrainer:
         grid_path = config.DIRS["samples"] / f"recon_ep{self.epoch}.png"
         vutils.save_image(torch.cat([(imgs+1)/2, (recon+1)/2], dim=0), grid_path, nrow=8)
 
-    def generate_samples(self, labels=None, num_samples=8):
+    def generate_samples(self, labels=None, num_samples=8, temperature=None, cfg_scale=1.0, 
+                         langevin_steps=0, langevin_step_size=0.1, langevin_score_scale=1.0, method='euler'):
         # Determine current devices
         vae_device = next(self.vae.parameters()).device
         drift_device = next(self.drift.parameters()).device
         
         # If this is an automatic call during training Phase 1, we still skip to save time
-        # because the Drift network is untrained and on CPU.
-        # But we detect if it's a 'manual' call by checking if models are in eval mode 
-        # and we're not in the middle of an epoch.
         is_manual = not self.vae.training
         
-        if not is_manual and self.phase == 1 and drift_device.type == 'cpu':
+        if not is_manual and self.phase == 1 and drift_device.type == 'cpu' and config.DEVICE.type != 'cpu':
             config.logger.info("⏩ Skipping automatic samples in Phase 1 (Drift is offloaded).")
             return None
 
         self.vae.eval()
         self.drift.eval()
         
-        # Optimization: If Drift is on CPU but we have room, move it to GPU for the duration of this call
+        # Optimization: If Drift is on CPU but we have room, move it to GPU
         original_drift_device = drift_device
         temp_gpu_move = False
         if drift_device.type == 'cpu' and torch.cuda.is_available():
             try:
-                # Check if we can afford a temporary move (~500MB)
                 free_mem, _ = torch.cuda.mem_get_info()
                 if free_mem > 1.0 * 1024**3:
                     self.drift.to(config.DEVICE)
                     drift_device = config.DEVICE
                     temp_gpu_move = True
-                    config.logger.info("🚀 Temporarily moved Drift to GPU for fast sampling.")
             except: pass
 
         labels = labels or [i % 10 for i in range(num_samples)]
         lbl_t = torch.tensor(labels, device=drift_device)
+        temp = temperature if temperature is not None else config.INFERENCE_TEMPERATURE
         
         try:
             with torch.no_grad():
-                # Initial noise on drift device
-                z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=drift_device) * config.CST_COEF_GAUSSIAN_PRIO
+                # 1. Initial noise
+                z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=drift_device) 
+                z = z * config.CST_COEF_GAUSSIAN_PRIO * temp
                 
-                # ODE Integration (The 100-step loop)
-                for i in range(config.DEFAULT_STEPS):
-                    t = torch.full((num_samples, 1), i / config.DEFAULT_STEPS, device=drift_device)
-                    z = z + self.drift(z, t, lbl_t) * (1.0 / config.DEFAULT_STEPS)
+                # 2. ODE Integration with Progress Bar
+                steps = config.DEFAULT_STEPS
+                dt = 1.0 / steps
                 
-                # Move to VAE device for decoding
+                step_range = range(steps)
+                if TQDM_AVAILABLE:
+                    step_range = tqdm(step_range, desc="🎨 Generating Samples", leave=False)
+                
+                for i in step_range:
+                    t = torch.full((num_samples, 1), i / steps, device=drift_device)
+                    # Predict drift with optional CFG
+                    v = self.drift(z, t, lbl_t, cfg_scale=cfg_scale)
+                    z = z + v * dt
+                
+                # 3. Optional Langevin Refinement
+                if langevin_steps > 0:
+                    l_range = range(langevin_steps)
+                    if TQDM_AVAILABLE:
+                        l_range = tqdm(l_range, desc="✨ Refining Details", leave=False)
+                    for _ in l_range:
+                        t_final = torch.ones((num_samples, 1), device=drift_device)
+                        score = self.drift(z, t_final, lbl_t, cfg_scale=cfg_scale)
+                        noise = torch.randn_like(z)
+                        z = z + langevin_step_size * score * langevin_score_scale + math.sqrt(2 * langevin_step_size) * noise
+
+                # 4. Move to VAE device for decoding
                 z = z.to(vae_device)
                 lbl_t = lbl_t.to(vae_device)
                 imgs = torch.clamp(self.vae.decode(z, lbl_t), -1, 1)
                 
             grid_path = config.DIRS["samples"] / f"gen_ep{self.epoch}.png"
             vutils.save_image((imgs + 1)/2, grid_path, nrow=4)
+            config.logger.info(f"✅ Samples generated: {grid_path.name}")
             return grid_path
         finally:
-            # Always move back if we did a temporary move
             if temp_gpu_move:
                 self.drift.to('cpu')
                 torch.cuda.empty_cache()
-                config.logger.info("⚡ Drift moved back to CPU (VRAM preserved).")
