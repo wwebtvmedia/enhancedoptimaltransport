@@ -161,11 +161,11 @@ class TrainingProcessor:
             # NOISY/INSTABLE: Increase smoothing
             # Pro: Cleaner backgrounds. Con: Less high-freq detail.
             config.DRIFT_WEIGHT = max(0.8, config.DRIFT_WEIGHT * 0.9)
-            config.DEFAULT_LANGEVIN_STEPS = min(120, config.DEFAULT_LANGEVIN_STEPS + 5)
+            config.DEFAULT_LANGEVIN_STEPS = min(40, config.DEFAULT_LANGEVIN_STEPS + 2) # Reduced cap and step
         elif mu_std < 0.7 and drift_loss < 1.0:
             # STABLE: Push for faster learning
             config.DRIFT_WEIGHT = min(3.0, config.DRIFT_WEIGHT * 1.02)
-            config.DEFAULT_LANGEVIN_STEPS = max(30, config.DEFAULT_LANGEVIN_STEPS - 2)
+            config.DEFAULT_LANGEVIN_STEPS = max(5, config.DEFAULT_LANGEVIN_STEPS - 2) # Lower floor
 
         # 5. TRAINING TYPE JITTER (VAE vs DRIFT vs BOTH)
         # Pro: Prevents network "laziness". Con: Slight epoch jitter.

@@ -413,6 +413,10 @@ class EnhancedLabelTrainer:
         epoch_losses = defaultdict(float)
         count = 0
         for idx, batch in enumerate(pbar):
+            # Update VAE's internal epoch for adaptive diversity
+            if hasattr(self.vae, 'current_epoch'):
+                self.vae.current_epoch = self.epoch
+                
             try:
                 # 1. Forward Pass
                 if self.scaler:
@@ -452,6 +456,9 @@ class EnhancedLabelTrainer:
                     self.opt_drift.step()
 
                 # Metrics logging
+                current_score = composite_score(loss_dict, phase)
+                epoch_losses['composite_score'] += current_score
+                
                 for k, v in loss_dict.items():
                     if isinstance(v, (int, float)): epoch_losses[k] += v
                     elif isinstance(v, torch.Tensor): epoch_losses[k] += v.item()
@@ -504,11 +511,16 @@ class EnhancedLabelTrainer:
         vutils.save_image(torch.cat([(imgs+1)/2, (recon+1)/2], dim=0), grid_path, nrow=8)
 
     def generate_samples(self, labels=None, num_samples=8, temperature=None, cfg_scale=1.0, 
-                         langevin_steps=0, langevin_step_size=0.1, langevin_score_scale=1.0, method='euler'):
+                         langevin_steps=None, langevin_step_size=None, langevin_score_scale=None, method='euler'):
         # Determine actual number of samples
         if labels is not None:
             num_samples = len(labels)
             
+        # Use defaults from config if not provided
+        langevin_steps = langevin_steps if langevin_steps is not None else config.DEFAULT_LANGEVIN_STEPS
+        langevin_step_size = langevin_step_size if langevin_step_size is not None else config.LANGEVIN_STEP_SIZE
+        langevin_score_scale = langevin_score_scale if langevin_score_scale is not None else config.LANGEVIN_SCORE_SCALE
+
         # Determine current devices
         vae_device = next(self.vae.parameters()).device
         drift_device = next(self.drift.parameters()).device
@@ -541,16 +553,19 @@ class EnhancedLabelTrainer:
         
         try:
             with torch.no_grad():
-                # 1. Initial noise
+                # 1. Initial noise - Match training z0 distribution (std=0.8)
                 z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=drift_device) 
-                z = z * config.CST_COEF_GAUSSIAN_PRIO * temp
+                z = z * config.CST_COEF_GAUSSIAN_PRIO # Removed temp scaling here to match z0
+                
+                config.logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
                 
                 # 2. ODE Integration with Progress Bar
                 steps = config.DEFAULT_STEPS
                 dt = 1.0 / steps
                 
                 step_range = range(steps)
-                if TQDM_AVAILABLE:
+                # Only show tqdm if manual and TQDM available
+                if TQDM_AVAILABLE and is_manual:
                     step_range = tqdm(step_range, desc="🎨 Generating Samples", leave=False)
                 
                 for i in step_range:
@@ -558,17 +573,21 @@ class EnhancedLabelTrainer:
                     # Predict drift with optional CFG
                     v = self.drift(z, t, lbl_t, cfg_scale=cfg_scale)
                     z = z + v * dt
+                    
+                    if i % 10 == 0:
+                        config.logger.info(f"Step {i:3d}, t={i/steps:.3f}, drift norm: {v.norm().item():.4f}, z std: {z.std().item():.4f}")
                 
                 # 3. Optional Langevin Refinement
                 if langevin_steps > 0:
-                    l_range = range(langevin_steps)
-                    if TQDM_AVAILABLE:
-                        l_range = tqdm(l_range, desc="✨ Refining Details", leave=False)
-                    for _ in l_range:
+                    config.logger.info(f"Starting {langevin_steps} Langevin refinement steps...")
+                    for l_step in range(langevin_steps):
                         t_final = torch.ones((num_samples, 1), device=drift_device)
                         score = self.drift(z, t_final, lbl_t, cfg_scale=cfg_scale)
                         noise = torch.randn_like(z)
                         z = z + langevin_step_size * score * langevin_score_scale + math.sqrt(2 * langevin_step_size) * noise
+                        
+                        if (l_step + 1) % 5 == 0 or l_step == 0:
+                            config.logger.info(f" Langevin Step {l_step+1}: z_std={z.std().item():.4f}")
 
             # 4. Move to VAE device for decoding
             z = z.to(vae_device)
@@ -586,6 +605,7 @@ class EnhancedLabelTrainer:
             vutils.save_image((imgs + 1)/2, grid_path, nrow=4)
             
             config.logger.info(f"✅ Generated {num_samples} samples and summary grid for Epoch {self.epoch}")
+            config.logger.info(f"Images saved to: {grid_path}")
             return grid_path
         finally:
             if temp_gpu_move:

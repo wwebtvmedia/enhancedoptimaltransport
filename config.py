@@ -67,8 +67,8 @@ KL_WEIGHT = 0.004              # Balanced for reconstruction vs latent organizat
 RECON_WEIGHT = 5.0             # Restore to stable baseline
 SUBPIXEL_INITIAL_MIX = 1.0     
 DRIFT_WEIGHT = 2.0             # Balanced for structural logic
-DIVERSITY_WEIGHT = 0.5         # Further reduced to stop noise motifs
-CONSISTENCY_WEIGHT = 1.0       
+DIVERSITY_WEIGHT = 1.5         # Increased to prevent collapse in Phase 3
+CONSISTENCY_WEIGHT = 2.0       # Increased to stabilize joint fine-tuning
 PHASE3_RECON_SCALE = 0.05      # Further reduced for joint fine-tuning focus
 
 # NEW: Quality-focused loss weights
@@ -84,9 +84,9 @@ TV_WEIGHT = 0.01
 DEFAULT_STEPS = 100            
 DEFAULT_SEED = 42
 INFERENCE_TEMPERATURE = 0.4    
-DEFAULT_LANGEVIN_STEPS = 60    # Increased for smoother convergence and artifact removal
+DEFAULT_LANGEVIN_STEPS = 10    # Reduced from 60 to prevent over-noising
 LANGEVIN_STEP_SIZE = 0.01      
-LANGEVIN_SCORE_SCALE = 0.4     # Reduced slightly to prevent over-shooting and grid artifacts
+LANGEVIN_SCORE_SCALE = 0.2     # Reduced from 0.4 to prevent over-shooting
 
 # ============================================================================
 # VAE SPECIFIC (ENHANCED)
@@ -99,8 +99,8 @@ DIVERSITY_HIGH_PENALTY = 0.5
 DIVERSITY_BALANCE_WEIGHT = 0.4
 DIVERSITY_ADAPTIVE = True
 DIVERSITY_TARGET_START = 0.3
-DIVERSITY_TARGET_END = 0.8         # Reduced from 1.0 to prevent noise-motif injection
-DIVERSITY_ADAPT_EPOCHS = 50
+DIVERSITY_TARGET_END = 1.0         # Restored to 1.0 for high fidelity
+DIVERSITY_ADAPT_EPOCHS = 100       # Transitions over 100 epochs
 KL_ANNEALING_EPOCHS = 40       # Slightly longer annealing
 LOGVAR_CLAMP_MIN = -4
 LOGVAR_CLAMP_MAX = 4
@@ -137,7 +137,7 @@ PHASE3_VAE_LR_FACTOR = 0.05               # Phase 3 VAE LR = LR * PHASE3_VAE_LR_
 
 # Temperature annealing (Phase 2/3)
 TEMPERATURE_START = 1.0                    # Initial temperature (at start of Phase 2)
-TEMPERATURE_END = 0.2                      # Final temperature (at end of training)
+TEMPERATURE_END = 0.4                      # Increased from 0.2 to prevent excessive sharpening
 
 # Target noise for drift training
 DRIFT_TARGET_NOISE_SCALE = 0.01
