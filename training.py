@@ -497,35 +497,61 @@ class EnhancedLabelTrainer:
         vutils.save_image(torch.cat([(imgs+1)/2, (recon+1)/2], dim=0), grid_path, nrow=8)
 
     def generate_samples(self, labels=None, num_samples=8):
-        # Determine devices
+        # Determine current devices
         vae_device = next(self.vae.parameters()).device
         drift_device = next(self.drift.parameters()).device
         
-        # If in Phase 1, we might skip samples because Drift is on CPU and untrained
-        if self.phase == 1 and drift_device.type == 'cpu':
-            config.logger.info("⏩ Skipping samples in Phase 1 (Drift network is offloaded to CPU).")
+        # If this is an automatic call during training Phase 1, we still skip to save time
+        # because the Drift network is untrained and on CPU.
+        # But we detect if it's a 'manual' call by checking if models are in eval mode 
+        # and we're not in the middle of an epoch.
+        is_manual = not self.vae.training
+        
+        if not is_manual and self.phase == 1 and drift_device.type == 'cpu':
+            config.logger.info("⏩ Skipping automatic samples in Phase 1 (Drift is offloaded).")
             return None
 
         self.vae.eval()
         self.drift.eval()
         
+        # Optimization: If Drift is on CPU but we have room, move it to GPU for the duration of this call
+        original_drift_device = drift_device
+        temp_gpu_move = False
+        if drift_device.type == 'cpu' and torch.cuda.is_available():
+            try:
+                # Check if we can afford a temporary move (~500MB)
+                free_mem, _ = torch.cuda.mem_get_info()
+                if free_mem > 1.0 * 1024**3:
+                    self.drift.to(config.DEVICE)
+                    drift_device = config.DEVICE
+                    temp_gpu_move = True
+                    config.logger.info("🚀 Temporarily moved Drift to GPU for fast sampling.")
+            except: pass
+
         labels = labels or [i % 10 for i in range(num_samples)]
         lbl_t = torch.tensor(labels, device=drift_device)
         
-        with torch.no_grad():
-            # Initial noise on drift device
-            z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=drift_device) * config.CST_COEF_GAUSSIAN_PRIO
-            
-            # ODE Integration
-            for i in range(config.DEFAULT_STEPS):
-                t = torch.full((num_samples, 1), i / config.DEFAULT_STEPS, device=drift_device)
-                z = z + self.drift(z, t, lbl_t) * (1.0 / config.DEFAULT_STEPS)
-            
-            # Move to VAE device for decoding
-            z = z.to(vae_device)
-            lbl_t = lbl_t.to(vae_device)
-            imgs = torch.clamp(self.vae.decode(z, lbl_t), -1, 1)
-            
-        grid_path = config.DIRS["samples"] / f"gen_ep{self.epoch}.png"
-        vutils.save_image((imgs + 1)/2, grid_path, nrow=4)
-        return grid_path
+        try:
+            with torch.no_grad():
+                # Initial noise on drift device
+                z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=drift_device) * config.CST_COEF_GAUSSIAN_PRIO
+                
+                # ODE Integration (The 100-step loop)
+                for i in range(config.DEFAULT_STEPS):
+                    t = torch.full((num_samples, 1), i / config.DEFAULT_STEPS, device=drift_device)
+                    z = z + self.drift(z, t, lbl_t) * (1.0 / config.DEFAULT_STEPS)
+                
+                # Move to VAE device for decoding
+                z = z.to(vae_device)
+                lbl_t = lbl_t.to(vae_device)
+                imgs = torch.clamp(self.vae.decode(z, lbl_t), -1, 1)
+                
+            grid_path = config.DIRS["samples"] / f"gen_ep{self.epoch}.png"
+            vutils.save_image((imgs + 1)/2, grid_path, nrow=4)
+            return grid_path
+        finally:
+            # Always move back if we did a temporary move
+            if temp_gpu_move:
+                self.drift.to('cpu')
+                torch.cuda.empty_cache()
+                config.logger.info("⚡ Drift moved back to CPU (VRAM preserved).")
