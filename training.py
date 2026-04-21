@@ -486,8 +486,12 @@ class EnhancedLabelTrainer:
         if batch.get('text_bytes') is not None:
             text_bytes = batch.get('text_bytes')[:8].to(vae_device)
             
+        source_id = None
+        if batch.get('source_id') is not None:
+            source_id = batch.get('source_id')[:8].to(vae_device)
+            
         with torch.no_grad():
-            recon, _, _ = self.vae(imgs, lbls, text_bytes=text_bytes)
+            recon, _, _ = self.vae(imgs, lbls, text_bytes=text_bytes, source_id=source_id)
         
         grid_path = config.DIRS["samples"] / f"recon_ep{self.epoch}.png"
         vutils.save_image(torch.cat([(imgs+1)/2, (recon+1)/2], dim=0), grid_path, nrow=8)

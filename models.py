@@ -471,18 +471,15 @@ class LabelConditionedVAE(nn.Module):
         if config.USE_NEURAL_TOKENIZER and text_bytes is not None:
             cond_emb = self.text_encoder(text_bytes)
         else:
-            # Fallback to label embedding if neural tokenizer disabled or text missing
-            # During inference, we might only have labels
             if hasattr(self, 'label_emb'):
                 cond_emb = self.label_emb(labels)
             else:
-                # If we don't have label_emb (neural mode), we can't easily fallback 
-                # unless we have a pre-defined mapping of labels to text.
-                # For now, assume labels is index and we use it as 1-hot for text_encoder or similar
-                # But typically we'll always have label_emb if not in neural mode.
                 cond_emb = torch.zeros(labels.shape[0], config.TEXT_EMBEDDING_DIM, device=labels.device)
 
-        if config.USE_CONTEXT and source_id is not None:
+        if config.USE_CONTEXT:
+            if source_id is None:
+                # Use default source (0) if context enabled but missing
+                source_id = torch.zeros(labels.shape[0], dtype=torch.long, device=labels.device)
             s_emb = self.source_emb(source_id)
             cond_emb = self.cond_proj(torch.cat([cond_emb, s_emb], dim=-1))
             
@@ -694,7 +691,10 @@ class LabelConditionedDrift(nn.Module):
                 text_emb = torch.zeros(labels.shape[0], config.TEXT_EMBEDDING_DIM, device=labels.device)
 
         # Combine embeddings with optional context
-        if config.USE_CONTEXT and source_id is not None:
+        if config.USE_CONTEXT:
+            if source_id is None:
+                # Use default source (0) if context enabled but missing
+                source_id = torch.zeros(labels.shape[0], dtype=torch.long, device=labels.device)
             s_emb = self.source_emb(source_id)
             cond = torch.cat([t_emb, text_emb, s_emb], dim=-1)
         else:
