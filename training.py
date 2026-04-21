@@ -375,18 +375,8 @@ class EnhancedLabelTrainer:
         current_epoch = self.epoch + 1
         self.phase = self.get_training_phase(current_epoch)
 
-        self.vae = models.LabelConditionedVAE()
-        self.drift = models.LabelConditionedDrift()
-
-        # Move to GPU based on phase
-        if self.phase == 1:
-            self.vae.to(config.DEVICE)
-            self.drift.to('cpu') 
-            config.logger.info("VAE initialized on GPU. Drift network held on CPU (VRAM optimization).")
-        else:
-            self.vae.to(config.DEVICE)
-            self.drift.to(config.DEVICE)
-            config.logger.info("Both networks initialized on GPU.")
+        self.vae = models.LabelConditionedVAE().to(config.DEVICE)
+        self.drift = models.LabelConditionedDrift().to(config.DEVICE)
 
         # Apply LoRA if enabled in config
         if config.USE_LORA:
@@ -433,12 +423,10 @@ class EnhancedLabelTrainer:
             self.snapshot_drift = None
 
         # Multimodal Alignment Loss
-        self.contrastive_criterion = ContrastiveLoss()
-        if self.phase == 1:
-            self.contrastive_criterion.to(config.DEVICE)
+        self.contrastive_criterion = ContrastiveLoss().to(config.DEVICE)
             
         config.logger.info(f"💓 Epoch 0 | Batch 0/{len(self.loader)}")
-        config.logger.info(f"Models initialized:")
+        config.logger.info(f"Models initialized on {config.DEVICE}:")
         config.logger.info(f"  VAE params: {sum(p.numel() for p in self.vae.parameters()):,}")
         config.logger.info(f"  Drift params: {sum(p.numel() for p in self.drift.parameters()):,}")
         if config.USE_OU_BRIDGE:
@@ -510,23 +498,12 @@ class EnhancedLabelTrainer:
         if not hasattr(self, 'vgg'):
             try:
                 import torchvision.models as models
-                # Initialize but don't move to GPU yet
-                self.vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features[:16]
-                if self.phase == 1:
-                    self.vgg.to(config.DEVICE)
+                self.vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features[:16].to(config.DEVICE)
                 for param in self.vgg.parameters():
                     param.requires_grad = False
                 self.vgg.eval()
             except:
                 return torch.tensor(0.0, device=config.DEVICE)
-        
-        # Ensure vgg is on correct device if we switched phase
-        # Check current device using a parameter
-        vgg_device = next(self.vgg.parameters()).device
-        if self.phase == 1 and vgg_device.type == 'cpu':
-            self.vgg.to(config.DEVICE)
-        elif self.phase != 1 and vgg_device.type != 'cpu':
-            self.vgg.to('cpu')
             
         if self.phase != 1:
             return torch.tensor(0.0, device=config.DEVICE)
@@ -555,20 +532,8 @@ class EnhancedLabelTrainer:
 
     def _switch_to_phase(self, new_phase: int):
         """Handle transition between training phases."""
-        # Strategic device placement to save VRAM
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            
-        if new_phase == 1:
-            self.vae.to(config.DEVICE)
-            self.drift.to('cpu')
-            self.contrastive_criterion.to(config.DEVICE)
-            config.logger.info("VAE active on GPU. Drift network moved to CPU.")
-        else:
-            self.vae.to(config.DEVICE)
-            self.drift.to(config.DEVICE)
-            self.contrastive_criterion.to('cpu')
-            config.logger.info("Both networks active on GPU. ContrastiveLoss moved to CPU.")
             
         if new_phase == 1:
             # Phase 1: VAE only

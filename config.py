@@ -175,7 +175,7 @@ USE_AMP = True
 # ============================================================================
 # THREE-PHASE TRAINING SCHEDULE
 # ============================================================================
-PHASE1_BATCH_SIZE = 16  # Force smaller batch for VAE-only training to save VRAM
+PHASE1_BATCH_SIZE = 32  # Restore Phase 1 batch size to 32
 # Adaptive switch points based on total epochs
 PHASE1_EPOCHS = 150
 PHASE2_EPOCHS = 400                    
