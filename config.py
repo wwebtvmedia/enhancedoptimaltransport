@@ -66,14 +66,14 @@ GRAD_CLIP = 1.0
 KL_WEIGHT = 0.004              # Balanced for reconstruction vs latent organization
 RECON_WEIGHT = 5.0             # Restore to stable baseline
 SUBPIXEL_INITIAL_MIX = 1.0     
-DRIFT_WEIGHT = 2.0             # Balanced for structural logic
-DIVERSITY_WEIGHT = 1.5         # Increased to prevent collapse in Phase 3
-CONSISTENCY_WEIGHT = 2.0       # Increased to stabilize joint fine-tuning
+DRIFT_WEIGHT = 3.0             # Tripled to restore structural logic (from high-perf commit)
+DIVERSITY_WEIGHT = 1.0         # Balanced to prevent collapse while maintaining detail
+CONSISTENCY_WEIGHT = 1.5       # Stabilize joint fine-tuning
 PHASE3_RECON_SCALE = 0.05      # Further reduced for joint fine-tuning focus
 
 # NEW: Quality-focused loss weights
 PERCEPTUAL_WEIGHT = 2.0        # Increased for texture
-SSIM_WEIGHT = 2.0              # Balanced to fight blurriness without over-constraining
+SSIM_WEIGHT = 3.0              # Tripled to fight blurriness (from high-perf commit)
 LPIPS_WEIGHT = 0.5             
 EDGE_WEIGHT = 0.5              
 TV_WEIGHT = 0.01               
@@ -84,9 +84,9 @@ TV_WEIGHT = 0.01
 DEFAULT_STEPS = 100            
 DEFAULT_SEED = 42
 INFERENCE_TEMPERATURE = 0.4    
-DEFAULT_LANGEVIN_STEPS = 10    # Reduced from 60 to prevent over-noising
+DEFAULT_LANGEVIN_STEPS = 10    
 LANGEVIN_STEP_SIZE = 0.01      
-LANGEVIN_SCORE_SCALE = 0.2     # Reduced from 0.4 to prevent over-shooting
+LANGEVIN_SCORE_SCALE = 1.2     # Restored to 1.2 for ultra-sharp detail
 
 # ============================================================================
 # VAE SPECIFIC (ENHANCED)
@@ -122,7 +122,7 @@ CHANNEL_DROPOUT_SURVIVAL = 0.8      # Probability of channel surviving when drop
 # CLASSIFIER-FREE GUIDANCE (CFG)
 # ============================================================================
 LABEL_DROPOUT_PROB = 0.1            # Probability of dropping label during training
-CFG_SCALE = 3.5                     # Restore to stable baseline
+CFG_SCALE = 6.5                     # Restored to 6.5 for maximum presence
 
 # ============================================================================
 # DRIFT NETWORK SPECIFIC
@@ -190,7 +190,7 @@ CUSTOM_SCHED = {}
 
 TRAINING_SCHEDULE = {
     'mode': 'manual',                        
-    'force_phase': 1,                     
+    'force_phase': 3,                     
     'custom_schedule': CUSTOM_SCHED,         
     'switch_epoch': 150,                       
     'switch_epoch_1': PHASE1_EPOCHS,           

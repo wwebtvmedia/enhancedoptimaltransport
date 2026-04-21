@@ -577,14 +577,25 @@ class EnhancedLabelTrainer:
                     if i % 10 == 0:
                         config.logger.info(f"Step {i:3d}, t={i/steps:.3f}, drift norm: {v.norm().item():.4f}, z std: {z.std().item():.4f}")
                 
-                # 3. Optional Langevin Refinement
+                # 3. High-Performance Langevin Refinement (MALA-style)
                 if langevin_steps > 0:
-                    config.logger.info(f"Starting {langevin_steps} Langevin refinement steps...")
+                    config.logger.info(f"Starting {langevin_steps} Refined Langevin steps...")
+                    t_one = torch.full((num_samples, 1), 1.0, device=drift_device)
+                    
                     for l_step in range(langevin_steps):
-                        t_final = torch.ones((num_samples, 1), device=drift_device)
-                        score = self.drift(z, t_final, lbl_t, cfg_scale=cfg_scale)
-                        noise = torch.randn_like(z)
-                        z = z + langevin_step_size * score * langevin_score_scale + math.sqrt(2 * langevin_step_size) * noise
+                        # 1. Compute Score Proxy (terminal velocity)
+                        score = self.drift(z, t_one, lbl_t, cfg_scale=cfg_scale)
+                        
+                        # 2. Add Annealed Noise (decay noise scale over steps)
+                        step_ratio = l_step / langevin_steps
+                        current_noise_scale = math.sqrt(2 * langevin_step_size) * (1 - 0.5 * step_ratio)
+                        noise = torch.randn_like(z) * current_noise_scale
+                        
+                        # 3. Stochastic Gradient Update
+                        z = z + 0.5 * langevin_step_size * langevin_score_scale * score + noise
+                        
+                        # 4. Gentle Manifold Constraint (Keep latents in VAE-friendly range)
+                        z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
                         
                         if (l_step + 1) % 5 == 0 or l_step == 0:
                             config.logger.info(f" Langevin Step {l_step+1}: z_std={z.std().item():.4f}")
