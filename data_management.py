@@ -95,7 +95,7 @@ class SnapshotManager:
         
         latest_snapshot = self.snapshots[-1]
         try:
-            snapshot = torch.load(latest_snapshot, map_location=config.DEVICE, weights_only=False)
+            snapshot = torch.load(latest_snapshot, map_location='cpu', weights_only=False)
             
             if self.name == "drift" and 'drift_state' in snapshot:
                 self.model.load_state_dict(snapshot['drift_state'])
@@ -226,7 +226,7 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         return False
     
     try:
-        checkpoint = torch.load(path, map_location=config.DEVICE, weights_only=False)
+        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         
         # Check for size/config mismatch
         if 'config' in checkpoint:
@@ -333,7 +333,7 @@ def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
         return False
     
     try:
-        checkpoint = torch.load(path, map_location=config.DEVICE, weights_only=False)
+        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         flexible_load(trainer.vae, checkpoint['vae_state'])
         flexible_load(trainer.drift, checkpoint['drift_state'])
         trainer.epoch = checkpoint.get('epoch', 0)

@@ -340,6 +340,10 @@ class EnhancedLabelTrainer:
     def __init__(self, loader):
         self.loader = loader
 
+        # Clear cache before large allocations
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         self.vae = models.LabelConditionedVAE().to(config.DEVICE)
         self.drift = models.LabelConditionedDrift().to(config.DEVICE)
         
@@ -1347,7 +1351,7 @@ class EnhancedLabelTrainer:
             return False
         
         try:
-            snapshot = torch.load(snapshot_path, map_location=config.DEVICE, weights_only=False)
+            snapshot = torch.load(snapshot_path, map_location='cpu', weights_only=False)
             
             # Load VAE if requested and available
             if load_vae:

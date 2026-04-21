@@ -234,16 +234,36 @@ def initialize_hardware():
     global DEVICE, AMP_AVAILABLE, BATCH_SIZE, DTYPE_AMP
     
     if torch.cuda.is_available():
-        DEVICE = torch.device("cuda")
-        AMP_AVAILABLE = True
-        
-        # Check for BFloat16 support (Ampere+ GPUs like RTX 3000/4000, A100, H100)
-        if torch.cuda.is_bf16_supported():
-            DTYPE_AMP = torch.bfloat16
-            info = f"🎮 CUDA: {torch.cuda.get_device_name(0)} (Using BF16)"
-        else:
-            DTYPE_AMP = torch.float16
-            info = f"🎮 CUDA: {torch.cuda.get_device_name(0)} (Using FP16)"
+        try:
+            # Force CUDA context initialization to catch immediate OOMs
+            _ = torch.zeros(1, device="cuda")
+            DEVICE = torch.device("cuda")
+            AMP_AVAILABLE = True
+            
+            # Log initial memory state
+            free_mem, total_mem = torch.cuda.mem_get_info()
+            logger.info(f"📊 GPU Memory: {free_mem/1024**3:.2f}GB free / {total_mem/1024**3:.2f}GB total")
+            
+            if free_mem < 500 * 1024**2:  # Less than 500MB free
+                logger.warning(f"⚠️ CRITICAL: Very low GPU memory ({free_mem/1024**2:.1f} MB free). Training will likely fail with OOM.")
+                logger.warning(f"⚠️ Please close other GPU-intensive applications (e.g., browsers, LLMs) to free up VRAM.")
+                
+            # Check for BFloat16 support (Ampere+ GPUs like RTX 3000/4000, A100, H100)
+            if torch.cuda.is_bf16_supported():
+                DTYPE_AMP = torch.bfloat16
+                info = f"🎮 CUDA: {torch.cuda.get_device_name(0)} (Using BF16)"
+            else:
+                DTYPE_AMP = torch.float16
+                info = f"🎮 CUDA: {torch.cuda.get_device_name(0)} (Using FP16)"
+                
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                DEVICE = torch.device("cpu")
+                AMP_AVAILABLE = False
+                info = "💻 CPU (Fallback: GPU Out of Memory)"
+                logger.error("❌ GPU is completely full! Falling back to CPU. Please close applications to free VRAM.")
+            else:
+                raise e
             
         BATCH_SIZE = 64
     elif hasattr(torch, 'xpu') and torch.xpu.is_available():
@@ -276,7 +296,7 @@ def initialize_hardware():
             BATCH_SIZE = 16
             
     # Global override for safety on shared GPUs
-    BATCH_SIZE = 32
+    BATCH_SIZE = 16
     return info
 
 # ============================================================================
