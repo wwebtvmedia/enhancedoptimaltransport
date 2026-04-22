@@ -179,7 +179,22 @@
             </div>
             <div class="control-group">
                 <label>Steps</label>
-                <input type="number" id="stepsInput" value="30" min="5" max="100">
+                <input type="number" id="stepsInput" value="100" min="5" max="100">
+            </div>
+            <div class="control-group">
+                <label>Solver Method</label>
+                <select id="methodSelect">
+                    <option value="rk4" selected>RK4 (High Quality)</option>
+                    <option value="heun">Heun (2nd Order)</option>
+                    <option value="euler">Euler (Fast)</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>Data Source Context</label>
+                <select id="sourceSelect">
+                    <option value="0">Source 0 (STL-10)</option>
+                    <option value="1">Source 1 (CIFAR-10)</option>
+                </select>
             </div>
             <div class="control-group">
                 <label>Noise Seed</label>
@@ -230,10 +245,24 @@
         const IMG_SIZE = 96;
         const LATENT_SHAPE = [1, 8, 12, 12];
 
-        // Check for WebGPU availability
-        const hasWebGPU = !!navigator.gpu;
-        if (!hasWebGPU) {
-            console.warn("WebGPU not supported in this browser. Falling back to WASM.");
+        // Check for WebGPU availability thoroughly
+        let hasWebGPU = false;
+        async function checkWebGPU() {
+            try {
+                if (navigator.gpu) {
+                    const adapter = await navigator.gpu.requestAdapter();
+                    if (adapter) {
+                        hasWebGPU = true;
+                    } else {
+                        console.warn("WebGPU: No adapter found. Falling back to WASM.");
+                    }
+                }
+            } catch (e) {
+                console.warn("WebGPU check failed:", e);
+            }
+            if (!hasWebGPU) {
+                log("WebGPU not available. Falling back to WASM for inference.", "info");
+            }
         }
         
         let sessions = {
@@ -374,47 +403,102 @@
             }
         }
 
-        // Deterministic Random for seed
-        function seededRandom(seed) {
+        // Seeded random for exact consistency check
+        let seed = 42;
+        function seededRandom() {
             let x = Math.sin(seed++) * 10000;
             return x - Math.floor(x);
         }
 
-        function normalRandom(seed) {
+        function normalRandom() {
             let u = 0, v = 0;
-            while (u === 0) u = seededRandom(seed++);
-            while (v === 0) v = seededRandom(seed++);
+            while (u === 0) u = seededRandom();
+            while (v === 0) v = seededRandom();
             return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
         }
 
-        async function runBridge(driftSess, genSess, label, steps, seed, canvasId, timeId) {
+        async function runBridge(driftSess, genSess, label, steps, seedVal, canvasId, timeId, method = 'rk4', sourceId = 0) {
             const ctx = document.getElementById(canvasId).getContext('2d');
             const start = performance.now();
             
             const latentSize = LATENT_SHAPE.reduce((a, b) => a * b, 1);
             const z0Data = new Float32Array(latentSize);
-            let localSeed = seed;
-            // Reduce initial scale (0.6) to prevent immediate saturation
-            for (let i = 0; i < latentSize; i++) z0Data[i] = normalRandom(localSeed++) * 0.6;
+            seed = seedVal; // Use the provided seed
+            
+            // Align with config.CST_COEF_GAUSSIAN_PRIO (0.8)
+            for (let i = 0; i < latentSize; i++) z0Data[i] = normalRandom() * 0.8;
 
             let z = new ort.Tensor('float32', z0Data, LATENT_SHAPE);
             const labelTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(label)]), [1]);
+            const sourceIdTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(sourceId)]), [1]);
             const dt = 1.0 / steps;
 
+            async function getDrift(latent, tVal) {
+                const t = new ort.Tensor('float32', new Float32Array([tVal]), [1, 1]);
+                const res = await driftSess.run({ z: latent, t, label: labelTensor });
+                return res.drift;
+            }
+
             for (let i = 0; i < steps; i++) {
-                const t = new ort.Tensor('float32', new Float32Array([i * dt]), [1, 1]);
-                const results = await driftSess.run({ z, t, label: labelTensor });
-                const drift = results.drift;
+                const t = i * dt;
                 
+                if (method === 'euler') {
+                    const d = await getDrift(z, t);
+                    const nextZData = new Float32Array(z.data.length);
+                    for (let j = 0; j < z.data.length; j++) {
+                        nextZData[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + d.data[j] * dt));
+                    }
+                    z = new ort.Tensor('float32', nextZData, LATENT_SHAPE);
+                } else if (method === 'heun') {
+                    const k1 = await getDrift(z, t);
+                    const z2Data = new Float32Array(z.data.length);
+                    for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + dt * k1.data[j];
+                    const k2 = await getDrift(new ort.Tensor('float32', z2Data, LATENT_SHAPE), t + dt);
+                    const finalZData = new Float32Array(z.data.length);
+                    for (let j = 0; j < z.data.length; j++) {
+                        finalZData[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + (dt/2) * (k1.data[j] + k2.data[j])));
+                    }
+                    z = new ort.Tensor('float32', finalZData, LATENT_SHAPE);
+                } else if (method === 'rk4') {
+                    const k1 = await getDrift(z, t);
+                    const z2Data = new Float32Array(z.data.length);
+                    for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + (dt/2) * k1.data[j];
+                    const k2 = await getDrift(new ort.Tensor('float32', z2Data, LATENT_SHAPE), t + (dt/2));
+                    const z3Data = new Float32Array(z.data.length);
+                    for (let j = 0; j < z.data.length; j++) z3Data[j] = z.data[j] + (dt/2) * k2.data[j];
+                    const k3 = await getDrift(new ort.Tensor('float32', z3Data, LATENT_SHAPE), t + (dt/2));
+                    const z4Data = new Float32Array(z.data.length);
+                    for (let j = 0; j < z.data.length; j++) z4Data[j] = z.data[j] + dt * k3.data[j];
+                    const k4 = await getDrift(new ort.Tensor('float32', z4Data, LATENT_SHAPE), t + dt);
+                    const finalZData = new Float32Array(z.data.length);
+                    for (let j = 0; j < z.data.length; j++) {
+                        finalZData[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + (dt/6) * (k1.data[j] + 2*k2.data[j] + 2*k3.data[j] + k4.data[j])));
+                    }
+                    z = new ort.Tensor('float32', finalZData, LATENT_SHAPE);
+                }
+            }
+
+            // Langevin Refinement (10 steps) - Aligned with training.py
+            const langevinSteps = 10;
+            const baseLr = 0.01;
+            const scoreScale = 1.2;
+            for (let s = 0; s < langevinSteps; s++) {
+                const drift = await getDrift(z, 1.0);
                 const nextZData = new Float32Array(z.data.length);
+                const noiseScale = Math.sqrt(2 * baseLr) * (1 - 0.5 * (s / langevinSteps));
                 for (let j = 0; j < z.data.length; j++) {
-                    // Strict Safety Clamp to prevent Tanh saturation (White Image)
-                    nextZData[j] = Math.min(5.0, Math.max(-5.0, z.data[j] + drift.data[j] * dt));
+                    const noise = normalRandom() * noiseScale;
+                    nextZData[j] = z.data[j] + 0.5 * baseLr * scoreScale * drift.data[j] + noise;
+                    nextZData[j] = Math.min(4.0, Math.max(-4.0, nextZData[j])); // Manifold constraint
                 }
                 z = new ort.Tensor('float32', nextZData, LATENT_SHAPE);
             }
 
-            const genResults = await genSess.run({ z, label: labelTensor });
+            const genResults = await genSess.run({ 
+                z, 
+                label: labelTensor,
+                source_id: sourceIdTensor
+            });
             renderToCanvas(genResults.reconstruction.data, ctx);
             
             const end = performance.now();
@@ -448,17 +532,19 @@
             const label = parseInt(document.getElementById('labelSelect').value);
             const steps = parseInt(document.getElementById('stepsInput').value);
             const seed = parseInt(document.getElementById('seedInput').value);
+            const method = document.getElementById('methodSelect').value;
+            const sourceId = parseInt(document.getElementById('sourceSelect').value);
 
             try {
                 if (!sessions.fp32_drift || !sessions.fp32_gen) {
                     throw new Error("FP32 models must be loaded.");
                 }
-                log(`Starting FP32 Reference generation (Seed: ${seed})...`);
-                const fp32Data = await runBridge(sessions.fp32_drift, sessions.fp32_gen, label, steps, seed, 'canvasFP32', 'timeFP32');
+                log(`Starting FP32 Reference (${method.toUpperCase()}, Source ${sourceId})...`);
+                const fp32Data = await runBridge(sessions.fp32_drift, sessions.fp32_gen, label, steps, seed, 'canvasFP32', 'timeFP32', method, sourceId);
                 
                 if (sessions.int8_drift && sessions.int8_gen) {
                     log("Starting INT8 Quantized generation...");
-                    const int8Data = await runBridge(sessions.int8_drift, sessions.int8_gen, label, steps, seed, 'canvasINT8', 'timeINT8');
+                    const int8Data = await runBridge(sessions.int8_drift, sessions.int8_gen, label, steps, seed, 'canvasINT8', 'timeINT8', method, sourceId);
                     const diff = calculateDiff(fp32Data, int8Data);
                     document.getElementById('diffINT8').textContent = `Diff: ${diff}%`;
                     log(`Comparison complete. Visual difference: ${diff}%`);
@@ -473,7 +559,12 @@
             }
         });
 
-        initModels();
+        async function initialize() {
+            await checkWebGPU();
+            await initModels();
+        }
+
+        initialize();
     </script>
 </body>
 </html>
