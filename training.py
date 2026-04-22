@@ -534,6 +534,239 @@ class EnhancedLabelTrainer:
     def load_checkpoint(self, path=None): return dm.load_checkpoint(self, path)
     def load_for_inference(self, path=None): return dm.load_for_inference(self, path)
     
+    def load_from_snapshot(self, snapshot_path: Path, load_vae: bool = True, load_drift: bool = True, phase: Optional[int] = None) -> bool:
+        """Load model state from a snapshot file."""
+        try:
+            snapshot = torch.load(snapshot_path, map_location='cpu', weights_only=False)
+            
+            # Load VAE if requested and available
+            if load_vae:
+                if 'model_state' in snapshot:
+                    dm.flexible_load(self.vae, snapshot['model_state'])
+                    if 'optimizer_state' in snapshot:
+                        self.opt_vae.load_state_dict(snapshot['optimizer_state'])
+                    config.logger.info(f"✅ Loaded VAE from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+                elif snapshot.get('model_type') == 'vae' and 'model_state' in snapshot:
+                    dm.flexible_load(self.vae, snapshot['model_state'])
+                    config.logger.info(f"✅ Loaded VAE from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+                else:
+                    config.logger.warning("No VAE state found in snapshot")
+            
+            # Load Drift if requested and available
+            if load_drift:
+                if 'drift_state' in snapshot:
+                    dm.flexible_load(self.drift, snapshot['drift_state'])
+                    if 'opt_drift_state' in snapshot:
+                        self.opt_drift.load_state_dict(snapshot['opt_drift_state'])
+                    config.logger.info(f"✅ Loaded Drift from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+                elif snapshot.get('model_type') == 'drift' and 'drift_state' in snapshot:
+                    dm.flexible_load(self.drift, snapshot['drift_state'])
+                    config.logger.info(f"✅ Loaded Drift from snapshot (epoch {snapshot.get('epoch', 'unknown')})")
+                else:
+                    config.logger.warning("No Drift state found in snapshot")
+            
+            if phase is not None and phase >= 2 and (not hasattr(self, 'vae_ref') or self.vae_ref is None):
+                self.vae_ref = models.LabelConditionedVAE().to(config.DEVICE)
+                self.vae_ref.load_state_dict(self.vae.state_dict())
+                self.vae_ref.eval()
+                for param in self.vae_ref.parameters():
+                    param.requires_grad = False
+                config.logger.info("Reference anchor created from loaded snapshot.")
+                
+            # Set phase if specified
+            if phase is not None:
+                self.phase = phase
+                config.logger.info(f"Set phase to {phase}")
+            
+            # Set epoch from snapshot
+            if 'epoch' in snapshot:
+                self.epoch = snapshot['epoch']
+            
+            return True
+            
+        except Exception as e:
+            config.logger.error(f"Failed to load snapshot: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def list_available_snapshots(self) -> List[Path]:
+        """List all available snapshots."""
+        snap_files = list(config.DIRS["snaps"].glob("*_snapshot_epoch_*.pt"))
+        snap_files.sort(key=lambda x: int(x.stem.split('_')[-1]))
+        return snap_files
+
+    def inspect_snapshot(self, snapshot_path: Path) -> Dict:
+        """Inspect snapshot contents without loading."""
+        try:
+            snapshot = torch.load(snapshot_path, map_location='cpu', weights_only=False)
+            info = {
+                'path': snapshot_path,
+                'epoch': snapshot.get('epoch', 'unknown'),
+                'loss': snapshot.get('loss', 'N/A'),
+                'timestamp': snapshot.get('timestamp', 'unknown'),
+                'model_type': snapshot.get('model_type', 'unknown'),
+                'has_vae': 'model_state' in snapshot or snapshot.get('model_type') == 'vae',
+                'has_drift': 'drift_state' in snapshot or snapshot.get('model_type') == 'drift',
+            }
+            return info
+        except Exception as e:
+            config.logger.error(f"Failed to inspect snapshot: {e}")
+            return {'path': snapshot_path, 'error': str(e)}
+
+    def export_onnx(self) -> None:
+        if not ONNX_AVAILABLE:
+            config.logger.warning("ONNX export requires onnx and onnxruntime packages")
+            return
+        
+        # Helper to set export mode on PercentileRescale modules
+        def set_export_mode(module, mode=True):
+            if hasattr(module, '_set_export_mode'):
+                module._set_export_mode(mode)
+        
+        # Helper to bake spectral norm into weights for quantization
+        def bake_spectral_norm(model):
+            import copy
+            from torch.nn.utils import remove_spectral_norm
+            
+            # Use deepcopy to avoid modifying the live model
+            model_copy = copy.deepcopy(model)
+            for m in model_copy.modules():
+                try:
+                    remove_spectral_norm(m)
+                except (ValueError, AttributeError):
+                    pass
+            return model_copy
+
+        # Helper to merge .onnx.data files back into the .onnx file
+        def merge_external_data(model_path):
+            try:
+                import onnx
+                from pathlib import Path
+                model_path = Path(model_path)
+                if not model_path.exists():
+                    return
+                
+                # Load model and external data automatically
+                model = onnx.load(str(model_path))
+                # Save model as a single file (default behavior when not specifying external data location)
+                onnx.save(model, str(model_path))
+                
+                # Remove the now redundant .data file
+                data_path = model_path.with_suffix(model_path.suffix + ".data")
+                if data_path.exists():
+                    data_path.unlink()
+                    config.logger.info(f"Merged and removed external data: {data_path.name}")
+            except Exception as e:
+                config.logger.warning(f"Could not merge external data for {model_path.name}: {e}")
+
+        # Wrapper class to export ONLY the decoder (generator) part of the VAE
+        class VAEGenerator(torch.nn.Module):
+            def __init__(self, vae):
+                super().__init__()
+                self.vae = vae
+            def forward(self, z, labels, source_id=None):
+                return self.vae.decode(z, labels, source_id)
+
+        try:
+            # --- Set export mode for VAE and Drift ---
+            self.vae.eval()
+            self.drift.eval()
+            self.vae.apply(lambda m: set_export_mode(m, True))
+            self.drift.apply(lambda m: set_export_mode(m, True))
+            
+            # Create baked copies for export to ensure static weights (essential for quantization)
+            vae_for_export = bake_spectral_norm(self.vae)
+            drift_for_export = bake_spectral_norm(self.drift)
+
+            # Export Generator (Decoder only)
+            dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
+            dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
+            dummy_source = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
+            
+            gen_path = config.DIRS["onnx"] / "generator.onnx"
+            vae_gen = VAEGenerator(vae_for_export)
+            
+            with torch.no_grad():
+                torch.onnx.export(
+                    vae_gen,
+                    (dummy_z, dummy_label, dummy_source),
+                    str(gen_path),
+                    export_params=True,
+                    opset_version=18,
+                    do_constant_folding=True,
+                    input_names=['z', 'label', 'source_id'],
+                    output_names=['reconstruction'],
+                    dynamic_axes={
+                        'z': {0: 'batch_size'},
+                        'label': {0: 'batch_size'},
+                        'source_id': {0: 'batch_size'},
+                        'reconstruction': {0: 'batch_size'}
+                    }
+                )
+            merge_external_data(gen_path)
+            config.logger.info(f"Generator exported to {gen_path}")
+            
+            # Export Drift
+            dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
+            
+            drift_path = config.DIRS["onnx"] / "drift.onnx"
+            
+            with torch.no_grad():
+                torch.onnx.export(
+                    drift_for_export,
+                    (dummy_z, dummy_t, dummy_label, dummy_source),
+                    str(drift_path),
+                    export_params=True,
+                    opset_version=18,
+                    do_constant_folding=True,
+                    input_names=['z', 't', 'label', 'source_id'],
+                    output_names=['drift'],
+                    dynamic_axes={
+                        'z': {0: 'batch_size'},
+                        't': {0: 'batch_size'},
+                        'label': {0: 'batch_size'},
+                        'source_id': {0: 'batch_size'},
+                        'drift': {0: 'batch_size'}
+                    }
+                )
+            merge_external_data(drift_path)
+            config.logger.info(f"Drift exported to {drift_path}")
+
+            # --- Auto-configure the HTML file to match the current dimensions ---
+            html_path = Path("onnx_generate_image.html")
+            if html_path.exists():
+                try:
+                    with open(html_path, 'r', encoding='utf-8') as f:
+                        html_content = f.read()
+
+                    import re
+                    # Replace LATENT_SHAPE array (handles let or const, and varied spacing)
+                    html_content = re.sub(
+                        r'(let|const)\s+LATENT_SHAPE\s*=\s*\[1,\s*\d+,\s*\d+,\s*\d+\];',
+                        f'\\1 LATENT_SHAPE = [1, {config.LATENT_CHANNELS}, {config.LATENT_H}, {config.LATENT_W}];',
+                        html_content
+                    )
+                    # Replace IMG_SIZE constant
+                    html_content = re.sub(
+                        r'(let|const)\s+IMG_SIZE\s*=\s*\d+;',
+                        f'\\1 IMG_SIZE = {config.IMG_SIZE};',
+                        html_content
+                    )
+
+                    with open(html_path, 'w', encoding='utf-8') as f:
+                        f.write(html_content)
+                    config.logger.info(f"Updated {html_path.name} with new dimensions (IMG_SIZE={config.IMG_SIZE}).")
+                except Exception as e:
+                    config.logger.warning(f"Could not auto-update HTML file dimensions: {e}")
+
+            # --- Reset export mode ---
+            self.vae.apply(lambda m: set_export_mode(m, False))
+            self.drift.apply(lambda m: set_export_mode(m, False))
+            
+        except Exception as e:
+            config.logger.error(f"ONNX export failed: {e}")
+
     def generate_reconstructions(self, batch=None):
         self.vae.eval()
         # Get the device the VAE is actually on (it might be CPU)
@@ -558,10 +791,12 @@ class EnhancedLabelTrainer:
         vutils.save_image(torch.cat([(imgs+1)/2, (recon+1)/2], dim=0), grid_path, nrow=8)
 
     def generate_samples(self, labels=None, num_samples=8, temperature=None, cfg_scale=1.0, 
-                         langevin_steps=None, langevin_step_size=None, langevin_score_scale=None, method='euler'):
+                         langevin_steps=None, langevin_step_size=None, langevin_score_scale=None, method='rk4'):
         # Determine actual number of samples
         if labels is not None:
             num_samples = len(labels)
+        else:
+            labels = [i % 10 for i in range(num_samples)]
             
         # Use defaults from config if not provided
         langevin_steps = langevin_steps if langevin_steps is not None else config.DEFAULT_LANGEVIN_STEPS
@@ -583,7 +818,6 @@ class EnhancedLabelTrainer:
         self.drift.eval()
         
         # Optimization: If Drift is on CPU but we have room, move it to GPU
-        original_drift_device = drift_device
         temp_gpu_move = False
         if drift_device.type == 'cpu' and torch.cuda.is_available():
             try:
@@ -594,7 +828,6 @@ class EnhancedLabelTrainer:
                     temp_gpu_move = True
             except: pass
 
-        labels = labels or [i % 10 for i in range(num_samples)]
         lbl_t = torch.tensor(labels, device=drift_device)
         temp = temperature if temperature is not None else config.INFERENCE_TEMPERATURE
         
@@ -602,27 +835,45 @@ class EnhancedLabelTrainer:
             with torch.no_grad():
                 # 1. Initial noise - Match training z0 distribution (std=0.8)
                 z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=drift_device) 
-                z = z * config.CST_COEF_GAUSSIAN_PRIO # Removed temp scaling here to match z0
+                z = z * config.CST_COEF_GAUSSIAN_PRIO
                 
                 config.logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
                 
-                # 2. ODE Integration with Progress Bar
+                # 2. ODE Integration
                 steps = config.DEFAULT_STEPS
                 dt = 1.0 / steps
                 
                 step_range = range(steps)
-                # Only show tqdm if manual and TQDM available
                 if TQDM_AVAILABLE and is_manual:
-                    step_range = tqdm(step_range, desc="🎨 Generating Samples", leave=False)
+                    step_range = tqdm(step_range, desc=f"🎨 Generating Samples ({method.upper()})", leave=False)
                 
                 for i in step_range:
                     t = torch.full((num_samples, 1), i / steps, device=drift_device)
-                    # Predict drift with optional CFG
-                    v = self.drift(z, t, lbl_t, cfg_scale=cfg_scale)
-                    z = z + v * dt
+                    
+                    if method == 'euler':
+                        v = self.drift(z, t, lbl_t, cfg_scale=cfg_scale)
+                        z = z + v * dt
+                    elif method == 'heun':
+                        k1 = self.drift(z, t, lbl_t, cfg_scale=cfg_scale)
+                        t_next = torch.full((num_samples, 1), (i + 1) / steps, device=drift_device)
+                        z_next = z + k1 * dt
+                        k2 = self.drift(z_next, t_next, lbl_t, cfg_scale=cfg_scale)
+                        z = z + (k1 + k2) * 0.5 * dt
+                        v = k1 # For logging
+                    elif method == 'rk4':
+                        k1 = self.drift(z, t, lbl_t, cfg_scale=cfg_scale)
+                        t_half = torch.full((num_samples, 1), (i + 0.5) / steps, device=drift_device)
+                        k2 = self.drift(z + 0.5 * dt * k1, t_half, lbl_t, cfg_scale=cfg_scale)
+                        k3 = self.drift(z + 0.5 * dt * k2, t_half, lbl_t, cfg_scale=cfg_scale)
+                        t_next = torch.full((num_samples, 1), (i + 1) / steps, device=drift_device)
+                        k4 = self.drift(z + dt * k3, t_next, lbl_t, cfg_scale=cfg_scale)
+                        z = z + (k1 + 2*k2 + 2*k3 + k4) * (dt / 6.0)
+                        v = k1 # For logging
                     
                     if i % 10 == 0:
-                        config.logger.info(f"Step {i:3d}, t={i/steps:.3f}, drift norm: {v.norm().item():.4f}, z std: {z.std().item():.4f}")
+                        # Consistent logging of drift norm (per-sample average L2)
+                        drift_norm = v.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
+                        config.logger.info(f"Step {i:3d}, t={i/steps:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std().item():.4f}")
                 
                 # 3. High-Performance Langevin Refinement (MALA-style)
                 if langevin_steps > 0:
@@ -630,18 +881,11 @@ class EnhancedLabelTrainer:
                     t_one = torch.full((num_samples, 1), 1.0, device=drift_device)
                     
                     for l_step in range(langevin_steps):
-                        # 1. Compute Score Proxy (terminal velocity)
                         score = self.drift(z, t_one, lbl_t, cfg_scale=cfg_scale)
-                        
-                        # 2. Add Annealed Noise (decay noise scale over steps)
                         step_ratio = l_step / langevin_steps
                         current_noise_scale = math.sqrt(2 * langevin_step_size) * (1 - 0.5 * step_ratio)
                         noise = torch.randn_like(z) * current_noise_scale
-                        
-                        # 3. Stochastic Gradient Update
                         z = z.detach() + 0.5 * langevin_step_size * langevin_score_scale * score + noise
-                        
-                        # 4. Gentle Manifold Constraint (Keep latents in VAE-friendly range)
                         z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
                         
                         if (l_step + 1) % 5 == 0 or l_step == 0:
@@ -650,7 +894,11 @@ class EnhancedLabelTrainer:
             # 4. Move to VAE device for decoding
             z = z.to(vae_device)
             lbl_t = lbl_t.to(vae_device)
+            
+            # Enable stabilization layers for inference
+            self.vae.set_force_active(True)
             imgs = torch.clamp(self.vae.decode(z, lbl_t), -1, 1)
+            self.vae.set_force_active(False)
             
             # Save individual images with detailed naming
             for i in range(num_samples):
@@ -663,9 +911,12 @@ class EnhancedLabelTrainer:
             vutils.save_image((imgs + 1)/2, grid_path, nrow=4)
             
             config.logger.info(f"✅ Generated {num_samples} samples and summary grid for Epoch {self.epoch}")
-            config.logger.info(f"Images saved to: {grid_path}")
             return grid_path
         finally:
             if temp_gpu_move:
                 self.drift.to('cpu')
                 torch.cuda.empty_cache()
+
+# ============================================================
+# TRAINING FUNCTION
+# ============================================================
