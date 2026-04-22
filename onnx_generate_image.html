@@ -141,7 +141,13 @@
 <body>
     <div class="container">
         <h1><span>📊</span> Schrödinger Bridge Generator</h1>
-        <p class="subtitle">Edge AI: Schrödinger Bridge trajectory simulation in your browser.</p>
+        <p class="subtitle">
+            Edge AI: Schrödinger Bridge trajectory simulation in your browser.
+            <br>
+            <a href="https://huggingface.co/webtvmedianet/enhanced-schrodinger-bridge" target="_blank" style="color: var(--google-blue); font-size: 0.9em;">
+                🤗 Get Pre-trained ONNX Models from Hugging Face
+            </a>
+        </p>
 
         <div class="controls-grid">
             <div class="control-group">
@@ -193,7 +199,7 @@
                     <input type="file" id="dirInput" webkitdirectory directory multiple style="flex-grow: 1;">
                     <button id="loadDirBtn" class="btn-primary" style="padding: 8px 16px; font-size: 14px; width: auto;">Load Folder</button>
                 </div>
-                <small style="color: var(--google-gray-700); margin-top: 4px;">Select the 'onnx' folder containing generator.onnx and drift.onnx.</small>
+                <small style="color: var(--google-gray-700); margin-top: 4px;">Select the 'onnx' folder containing generator.onnx and drift.onnx. Download them from <a href="https://huggingface.co/webtvmedianet/enhanced-schrodinger-bridge/tree/main/onnx" target="_blank">Hugging Face</a>.</small>
             </div>
 
             <button id="generateBtn" class="btn-primary" disabled>Initialize Models...</button>

@@ -148,15 +148,37 @@
                 <li><a href="#langevin">5.2 Langevin Refinement</a></li>
             </ul>
         </li>
-        <li><a href="#features">6. Key Features</a></li>
-        <li><a href="#usage">7. Installation and Usage</a></li>
-        <li><a href="#references">8. References</a></li>
-    </ul>
-</div>
+        <li><a href="#huggingface">6. Hugging Face Model Hub</a></li>
+        <li><a href="#features">7. Key Features</a></li>
+        <li><a href="#usage">8. Installation and Usage</a></li>
+        <li><a href="#references">9. References</a></li>
+        </ul>
+        </div>
 
-<hr>
+        <hr>
+        ...
+        <h2 id="huggingface">6. Hugging Face Model Hub</h2>
+        <p>Pre-trained weights, configuration files, and ONNX models are hosted on the Hugging Face Model Hub for easy access and community collaboration.</p>
+        <div class="note">
+        <strong>Official Repository:</strong> <a href="https://huggingface.co/webtvmedianet/enhanced-schrodinger-bridge" target="_blank">webtvmedianet/enhanced-schrodinger-bridge</a>
+        </div>
 
-<h2 id="math-foundations">1. Mathematical Foundations</h2>
+        <h3>📥 Using Pre-trained Models</h3>
+        <p>To use the official pre-trained weights:</p>
+        <ol>
+        <li>Download <code>latest.pt</code> from the repository.</li>
+        <li>Place it in the <code>enhanced_label_sb/checkpoints/</code> directory.</li>
+        <li>Run <code>python main.py --menu</code> and select <strong>Option 7</strong> (Resume) or <strong>Option 4/5</strong> (Inference).</li>
+        </ol>
+
+        <h3>📤 Uploading Your Own</h3>
+        <p>The project includes a utility script <code>upload_to_hf.py</code> to streamline the process of sharing your trained models:</p>
+        <pre><code>export HF_TOKEN="your_write_token"
+        python upload_to_hf.py</code></pre>
+        <p>This will automatically verify/create your repository and upload the latest checkpoint, ONNX exports, label map, and configuration.</p>
+
+        <h2 id="features">7. Key Features</h2>
+
 
 <h3 id="sbp">1.1 Schrödinger Bridge Problem</h3>
 <p>The <strong>Schrödinger Bridge</strong> seeks the most probable evolution between two probability distributions over a fixed time interval \([0,1]\). Given a <strong>reference process</strong> (e.g., Wiener or Ornstein‑Uhlenbeck), we look for a process whose marginal distributions at \(t=0\) and \(t=1\) match given target distributions, while minimizing the Kullback–Leibler divergence to the reference.</p>

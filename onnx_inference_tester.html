@@ -123,25 +123,32 @@
     <div class="container">
         <div class="header">
             <h1>🎨 Visual Quantization Comparison</h1>
-            <div id="globalStatus" class="status-badge badge-loading">Initializing ORT...</div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
+                <div id="globalStatus" class="status-badge badge-loading">Initializing ORT...</div>
+                <a href="https://huggingface.co/webtvmedianet/enhanced-schrodinger-bridge" target="_blank" style="color: var(--primary); font-size: 0.75rem; text-decoration: none;">🤗 View on Hugging Face</a>
+            </div>
         </div>
 
         <div class="controls">
             <div class="control-group">
                 <label>FP32 Drift (.onnx)</label>
                 <input type="file" id="file_fp32_drift" accept=".onnx">
+                <small style="font-size: 0.7rem; color: #64748b;">From onnx/drift.onnx</small>
             </div>
             <div class="control-group">
                 <label>FP32 Generator (.onnx)</label>
                 <input type="file" id="file_fp32_gen" accept=".onnx">
+                <small style="font-size: 0.7rem; color: #64748b;">From onnx/generator.onnx</small>
             </div>
             <div class="control-group">
                 <label>INT8 Drift (.onnx)</label>
                 <input type="file" id="file_int8_drift" accept=".onnx">
+                <small style="font-size: 0.7rem; color: #64748b;">Optional: Quantized</small>
             </div>
             <div class="control-group">
                 <label>INT8 Generator (.onnx)</label>
                 <input type="file" id="file_int8_gen" accept=".onnx">
+                <small style="font-size: 0.7rem; color: #64748b;">Optional: Quantized</small>
             </div>
             <div class="control-group" style="justify-content: flex-end; grid-column: 1 / -1;">
                 <button id="loadModelsBtn" style="background: var(--warning); color: black; width: 100%;">📁 Load Models from Files</button>

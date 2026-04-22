@@ -32,6 +32,22 @@ This project enables high-quality, category-specific image generation by learnin
 
 ---
 
+## 🤗 Hugging Face Model Hub
+The pre-trained weights and ONNX models are hosted on the Hugging Face Model Hub:
+**[webtvmedianet/enhanced-schrodinger-bridge](https://huggingface.co/webtvmedianet/enhanced-schrodinger-bridge)**
+
+### 📥 Using Pre-trained Models
+You can download the `latest.pt` checkpoint and place it in `enhanced_label_sb/checkpoints/` to resume training or perform inference immediately.
+
+### 📤 Uploading Your Own
+To upload your current checkpoint and ONNX exports to your own HF account:
+```bash
+export HF_TOKEN="your_write_token"
+python upload_to_hf.py
+```
+
+---
+
 ## 🛠️ Installation and Setup
 
 ### 1. Prerequisites

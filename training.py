@@ -665,8 +665,8 @@ class EnhancedLabelTrainer:
             def __init__(self, vae):
                 super().__init__()
                 self.vae = vae
-            def forward(self, z, labels, source_id=None):
-                return self.vae.decode(z, labels, source_id)
+            def forward(self, z, labels, text_bytes=None, source_id=None):
+                return self.vae.decode(z, labels, text_bytes=text_bytes, source_id=source_id)
 
         try:
             # --- Set export mode for VAE and Drift ---
@@ -679,10 +679,11 @@ class EnhancedLabelTrainer:
             vae_for_export = bake_spectral_norm(self.vae)
             drift_for_export = bake_spectral_norm(self.drift)
 
-            # Export Generator (Decoder only)
+            # Dummy inputs for export
             dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
             dummy_label = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
             dummy_source = torch.tensor([0], device=config.DEVICE, dtype=torch.long)
+            dummy_text = torch.zeros(1, config.MAX_TEXT_BYTES, device=config.DEVICE, dtype=torch.long)
             
             gen_path = config.DIRS["onnx"] / "generator.onnx"
             vae_gen = VAEGenerator(vae_for_export)
@@ -690,16 +691,17 @@ class EnhancedLabelTrainer:
             with torch.no_grad():
                 torch.onnx.export(
                     vae_gen,
-                    (dummy_z, dummy_label, dummy_source),
+                    (dummy_z, dummy_label, dummy_text, dummy_source),
                     str(gen_path),
                     export_params=True,
                     opset_version=18,
                     do_constant_folding=True,
-                    input_names=['z', 'label', 'source_id'],
+                    input_names=['z', 'label', 'text_bytes', 'source_id'],
                     output_names=['reconstruction'],
                     dynamic_axes={
                         'z': {0: 'batch_size'},
                         'label': {0: 'batch_size'},
+                        'text_bytes': {0: 'batch_size'},
                         'source_id': {0: 'batch_size'},
                         'reconstruction': {0: 'batch_size'}
                     }
@@ -715,17 +717,18 @@ class EnhancedLabelTrainer:
             with torch.no_grad():
                 torch.onnx.export(
                     drift_for_export,
-                    (dummy_z, dummy_t, dummy_label, dummy_source),
+                    (dummy_z, dummy_t, dummy_label, dummy_text, dummy_source),
                     str(drift_path),
                     export_params=True,
                     opset_version=18,
                     do_constant_folding=True,
-                    input_names=['z', 't', 'label', 'source_id'],
+                    input_names=['z', 't', 'label', 'text_bytes', 'source_id'],
                     output_names=['drift'],
                     dynamic_axes={
                         'z': {0: 'batch_size'},
                         't': {0: 'batch_size'},
                         'label': {0: 'batch_size'},
+                        'text_bytes': {0: 'batch_size'},
                         'source_id': {0: 'batch_size'},
                         'drift': {0: 'batch_size'}
                     }
