@@ -181,6 +181,11 @@ PHASE1_EPOCHS = 150
 PHASE2_EPOCHS = 400                    
 # Phase 3 runs from PHASE2_EPOCHS to EPOCHS (Both train)
 
+# NEW: Recovery Mode settings
+RECOVERY_EPOCHS = 20
+IN_RECOVERY_MODE = True  # Set to True to trigger the 20-epoch VAE repair
+RECOVERY_START_EPOCH = None # Internal state tracking
+
 # ============================================================================
 # TRAINING SCHEDULE DICTIONARY
 # ============================================================================
@@ -190,7 +195,7 @@ CUSTOM_SCHED = {}
 
 TRAINING_SCHEDULE = {
     'mode': 'manual',                        
-    'force_phase': 3,                     
+    'force_phase': 1 if IN_RECOVERY_MODE else 3,                     
     'custom_schedule': CUSTOM_SCHED,         
     'switch_epoch': 150,                       
     'switch_epoch_1': PHASE1_EPOCHS,           

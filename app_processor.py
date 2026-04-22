@@ -167,21 +167,9 @@ class TrainingProcessor:
             config.DRIFT_WEIGHT = min(3.0, config.DRIFT_WEIGHT * 1.02)
             config.DEFAULT_LANGEVIN_STEPS = max(5, config.DEFAULT_LANGEVIN_STEPS - 2) # Lower floor
 
-        # 5. TRAINING TYPE JITTER (VAE vs DRIFT vs BOTH)
-        # Pro: Prevents network "laziness". Con: Slight epoch jitter.
-        if random.random() < 0.04: # 4% chance per epoch
-            current_mode = config.TRAINING_SCHEDULE.get('force_phase', 3)
-            r = random.random()
-            if r < 0.15:
-                new_mode = 1 # VAE Focus (Repair Fade)
-                config.logger.info("🎲 [App Control] Jitter: VAE focus (Repair Fade).")
-            elif r < 0.30:
-                new_mode = 2 # Drift Focus (Repair Structure)
-                config.logger.info("🎲 [App Control] Jitter: Drift focus (Repair Structure).")
-            else:
-                new_mode = 3 # Joint Fine-tuning
-                config.logger.info("🎲 [App Control] Jitter: Joint fine-tuning.")
-            config.TRAINING_SCHEDULE['force_phase'] = new_mode
+        # 5. TRAINING TYPE JITTER (DISABLED for stability)
+        # Jitter logic removed to prevent random phase switches that destabilize convergence.
+        pass
 
         # 6. PANIC BUTTON (Catastrophic divergence)
         if comp_score < -120 or drift_loss > 15.0:
@@ -211,9 +199,27 @@ class TrainingProcessor:
         Autonomous training management:
         - KPI-based phase transitions (1 -> 2 -> 3).
         - Stochastic nudges/restarts to avoid local minima.
+        - Recovery Mode: Forces Phase 1 to repair latents.
         """
         if not self.trainer:
             return
+
+        # --- 0. RECOVERY MODE HANDLING ---
+        if config.IN_RECOVERY_MODE:
+            if config.RECOVERY_START_EPOCH is None:
+                config.RECOVERY_START_EPOCH = epoch
+                config.logger.info(f"🩹 [Recovery] Starting 20-epoch VAE repair at epoch {epoch}.")
+            
+            elapsed = epoch - config.RECOVERY_START_EPOCH
+            if elapsed < config.RECOVERY_EPOCHS:
+                config.TRAINING_SCHEDULE['mode'] = 'manual'
+                config.TRAINING_SCHEDULE['force_phase'] = 1
+                config.logger.info(f"🩹 [Recovery] VAE repair progress: {elapsed+1}/{config.RECOVERY_EPOCHS} epochs.")
+                return # Stay in Phase 1
+            else:
+                config.IN_RECOVERY_MODE = False
+                config.TRAINING_SCHEDULE['force_phase'] = 2 # Transition to Drift
+                config.logger.info("✅ [Recovery] VAE repair complete. Transitioning to Phase 2 (Drift).")
 
         current_phase = self.trainer.phase
         temp = losses.get('temperature', 0.5)

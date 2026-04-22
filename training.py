@@ -135,6 +135,17 @@ def total_variation_loss(img: torch.Tensor, weight: float = 1.0) -> torch.Tensor
     tv_w = torch.pow(img[:, :, :, 1:] - img[:, :, :, :-1], 2).mean()
     return weight * (tv_h + tv_w)
 
+def calculate_sharpness(img: torch.Tensor) -> float:
+    """Calculate average gradient magnitude as a proxy for sharpness."""
+    if img.shape[1] > 1: # Convert to grayscale if RGB
+        gray = 0.2989 * img[:, 0] + 0.5870 * img[:, 1] + 0.1140 * img[:, 2]
+    else:
+        gray = img.squeeze(1)
+    
+    dx = torch.abs(gray[:, :, 1:] - gray[:, :, :-1]).mean()
+    dy = torch.abs(gray[:, 1:, :] - gray[:, :-1, :]).mean()
+    return (dx + dy).item() / 2.0
+
 def composite_score(loss_dict: Dict, phase: int) -> float:
     score = 0.0
     if phase == 1:
@@ -385,7 +396,9 @@ class EnhancedLabelTrainer:
             edge_loss = (F.mse_loss(torch.abs(recon[:,:,:,1:]-recon[:,:,:,:-1]), torch.abs(images[:,:,:,1:]-images[:,:,:,:-1])) + F.mse_loss(torch.abs(recon[:,:,1:,:]-recon[:,:,:-1,:]), torch.abs(images[:,:,1:,:]-images[:,:,:-1,:]))) * config.EDGE_WEIGHT
             div_loss = self.vae.diversity_loss * config.DIVERSITY_WEIGHT if self.vae.diversity_loss is not None else torch.tensor(0.0, device=config.DEVICE)
             total = recon_loss + kl_loss + ssim_loss + edge_loss + total_variation_loss(recon, config.TV_WEIGHT) + div_loss + c_loss * config.CONTRASTIVE_WEIGHT
-            return {'total': total, 'recon': recon_loss.item(), 'kl': kl_loss.item(), 'diversity': div_loss.item(), 'contrastive': c_loss.item(), 'ssim_loss': ssim_loss.item(), 'snr': calc_snr(images, recon)}
+            
+            sharpness = calculate_sharpness(recon.detach())
+            return {'total': total, 'recon': recon_loss.item(), 'kl': kl_loss.item(), 'diversity': div_loss.item(), 'contrastive': c_loss.item(), 'ssim_loss': ssim_loss.item(), 'snr': calc_snr(images, recon), 'sharpness': sharpness}
         else:
             with torch.no_grad(): 
                 mu_ref, _ = self.vae_ref.encode(images, labels, text_bytes, source_id)
@@ -414,24 +427,29 @@ class EnhancedLabelTrainer:
             
             consistency_loss = F.mse_loss(mu, mu_ref) * config.CONSISTENCY_WEIGHT
             
+            sharpness = 0.0
             if phase == 3:
                 recon_p3 = self.vae.decode(mu, labels, text_bytes, source_id)
                 # Increase Phase 3 recon scale to maintain integrity
                 recon_loss_p3 = F.l1_loss(recon_p3, images) * config.RECON_WEIGHT * 0.5
                 total = drift_loss + consistency_loss + recon_loss_p3 + (self.vae._channel_diversity_loss(mu) * config.DIVERSITY_WEIGHT)
+                
+                sharpness = calculate_sharpness(recon_p3.detach())
                 return {
                     'total': total, 
                     'drift': drift_loss.item(), 
                     'consistency': consistency_loss.item(), 
                     'recon_p3': recon_loss_p3.item(), 
-                    'mu_std': mu.std().item()
+                    'mu_std': mu.std().item(),
+                    'sharpness': sharpness
                 }
             else:
                 return {
                     'total': drift_loss + consistency_loss, 
                     'drift': drift_loss.item(), 
                     'consistency': consistency_loss.item(), 
-                    'mu_std': mu.std().item()
+                    'mu_std': mu.std().item(),
+                    'sharpness': sharpness
                 }
 
     def train_epoch(self) -> Dict:
