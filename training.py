@@ -790,132 +790,171 @@ class EnhancedLabelTrainer:
         grid_path = config.DIRS["samples"] / f"recon_ep{self.epoch}.png"
         vutils.save_image(torch.cat([(imgs+1)/2, (recon+1)/2], dim=0), grid_path, nrow=8)
 
-    def generate_samples(self, labels=None, num_samples=8, temperature=None, cfg_scale=1.0, 
-                         langevin_steps=None, langevin_step_size=None, langevin_score_scale=None, method='rk4'):
-        # Determine actual number of samples
-        if labels is not None:
-            num_samples = len(labels)
-        else:
-            labels = [i % 10 for i in range(num_samples)]
-            
-        # Use defaults from config if not provided
-        langevin_steps = langevin_steps if langevin_steps is not None else config.DEFAULT_LANGEVIN_STEPS
-        langevin_step_size = langevin_step_size if langevin_step_size is not None else config.LANGEVIN_STEP_SIZE
-        langevin_score_scale = langevin_score_scale if langevin_score_scale is not None else config.LANGEVIN_SCORE_SCALE
+    def generate_samples(self, labels=None, num_samples=8, temperature=None, method='heun',
+                         langevin_steps=None, langevin_step_size=None, langevin_score_scale=None,
+                         cfg_scale=None, source_id=None):
+        """
+        Generate samples with label conditioning and optional context.
 
-        # Determine current devices
-        vae_device = next(self.vae.parameters()).device
-        drift_device = next(self.drift.parameters()).device
-        
-        # If this is an automatic call during training Phase 1, we still skip to save time
-        is_manual = not self.vae.training
-        
-        if not is_manual and self.phase == 1 and drift_device.type == 'cpu' and config.DEVICE.type != 'cpu':
-            config.logger.info("⏩ Skipping automatic samples in Phase 1 (Drift is offloaded).")
-            return None
+        Args:
+            labels: List of class labels
+            num_samples: Number of samples to generate
+            temperature: Ignored (kept for API compatibility)
+            method: 'euler', 'heun', or 'rk4'
+            langevin_steps: Number of Langevin refinement steps (None = use config default)
+            langevin_step_size: Step size for Langevin dynamics (default from config)
+            langevin_score_scale: Scaling factor for the approximate score (default from config)
+            cfg_scale: Scale for classifier-free guidance (None = use config default)
+            source_id: Optional dataset source ID
+        """
+        if cfg_scale is None:
+            cfg_scale = getattr(config, 'CFG_SCALE', 1.0)
+        if langevin_steps is None:            langevin_steps = getattr(config, 'DEFAULT_LANGEVIN_STEPS', 0)
+        if langevin_step_size is None:
+            langevin_step_size = config.LANGEVIN_STEP_SIZE
+        if langevin_score_scale is None:
+            langevin_score_scale = config.LANGEVIN_SCORE_SCALE
 
         self.vae.eval()
         self.drift.eval()
         
-        # Optimization: If Drift is on CPU but we have room, move it to GPU
-        temp_gpu_move = False
-        if drift_device.type == 'cpu' and torch.cuda.is_available():
-            try:
-                free_mem, _ = torch.cuda.mem_get_info()
-                if free_mem > 1.0 * 1024**3:
-                    self.drift.to(config.DEVICE)
-                    drift_device = config.DEVICE
-                    temp_gpu_move = True
-            except: pass
-
-        lbl_t = torch.tensor(labels, device=drift_device)
-        temp = temperature if temperature is not None else config.INFERENCE_TEMPERATURE
+        if labels is not None:
+            num_samples = len(labels)
+        else:
+            labels = [i % 10 for i in range(num_samples)]
         
-        try:
-            with torch.no_grad():
-                # 1. Initial noise - Match training z0 distribution (std=0.8)
-                z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=drift_device) 
-                z = z * config.CST_COEF_GAUSSIAN_PRIO
-                
-                config.logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
-                
-                # 2. ODE Integration
-                steps = config.DEFAULT_STEPS
-                dt = 1.0 / steps
-                
-                step_range = range(steps)
-                if TQDM_AVAILABLE and is_manual:
-                    step_range = tqdm(step_range, desc=f"🎨 Generating Samples ({method.upper()})", leave=False)
-                
-                for i in step_range:
-                    t = torch.full((num_samples, 1), i / steps, device=drift_device)
-                    
-                    if method == 'euler':
-                        v = self.drift(z, t, lbl_t, cfg_scale=cfg_scale)
-                        z = z + v * dt
-                    elif method == 'heun':
-                        k1 = self.drift(z, t, lbl_t, cfg_scale=cfg_scale)
-                        t_next = torch.full((num_samples, 1), (i + 1) / steps, device=drift_device)
-                        z_next = z + k1 * dt
-                        k2 = self.drift(z_next, t_next, lbl_t, cfg_scale=cfg_scale)
-                        z = z + (k1 + k2) * 0.5 * dt
-                        v = k1 # For logging
-                    elif method == 'rk4':
-                        k1 = self.drift(z, t, lbl_t, cfg_scale=cfg_scale)
-                        t_half = torch.full((num_samples, 1), (i + 0.5) / steps, device=drift_device)
-                        k2 = self.drift(z + 0.5 * dt * k1, t_half, lbl_t, cfg_scale=cfg_scale)
-                        k3 = self.drift(z + 0.5 * dt * k2, t_half, lbl_t, cfg_scale=cfg_scale)
-                        t_next = torch.full((num_samples, 1), (i + 1) / steps, device=drift_device)
-                        k4 = self.drift(z + dt * k3, t_next, lbl_t, cfg_scale=cfg_scale)
-                        z = z + (k1 + 2*k2 + 2*k3 + k4) * (dt / 6.0)
-                        v = k1 # For logging
-                    
-                    if i % 10 == 0:
-                        # Consistent logging of drift norm (per-sample average L2)
-                        drift_norm = v.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
-                        config.logger.info(f"Step {i:3d}, t={i/steps:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std().item():.4f}")
-                
-                # 3. High-Performance Langevin Refinement (MALA-style)
-                if langevin_steps > 0:
-                    config.logger.info(f"Starting {langevin_steps} Refined Langevin steps...")
-                    t_one = torch.full((num_samples, 1), 1.0, device=drift_device)
-                    
-                    for l_step in range(langevin_steps):
-                        score = self.drift(z, t_one, lbl_t, cfg_scale=cfg_scale)
-                        step_ratio = l_step / langevin_steps
-                        current_noise_scale = math.sqrt(2 * langevin_step_size) * (1 - 0.5 * step_ratio)
-                        noise = torch.randn_like(z) * current_noise_scale
-                        z = z.detach() + 0.5 * langevin_step_size * langevin_score_scale * score + noise
-                        z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
-                        
-                        if (l_step + 1) % 5 == 0 or l_step == 0:
-                            config.logger.info(f" Langevin Step {l_step+1}: z_std={z.std().item():.4f}")
+        with torch.no_grad():
+            labels_tensor = torch.tensor(labels, dtype=torch.long, device=config.DEVICE)
+            
+            # Neural Tokenizer support
+            if config.USE_NEURAL_TOKENIZER:
+                text_bytes_list = []
+                for l in labels:
+                    desc = dm.CLASS_DESCRIPTIONS[l] if l < 10 else f"class_{l}"
+                    text_bytes_list.append(dm.text_to_bytes(desc))
+                text_bytes_tensor = torch.tensor(text_bytes_list, device=config.DEVICE)
+            else:
+                text_bytes_tensor = None
 
-            # 4. Move to VAE device for decoding
-            z = z.to(vae_device)
-            lbl_t = lbl_t.to(vae_device)
+            # Source ID context
+            if source_id is None:
+                s_id = torch.zeros(labels_tensor.shape[0], dtype=torch.long, device=config.DEVICE)
+            else:
+                s_id = torch.full((labels_tensor.shape[0],), source_id, dtype=torch.long, device=config.DEVICE)
+                        
+            # Start from pure noise using the prior standard deviation from config
+            z = torch.randn(num_samples, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE) * config.CST_COEF_GAUSSIAN_PRIO
+
+            config.logger.info(f"Initial z - min: {z.min():.3f}, max: {z.max():.3f}, mean: {z.mean():.3f}, std: {z.std():.3f}")
             
-            # Enable stabilization layers for inference
-            self.vae.set_force_active(True)
-            imgs = torch.clamp(self.vae.decode(z, lbl_t), -1, 1)
-            self.vae.set_force_active(False)
+            steps = config.DEFAULT_STEPS
+            dt = 1.0 / steps
             
-            # Save individual images with detailed naming
-            for i in range(num_samples):
-                label_val = labels[i]
-                sample_path = config.DIRS["samples"] / f"gen_{i}_label{label_val}_epoch{self.epoch}.png"
-                vutils.save_image((imgs[i:i+1] + 1)/2, sample_path)
+            # ----- ODE integration -----
+            for i in range(steps):
+                t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
                 
-            # Save a summary grid for convenience
-            grid_path = config.DIRS["samples"] / f"grid_epoch{self.epoch}.png"
-            vutils.save_image((imgs + 1)/2, grid_path, nrow=4)
+                # Predict drift with context
+                drift = self.drift(z, t_cur, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                
+                # Monitor drift magnitude (adaptive clipping is inside the drift network)
+                drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
+
+                if method == 'euler':
+                    z = z + drift * dt
+                elif method == 'heun':
+                    k1 = drift
+                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
+                    z_pred = z + dt * k1
+                    k2 = self.drift(z_pred, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    z = z + (dt / 2.0) * (k1 + k2)
+                elif method == 'rk4':
+                    k1 = drift
+                    t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
+                    z_half = z + 0.5 * dt * k1
+                    k2 = self.drift(z_half, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    z_half2 = z + 0.5 * dt * k2
+                    k3 = self.drift(z_half2, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
+                    z_next = z + dt * k3
+                    k4 = self.drift(z_next, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+    
+                z = torch.clamp(z, -10, 10)   # gentle clamping
+                
+                if i % 10 == 0:
+                    config.logger.info(f"Step {i:3d}, t={i*dt:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std():.4f}")
+                                
+                if torch.isnan(z).any():
+                    config.logger.error(f"NaN detected at step {i}!")
+                    break
             
-            config.logger.info(f"✅ Generated {num_samples} samples and summary grid for Epoch {self.epoch}")
+            # ----- Refined Langevin Refinement -----
+            if langevin_steps > 0:
+                config.logger.info(f"Starting {langevin_steps} Refined Langevin steps...")
+                t_one = torch.full((num_samples, 1), 1.0, device=config.DEVICE)
+                
+                # Adaptive step size: start strong, end gentle
+                base_lr = langevin_step_size
+                
+                for step in range(langevin_steps):
+                    # 1. Compute Score Proxy 
+                    # Using drift at t=1 is theoretically the 'terminal' velocity
+                    drift_at_end = self.drift(z, t_one, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
+                    
+                    # 2. Add Annealed Noise
+                    # We decay the noise scale as we converge to the manifold
+                    step_ratio = step / langevin_steps
+                    current_noise_scale = np.sqrt(2 * base_lr) * (1 - 0.5 * step_ratio)
+                    noise = torch.randn_like(z) * current_noise_scale
+                    
+                    # 3. Stochastic Gradient Update (MALA style)
+                    # We treat the drift as the gradient of the log-probability
+                    z = z.detach() + 0.5 * base_lr * langevin_score_scale * drift_at_end + noise
+                    
+                    # 4. Gentle Manifold Constraint
+                    # Prevents latents from escaping the range expected by the VAE decoder
+                    z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
+                    
+                    if (step + 1) % 5 == 0:
+                        config.logger.info(f" Langevin Step {step+1}: z_std={z.std():.4f}")
+
+                z = z.detach() # Final cleanup
+            config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
+            
+            # Decode
+            self.vae.set_force_active(True)
+            images = self.vae.decode(z, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
+            self.vae.set_force_active(False)
+            images = torch.clamp(images, -1, 1)
+            
+            config.logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")
+            
+            # Save images
+            images_display = (images + 1) / 2
+            images_display = torch.clamp(images_display, 0, 1)
+            
+            grid = vutils.make_grid(images_display, nrow=4, padding=2)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            grid_path = config.DIRS["samples"] / f"gen_epoch{self.epoch+1}_{timestamp}.png"
+            vutils.save_image(grid, grid_path)
+            
+            for idx, img in enumerate(images_display):
+                individual_path = config.DIRS["samples"] / f"gen_{idx}_label{labels[idx]}_epoch{self.epoch+1}.png"
+                vutils.save_image(img, individual_path)
+            
+            debug_path = config.DIRS["samples"] / f"raw_epoch{self.epoch+1}_{timestamp}.pt"
+            torch.save({
+                'z': z.cpu(),
+                'images': images.cpu(),
+                'labels': labels
+            }, debug_path)
+            
+            config.logger.info(f"Generated {num_samples} samples for labels {labels}")
+            config.logger.info(f"Images saved to: {grid_path}")
+            
             return grid_path
-        finally:
-            if temp_gpu_move:
-                self.drift.to('cpu')
-                torch.cuda.empty_cache()
+
 
 # ============================================================
 # TRAINING FUNCTION
