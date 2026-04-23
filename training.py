@@ -287,8 +287,10 @@ class EnhancedLabelTrainer:
         if self.phase != 1: return torch.tensor(0.0, device=config.DEVICE)
         
         vgg_device = next(self.vgg.parameters()).device
-        if self.phase == 1 and vgg_device.type == 'cpu': self.vgg.to(config.DEVICE)
-        elif self.phase != 1 and vgg_device.type != 'cpu': self.vgg.to('cpu')
+        if self.phase == 1 and vgg_device.type == 'cpu': 
+            self.vgg.to(config.DEVICE)
+        elif self.phase != 1 and vgg_device.type != 'cpu' and config.DEVICE.type != 'mps':
+            self.vgg.to('cpu')
             
         mean, std = self.vgg_mean.to(recon.dtype), self.vgg_std.to(recon.dtype)
         recon_norm = ((((recon + 1) / 2) - mean) / std).contiguous()
@@ -312,6 +314,9 @@ class EnhancedLabelTrainer:
                 can_afford_both = free_mem > 2.5 * 1024**3
             except:
                 can_afford_both = False
+        elif config.DEVICE.type == 'mps':
+            # MPS users usually have unified memory, better to keep both on device
+            can_afford_both = True
 
         if new_phase == 1:
             self.vae.to(config.DEVICE)
@@ -320,7 +325,7 @@ class EnhancedLabelTrainer:
                 config.logger.info(f"💻 Device: {config.DEVICE.type.upper()} Mode.")
             elif can_afford_both:
                 self.drift.to(config.DEVICE)
-                config.logger.info("🚀 VRAM: Both networks active on GPU (Memory sufficient).")
+                config.logger.info(f"🚀 VRAM: Both networks active on {config.DEVICE.type.upper()} (Memory sufficient).")
             else:
                 self.drift.to('cpu')
                 config.logger.info("⚡ VRAM: Surgical Mode - Drift offloaded to CPU (Memory low).")
@@ -331,9 +336,9 @@ class EnhancedLabelTrainer:
             self.vae.to(config.DEVICE)
             self.drift.to(config.DEVICE)
             if is_gpu:
-                self.contrastive_criterion.to('cpu')
-                if hasattr(self, 'vgg'): self.vgg.to('cpu')
-                config.logger.info("⚡ VRAM: Core networks on GPU. Aux modules offloaded.")
+                self.contrastive_criterion.to(config.DEVICE if config.DEVICE.type == 'mps' else 'cpu')
+                if hasattr(self, 'vgg'): self.vgg.to(config.DEVICE if config.DEVICE.type == 'mps' else 'cpu')
+                config.logger.info(f"🚀 VRAM: Core networks on {config.DEVICE.type.upper()}.")
             else:
                 config.logger.info(f"💻 Device: {config.DEVICE.type.upper()} Mode.")
             
@@ -676,8 +681,8 @@ class EnhancedLabelTrainer:
             self.drift.apply(lambda m: set_export_mode(m, True))
             
             # Create baked copies for export to ensure static weights (essential for quantization)
-            vae_for_export = bake_spectral_norm(self.vae)
-            drift_for_export = bake_spectral_norm(self.drift)
+            vae_for_export = bake_spectral_norm(self.vae).to(config.DEVICE)
+            drift_for_export = bake_spectral_norm(self.drift).to(config.DEVICE)
 
             # Dummy inputs for export
             dummy_z = torch.randn(1, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W, device=config.DEVICE)
@@ -820,6 +825,8 @@ class EnhancedLabelTrainer:
 
         self.vae.eval()
         self.drift.eval()
+        self.vae.to(config.DEVICE)
+        self.drift.to(config.DEVICE)
         
         if labels is not None:
             num_samples = len(labels)
