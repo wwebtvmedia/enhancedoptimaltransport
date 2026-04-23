@@ -129,6 +129,19 @@
             </div>
         </div>
 
+        <div class="controls" style="background: #1e293b; border: 1px solid #334155; margin-bottom: 2rem;">
+            <div style="grid-column: 1 / -1;">
+                <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--primary);">🛠️ How to Quantize Your Models</h3>
+                <p style="font-size: 0.85rem; color: #94a3b8; margin: 0 0 15px 0;">
+                    Quantization must be performed via Python to re-encode the model weights. Run this command in your terminal:
+                </p>
+                <code style="display: block; background: #000; padding: 12px; border-radius: 6px; font-size: 0.9rem; color: #10b981; margin-bottom: 10px;">python3 quantize_models.py</code>
+                <p style="font-size: 0.85rem; color: #94a3b8; margin: 0;">
+                    This will create <b>drift_int8.onnx</b> and <b>generator_int8.onnx</b> in the onnx folder.
+                </p>
+            </div>
+        </div>
+
         <div class="controls">
             <div class="control-group">
                 <label>FP32 Drift (.onnx)</label>
