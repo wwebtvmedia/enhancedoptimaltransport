@@ -209,10 +209,6 @@
                     <option value="1">Source 1 (CIFAR-10)</option>
                 </select>
             </div>
-            <div class="control-group">
-                <label>Noise Seed</label>
-                <input type="number" id="seedInput" value="42">
-            </div>
             <div class="control-group" style="justify-content: flex-end;">
                 <button id="compareBtn">🚀 Generate & Compare</button>
             </div>
@@ -436,7 +432,9 @@
             
             const latentSize = LATENT_SHAPE.reduce((a, b) => a * b, 1);
             const z0Data = new Float32Array(latentSize);
-            seed = seedVal; // Use the provided seed
+            // Label is added to seed to ensure different categories look distinct
+            // even if the user doesn't change the seed value.
+            seed = seedVal + label; 
             
             // Align with config.CST_COEF_GAUSSIAN_PRIO (0.8)
             for (let i = 0; i < latentSize; i++) z0Data[i] = normalRandom() * 0.8;
@@ -544,20 +542,22 @@
             
             const label = parseInt(document.getElementById('labelSelect').value);
             const steps = parseInt(document.getElementById('stepsInput').value);
-            const seed = parseInt(document.getElementById('seedInput').value);
             const method = document.getElementById('methodSelect').value;
             const sourceId = parseInt(document.getElementById('sourceSelect').value);
+            
+            // Generate a truly random seed for variety, but link it to label
+            const seedVal = Math.floor(Math.random() * 1000000) + label;
 
             try {
                 if (!sessions.fp32_drift || !sessions.fp32_gen) {
                     throw new Error("FP32 models must be loaded.");
                 }
-                log(`Starting FP32 Reference (${method.toUpperCase()}, Source ${sourceId})...`);
-                const fp32Data = await runBridge(sessions.fp32_drift, sessions.fp32_gen, label, steps, seed, 'canvasFP32', 'timeFP32', method, sourceId);
+                log(`Starting FP32 Reference (${method.toUpperCase()}, Label ${label})...`);
+                const fp32Data = await runBridge(sessions.fp32_drift, sessions.fp32_gen, label, steps, seedVal, 'canvasFP32', 'timeFP32', method, sourceId);
                 
                 if (sessions.int8_drift && sessions.int8_gen) {
                     log("Starting INT8 Quantized generation...");
-                    const int8Data = await runBridge(sessions.int8_drift, sessions.int8_gen, label, steps, seed, 'canvasINT8', 'timeINT8', method, sourceId);
+                    const int8Data = await runBridge(sessions.int8_drift, sessions.int8_gen, label, steps, seedVal, 'canvasINT8', 'timeINT8', method, sourceId);
                     const diff = calculateDiff(fp32Data, int8Data);
                     document.getElementById('diffINT8').textContent = `Diff: ${diff}%`;
                     log(`Comparison complete. Visual difference: ${diff}%`);
