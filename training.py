@@ -289,7 +289,7 @@ class EnhancedLabelTrainer:
         vgg_device = next(self.vgg.parameters()).device
         if self.phase == 1 and vgg_device.type == 'cpu': 
             self.vgg.to(config.DEVICE)
-        elif self.phase != 1 and vgg_device.type != 'cpu' and config.DEVICE.type != 'mps':
+        elif self.phase != 1 and vgg_device.type != 'cpu' and config.DEVICE.type == 'cpu':
             self.vgg.to('cpu')
             
         mean, std = self.vgg_mean.to(recon.dtype), self.vgg_std.to(recon.dtype)
@@ -306,7 +306,7 @@ class EnhancedLabelTrainer:
             
         # Check available memory to decide if we can afford both on GPU
         can_afford_both = False
-        is_gpu = config.DEVICE.type in ['cuda', 'xpu', 'mps']
+        is_gpu = config.DEVICE.type != 'cpu'
         
         if config.DEVICE.type == 'cuda':
             try:
@@ -314,8 +314,9 @@ class EnhancedLabelTrainer:
                 can_afford_both = free_mem > 2.5 * 1024**3
             except:
                 can_afford_both = False
-        elif config.DEVICE.type == 'mps':
-            # MPS users usually have unified memory, better to keep both on device
+        elif is_gpu:
+            # For MPS (Apple), XPU (Intel), and DirectML (AMD/Others), 
+            # we generally assume unified memory or sufficient VRAM for these specific models.
             can_afford_both = True
 
         if new_phase == 1:
@@ -336,8 +337,10 @@ class EnhancedLabelTrainer:
             self.vae.to(config.DEVICE)
             self.drift.to(config.DEVICE)
             if is_gpu:
-                self.contrastive_criterion.to(config.DEVICE if config.DEVICE.type == 'mps' else 'cpu')
-                if hasattr(self, 'vgg'): self.vgg.to(config.DEVICE if config.DEVICE.type == 'mps' else 'cpu')
+                # Keep on device for MPS/AMD/Intel, or if CUDA has enough memory
+                target_aux_device = config.DEVICE if (config.DEVICE.type != 'cuda' or can_afford_both) else 'cpu'
+                self.contrastive_criterion.to(target_aux_device)
+                if hasattr(self, 'vgg'): self.vgg.to(target_aux_device)
                 config.logger.info(f"🚀 VRAM: Core networks on {config.DEVICE.type.upper()}.")
             else:
                 config.logger.info(f"💻 Device: {config.DEVICE.type.upper()} Mode.")
