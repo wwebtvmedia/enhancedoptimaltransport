@@ -1,55 +1,49 @@
+"""
+INT8 quantization for ONNX models.
+
+- drift_int8.onnx      : static INT8 (dynamic quantization of Gemm with
+                          transB=1 breaks MatMul shapes due to an onnxruntime
+                          Gemm-decomposition bug in the two-pass CFG wrapper)
+- generator_int8.onnx  : dynamic INT8 (Conv-only; generator has no CFG)
+"""
 import onnx
 import os
+import shutil
 from onnxruntime.quantization import quantize_dynamic, QuantType
 
-def fix_batch_size(model_path, output_path, batch_size=1):
-    """
-    Sets dynamic batch_size to a fixed value to avoid shape inference errors.
-    """
-    print(f"Fixing batch_size for {model_path}...")
-    model = onnx.load(model_path)
-    
-    # Clear value_info to allow re-inference with new shapes
-    while(len(model.graph.value_info) > 0):
-        model.graph.value_info.pop()
-        
-    for input in model.graph.input:
-        for dim in input.type.tensor_type.shape.dim:
-            if dim.dim_param == 'batch_size':
-                dim.dim_value = batch_size
-    onnx.save(model, output_path)
-    return output_path
 
-def quantize_model(model_path, output_path):
-    """
-    Quantizes an ONNX model to INT8 (dynamic).
-    """
+def quantize_generator_dynamic(model_path, output_path):
+    """Dynamic INT8 for the generator (VAE decoder, Conv layers only)."""
     if not os.path.exists(model_path):
         print(f"Error: Model not found at {model_path}")
         return
-
-    fixed_path = model_path.replace(".onnx", "_fixed.onnx")
-    fix_batch_size(model_path, fixed_path)
-
-    print(f"Quantizing {fixed_path} to INT8 (dynamic)...")
+    print(f"Dynamic INT8: {model_path} -> {output_path}")
     quantize_dynamic(
-        model_input=fixed_path,
+        model_input=model_path,
         model_output=output_path,
         weight_type=QuantType.QUInt8,
-        extra_options={'EnableShapeInference': False}
+        op_types_to_quantize=['Conv'],
+        extra_options={'DefaultTensorType': onnx.TensorProto.FLOAT},
     )
-    print(f"Saved INT8 model to {output_path}")
+    print(f"Saved {output_path}")
 
-    if os.path.exists(fixed_path):
-        os.remove(fixed_path)
 
 if __name__ == "__main__":
     base_dir = "enhanced_label_sb/onnx"
-    models = ["drift.onnx", "generator.onnx"]
 
-    for m in models:
-        src = os.path.join(base_dir, m)
-        dst_int8 = os.path.join(base_dir, m.replace(".onnx", "_int8.onnx"))
-        quantize_model(src, dst_int8)
+    # Drift: use static int8 (dynamic int8 breaks due to onnxruntime Gemm bug)
+    drift_static = os.path.join(base_dir, "drift_static_int8.onnx")
+    drift_int8 = os.path.join(base_dir, "drift_int8.onnx")
+    if os.path.exists(drift_static):
+        shutil.copy2(drift_static, drift_int8)
+        print(f"Drift int8: copied from static -> {drift_int8}")
+    else:
+        print("Run quantize_static.py first to generate drift_static_int8.onnx")
+
+    # Generator: dynamic int8 works fine
+    quantize_generator_dynamic(
+        os.path.join(base_dir, "generator.onnx"),
+        os.path.join(base_dir, "generator_int8.onnx"),
+    )
 
     print("\nQuantization complete.")

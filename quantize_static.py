@@ -53,6 +53,8 @@ class SBCalibrationDataReader(CalibrationDataReader):
                     sample['z'] = sample['z'] * config.CST_COEF_GAUSSIAN_PRIO
                 if 't' in input_names:
                     sample['t'] = np.random.rand(batch_size, 1).astype(np.float32)
+                if 'cfg_scale' in input_names:
+                    sample['cfg_scale'] = np.array([config.CFG_SCALE], dtype=np.float32)
             
             self.data.append(sample)
 
