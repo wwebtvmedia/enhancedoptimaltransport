@@ -119,7 +119,7 @@ def quantize_model_static(model_path, output_path):
         model_input=fixed_path,
         model_output=output_path,
         calibration_data_reader=dr,
-        quant_format=0, # 0 for QOperator, 1 for QDQ
+        quant_format=1,  # QDQ: QuantizeLinear/DequantizeLinear — supported by onnxruntime-web WASM
         activation_type=QuantType.QUInt8,
         weight_type=QuantType.QUInt8,
         calibrate_method=CalibrationMethod.MinMax,

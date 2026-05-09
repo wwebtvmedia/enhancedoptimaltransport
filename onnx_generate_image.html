@@ -395,7 +395,7 @@
                 try {
                     return await ort.InferenceSession.create(modelData, { executionProviders: providers });
                 } catch (e) {
-                    console.warn("Primary providers failed, trying pure WASM:", e.message);
+                    console.warn("Primary providers failed, trying pure WASM:", e?.message ?? String(e));
                     return await ort.InferenceSession.create(modelData, { executionProviders: ['wasm'] });
                 }
             }
@@ -456,7 +456,7 @@
                 } catch (e) {
                     statusEl.textContent = 'Models not found automatically. Use "Load Folder" to select the onnx directory.';
                     logTrace("Auto-load failed. Waiting for manual folder selection.");
-                    console.warn("Auto-load failed:", e.message);
+                    console.warn("Auto-load failed:", e?.message ?? String(e));
                 }
             })();
 
@@ -600,7 +600,7 @@
                     await decodeAndRender(z, sourceIdTensor, textBytesTensor);
                     statusEl.textContent = 'Done!';
                 } catch (e) {
-                    statusEl.textContent = 'Error: ' + e.message;
+                    statusEl.textContent = 'Error: ' + e?.message ?? String(e);
                 } finally {
                     generateBtn.disabled = false;
                 }
