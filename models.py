@@ -665,23 +665,29 @@ class LabelConditionedDrift(nn.Module):
 
     def forward(self, z, t, labels, text_bytes=None, source_id=None, cfg_scale=1.0):
         """Forward pass - predict drift at time t with CFG and context support."""
-        # Time embedding
         if t.dim() == 1:
             t = t.unsqueeze(-1)
         t_emb = self.time_mlp(t)
 
-        # Handle Classifier-Free Guidance during inference
         if cfg_scale != 1.0 and not self.training and not self._is_exporting:
-            # Predict with conditional labels
-            cond_drift = self._forward_internal(z, t, labels, text_bytes, t_emb, source_id)
-            
-            # Predict with dedicated null label (Index 10)
-            uncond_labels = torch.full_like(labels, config.NUM_CLASSES - 1) 
-            # When unconditional, we don't use text_bytes (or use null text)
-            uncond_drift = self._forward_internal(z, t, uncond_labels, None, t_emb, source_id)
-            
+            B = z.shape[0]
+            dummy_labels = torch.zeros(B, dtype=torch.long, device=z.device)
+
+            # Conditional pass
+            if config.USE_NEURAL_TOKENIZER and text_bytes is not None:
+                cond_text_emb = self.text_encoder(text_bytes)
+            elif hasattr(self, 'label_emb'):
+                cond_text_emb = self.label_emb(labels)
+            else:
+                cond_text_emb = torch.zeros(B, config.TEXT_EMBEDDING_DIM, device=z.device)
+            cond_drift = self._forward_with_emb(z, t, dummy_labels, cond_text_emb, t_emb, source_id)
+
+            # Unconditional pass: zero text embedding, matching ONNX DriftCFGWrapper
+            uncond_text_emb = torch.zeros(B, config.TEXT_EMBEDDING_DIM, device=z.device)
+            uncond_drift = self._forward_with_emb(z, t, dummy_labels, uncond_text_emb, t_emb, source_id)
+
             return uncond_drift + cfg_scale * (cond_drift - uncond_drift)
-            
+
         return self._forward_internal(z, t, labels, text_bytes, t_emb, source_id)
 
     def _forward_internal(self, z, t, labels, text_bytes, t_emb, source_id=None):
