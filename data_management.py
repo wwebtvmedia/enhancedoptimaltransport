@@ -246,12 +246,18 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         flexible_load(trainer.vae, checkpoint['vae_state'])
         flexible_load(trainer.drift, checkpoint['drift_state'])
 
-        # Load EMA models if available
+        # Load EMA models if available; fall back to copying from trained model
         if config.USE_EMA:
             if 'ema_vae_state' in checkpoint and hasattr(trainer, 'ema_vae') and trainer.ema_vae is not None:
                 flexible_load(trainer.ema_vae, checkpoint['ema_vae_state'])
+            elif hasattr(trainer, 'ema_vae') and trainer.ema_vae is not None:
+                trainer.ema_vae.load_state_dict(trainer.vae.state_dict())
+                config.logger.info("EMA VAE initialized from loaded VAE (no saved EMA state).")
             if 'ema_drift_state' in checkpoint and hasattr(trainer, 'ema_drift') and trainer.ema_drift is not None:
                 flexible_load(trainer.ema_drift, checkpoint['ema_drift_state'])
+            elif hasattr(trainer, 'ema_drift') and trainer.ema_drift is not None:
+                trainer.ema_drift.load_state_dict(trainer.drift.state_dict())
+                config.logger.info("EMA drift initialized from loaded drift (no saved EMA state).")
 
         # --- Robust Optimizer Loading ---
         def safe_load_opt(optimizer, state_dict, name="Optimizer"):
