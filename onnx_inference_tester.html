@@ -473,7 +473,7 @@
 
             async function getDrift(latent, tVal) {
                 const t = new ort.Tensor('float32', new Float32Array([tVal]), [1, 1]);
-                const res = await driftSess.run({ z: latent, t, label: labelTensor, text_bytes: textBytesTensor });
+                const res = await driftSess.run({ z: latent, t, text_bytes: textBytesTensor, source_id: sourceIdTensor });
                 return res.drift;
             }
 
@@ -534,7 +534,6 @@
 
             const genResults = await genSess.run({
                 z,
-                label: labelTensor,
                 source_id: sourceIdTensor,
                 text_bytes: textBytesTensor
             });

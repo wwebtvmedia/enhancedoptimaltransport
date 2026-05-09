@@ -452,21 +452,19 @@
                 }
             })();
 
-            async function runDrift(z, t, labelTensor, textBytesTensor) {
-                const feeds = {
+            async function runDrift(z, t, textBytesTensor, sourceIdTensor) {
+                const results = await driftSession.run({
                     z,
                     t: createTensor([t], [1, 1]),
-                    label: labelTensor,
-                    text_bytes: textBytesTensor
-                };
-                const results = await driftSession.run(feeds);
+                    text_bytes: textBytesTensor,
+                    source_id: sourceIdTensor
+                });
                 return results.drift;
             }
 
-            async function decodeAndRender(z, labelTensor, sourceIdTensor, textBytesTensor) {
+            async function decodeAndRender(z, sourceIdTensor, textBytesTensor) {
                 const feeds = {
                     z,
-                    label: labelTensor,
                     source_id: sourceIdTensor,
                     text_bytes: textBytesTensor
                 };
@@ -498,7 +496,6 @@
                     const method = document.getElementById('methodSelect').value;
                     const temp = parseFloat(tempSlider.value);
                     const dt = 1.0 / steps;
-                    const labelTensor = createTensor([label], [1], 'int64');
                     const sourceIdTensor = createTensor([sourceId], [1], 'int64');
                     const textBytes = CLASS_TEXT_BYTES[label] || CLASS_TEXT_BYTES[0];
                     const textBytesTensor = new ort.Tensor('int64', textBytes, [1, MAX_TEXT_BYTES]);
@@ -518,7 +515,7 @@
 
                     for (let i = 0; i < steps; i++) {
                         const t = i * dt;
-                        const d = await runDrift(z, t, labelTensor, textBytesTensor);
+                        const d = await runDrift(z, t, textBytesTensor, sourceIdTensor);
 
                         // Update stats panel with drift magnitude
                         let dSumSq = 0;
@@ -536,7 +533,7 @@
                             const k1 = d;
                             const z2Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + dt * k1.data[j];
-                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + dt, labelTensor, textBytesTensor);
+                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + dt, textBytesTensor, sourceIdTensor);
                             const finalZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) {
                                 finalZ[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + (dt/2) * (k1.data[j] + k2.data[j])));
@@ -546,13 +543,13 @@
                             const k1 = d;
                             const z2Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + (dt/2) * k1.data[j];
-                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + (dt/2), labelTensor, textBytesTensor);
+                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + (dt/2), textBytesTensor, sourceIdTensor);
                             const z3Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z3Data[j] = z.data[j] + (dt/2) * k2.data[j];
-                            const k3 = await runDrift(createTensor(z3Data, LATENT_SHAPE), t + (dt/2), labelTensor, textBytesTensor);
+                            const k3 = await runDrift(createTensor(z3Data, LATENT_SHAPE), t + (dt/2), textBytesTensor, sourceIdTensor);
                             const z4Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z4Data[j] = z.data[j] + dt * k3.data[j];
-                            const k4 = await runDrift(createTensor(z4Data, LATENT_SHAPE), t + dt, labelTensor, textBytesTensor);
+                            const k4 = await runDrift(createTensor(z4Data, LATENT_SHAPE), t + dt, textBytesTensor, sourceIdTensor);
                             const finalZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) {
                                 finalZ[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + (dt/6) * (k1.data[j] + 2*k2.data[j] + 2*k3.data[j] + k4.data[j])));
@@ -562,7 +559,7 @@
 
                         if (i % 10 === 0) {
                             statusEl.textContent = `Progress: ${Math.round((i/steps)*100)}%`;
-                            await decodeAndRender(z, labelTensor, sourceIdTensor, textBytesTensor);
+                            await decodeAndRender(z, sourceIdTensor, textBytesTensor);
                             await new Promise(resolve => setTimeout(resolve, 0));
                         }
                     }
@@ -574,7 +571,7 @@
                     if (langevinSteps > 0) {
                         statusEl.textContent = 'Refining...';
                         for (let s = 0; s < langevinSteps; s++) {
-                            const drift = await runDrift(z, 1.0, labelTensor, textBytesTensor);
+                            const drift = await runDrift(z, 1.0, textBytesTensor, sourceIdTensor);
                             const nextZ = new Float32Array(z.data.length);
                             // Match Python noise decay: (1 - 0.5 * step_ratio)
                             const noiseScale = Math.sqrt(2 * baseLr) * (1 - 0.5 * (s / langevinSteps));
@@ -589,7 +586,7 @@
                     const finalStats = getZStats(z.data);
                     logTrace(`Done: mean=${finalStats.mean.toFixed(3)}, std=${finalStats.std.toFixed(3)}`);
 
-                    await decodeAndRender(z, labelTensor, sourceIdTensor, textBytesTensor);
+                    await decodeAndRender(z, sourceIdTensor, textBytesTensor);
                     statusEl.textContent = 'Done!';
                 } catch (e) {
                     statusEl.textContent = 'Error: ' + e.message;

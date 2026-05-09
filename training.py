@@ -695,13 +695,38 @@ class EnhancedLabelTrainer:
             except Exception as e:
                 config.logger.warning(f"Could not merge external data for {model_path.name}: {e}")
 
-        # Wrapper class to export ONLY the decoder (generator) part of the VAE
-        class VAEGenerator(torch.nn.Module):
-            def __init__(self, vae):
-                super().__init__()
-                self.vae = vae
-            def forward(self, z, labels, text_bytes=None, source_id=None):
-                return self.vae.decode(z, labels, text_bytes=text_bytes, source_id=source_id)
+        # Wrapper class to export ONLY the decoder (generator) part of the VAE.
+        # When neural tokenizer is active, 'label' is unused (text_bytes carries all
+        # conditioning), so it is excluded from the wrapper signature to avoid having
+        # a constant-folded phantom input in the exported graph.
+        if config.USE_NEURAL_TOKENIZER:
+            class VAEGenerator(torch.nn.Module):
+                def __init__(self, vae):
+                    super().__init__()
+                    self.vae = vae
+                def forward(self, z, text_bytes, source_id):
+                    dummy_labels = torch.zeros(z.shape[0], dtype=torch.long, device=z.device)
+                    return self.vae.decode(z, dummy_labels, text_bytes=text_bytes, source_id=source_id)
+            class DriftWrapper(torch.nn.Module):
+                def __init__(self, drift):
+                    super().__init__()
+                    self.drift = drift
+                def forward(self, z, t, text_bytes, source_id):
+                    dummy_labels = torch.zeros(z.shape[0], dtype=torch.long, device=z.device)
+                    return self.drift(z, t, dummy_labels, text_bytes=text_bytes, source_id=source_id)
+        else:
+            class VAEGenerator(torch.nn.Module):
+                def __init__(self, vae):
+                    super().__init__()
+                    self.vae = vae
+                def forward(self, z, labels, text_bytes, source_id):
+                    return self.vae.decode(z, labels, text_bytes=text_bytes, source_id=source_id)
+            class DriftWrapper(torch.nn.Module):
+                def __init__(self, drift):
+                    super().__init__()
+                    self.drift = drift
+                def forward(self, z, t, labels, text_bytes, source_id):
+                    return self.drift(z, t, labels, text_bytes=text_bytes, source_id=source_id)
 
         try:
             # --- Set export mode for VAE and Drift ---
@@ -722,54 +747,81 @@ class EnhancedLabelTrainer:
             
             gen_path = config.DIRS["onnx"] / "generator.onnx"
             vae_gen = VAEGenerator(vae_for_export)
-            
+
+            if config.USE_NEURAL_TOKENIZER:
+                gen_args = (dummy_z, dummy_text, dummy_source)
+                gen_input_names = ['z', 'text_bytes', 'source_id']
+                gen_dynamic_axes = {
+                    'z': {0: 'batch_size'},
+                    'text_bytes': {0: 'batch_size'},
+                    'source_id': {0: 'batch_size'},
+                    'reconstruction': {0: 'batch_size'}
+                }
+            else:
+                gen_args = (dummy_z, dummy_label, dummy_text, dummy_source)
+                gen_input_names = ['z', 'label', 'text_bytes', 'source_id']
+                gen_dynamic_axes = {
+                    'z': {0: 'batch_size'},
+                    'label': {0: 'batch_size'},
+                    'text_bytes': {0: 'batch_size'},
+                    'source_id': {0: 'batch_size'},
+                    'reconstruction': {0: 'batch_size'}
+                }
+
             with torch.no_grad():
                 torch.onnx.export(
-                    vae_gen,
-                    (dummy_z, dummy_label, dummy_text, dummy_source),
-                    str(gen_path),
+                    vae_gen, gen_args, str(gen_path),
                     export_params=True,
-                    opset_version=18,
+                    opset_version=config.ONNX_OPSET_VERSION,
                     do_constant_folding=True,
-                    input_names=['z', 'label', 'text_bytes', 'source_id'],
+                    dynamo=False,
+                    input_names=gen_input_names,
                     output_names=['reconstruction'],
-                    dynamic_axes={
-                        'z': {0: 'batch_size'},
-                        'label': {0: 'batch_size'},
-                        'text_bytes': {0: 'batch_size'},
-                        'source_id': {0: 'batch_size'},
-                        'reconstruction': {0: 'batch_size'}
-                    }
+                    dynamic_axes=gen_dynamic_axes,
                 )
             merge_external_data(gen_path)
-            config.logger.info(f"Generator exported to {gen_path}")
-            
+            config.logger.info(f"Generator exported to {gen_path} (inputs: {gen_input_names})")
+
             # Export Drift
             dummy_t = torch.tensor([[0.5]], device=config.DEVICE)
-            
             drift_path = config.DIRS["onnx"] / "drift.onnx"
-            
+            drift_model = DriftWrapper(drift_for_export)
+
+            if config.USE_NEURAL_TOKENIZER:
+                drift_args = (dummy_z, dummy_t, dummy_text, dummy_source)
+                drift_input_names = ['z', 't', 'text_bytes', 'source_id']
+                drift_dynamic_axes = {
+                    'z': {0: 'batch_size'},
+                    't': {0: 'batch_size'},
+                    'text_bytes': {0: 'batch_size'},
+                    'source_id': {0: 'batch_size'},
+                    'drift': {0: 'batch_size'}
+                }
+            else:
+                drift_args = (dummy_z, dummy_t, dummy_label, dummy_text, dummy_source)
+                drift_input_names = ['z', 't', 'label', 'text_bytes', 'source_id']
+                drift_dynamic_axes = {
+                    'z': {0: 'batch_size'},
+                    't': {0: 'batch_size'},
+                    'label': {0: 'batch_size'},
+                    'text_bytes': {0: 'batch_size'},
+                    'source_id': {0: 'batch_size'},
+                    'drift': {0: 'batch_size'}
+                }
+
             with torch.no_grad():
                 torch.onnx.export(
-                    drift_for_export,
-                    (dummy_z, dummy_t, dummy_label, dummy_text, dummy_source),
-                    str(drift_path),
+                    drift_model, drift_args, str(drift_path),
                     export_params=True,
-                    opset_version=18,
+                    opset_version=config.ONNX_OPSET_VERSION,
                     do_constant_folding=True,
-                    input_names=['z', 't', 'label', 'text_bytes', 'source_id'],
+                    dynamo=False,
+                    input_names=drift_input_names,
                     output_names=['drift'],
-                    dynamic_axes={
-                        'z': {0: 'batch_size'},
-                        't': {0: 'batch_size'},
-                        'label': {0: 'batch_size'},
-                        'text_bytes': {0: 'batch_size'},
-                        'source_id': {0: 'batch_size'},
-                        'drift': {0: 'batch_size'}
-                    }
+                    dynamic_axes=drift_dynamic_axes,
                 )
             merge_external_data(drift_path)
-            config.logger.info(f"Drift exported to {drift_path}")
+            config.logger.info(f"Drift exported to {drift_path} (inputs: {drift_input_names})")
 
             # --- Auto-configure the HTML file to match the current dimensions ---
             html_path = Path("onnx_generate_image.html")
