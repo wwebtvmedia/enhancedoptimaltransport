@@ -348,18 +348,34 @@ def load_for_inference(trainer, path: Optional[Path] = None) -> bool:
     """Load only model weights for inference (ignore optimizer states)."""
     if path is None:
         path = config.DIRS["ckpt"] / "latest.pt"
-    
+
     if not os.path.exists(path):
         config.logger.error(f"No checkpoint found at {path}")
         return False
-    
+
     try:
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         flexible_load(trainer.vae, checkpoint['vae_state'])
         flexible_load(trainer.drift, checkpoint['drift_state'])
+
+        # Sync EMA models from loaded weights (no saved EMA state in checkpoint)
+        if config.USE_EMA:
+            if 'ema_vae_state' in checkpoint and hasattr(trainer, 'ema_vae') and trainer.ema_vae is not None:
+                flexible_load(trainer.ema_vae, checkpoint['ema_vae_state'])
+            elif hasattr(trainer, 'ema_vae') and trainer.ema_vae is not None:
+                trainer.ema_vae.load_state_dict(trainer.vae.state_dict())
+            if 'ema_drift_state' in checkpoint and hasattr(trainer, 'ema_drift') and trainer.ema_drift is not None:
+                flexible_load(trainer.ema_drift, checkpoint['ema_drift_state'])
+            elif hasattr(trainer, 'ema_drift') and trainer.ema_drift is not None:
+                trainer.ema_drift.load_state_dict(trainer.drift.state_dict())
+
         trainer.epoch = checkpoint.get('epoch', 0)
         trainer.vae.eval()
         trainer.drift.eval()
+        if hasattr(trainer, 'ema_vae') and trainer.ema_vae is not None:
+            trainer.ema_vae.eval()
+        if hasattr(trainer, 'ema_drift') and trainer.ema_drift is not None:
+            trainer.ema_drift.eval()
         config.logger.info(f" Successfully loaded model from epoch {trainer.epoch}")
         return True
     except Exception as e:
