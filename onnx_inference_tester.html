@@ -471,9 +471,11 @@
             const textBytesTensor = new ort.Tensor('int64', textBytes, [1, MAX_TEXT_BYTES]);
             const dt = 1.0 / steps;
 
+            const cfgScaleTensor = new ort.Tensor('float32', new Float32Array([6.5]), [1]);
+
             async function getDrift(latent, tVal) {
                 const t = new ort.Tensor('float32', new Float32Array([tVal]), [1, 1]);
-                const res = await driftSess.run({ z: latent, t, text_bytes: textBytesTensor, source_id: sourceIdTensor });
+                const res = await driftSess.run({ z: latent, t, text_bytes: textBytesTensor, source_id: sourceIdTensor, cfg_scale: cfgScaleTensor });
                 return res.drift;
             }
 

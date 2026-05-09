@@ -707,13 +707,33 @@ class EnhancedLabelTrainer:
                 def forward(self, z, text_bytes, source_id):
                     dummy_labels = torch.zeros(z.shape[0], dtype=torch.long, device=z.device)
                     return self.vae.decode(z, dummy_labels, text_bytes=text_bytes, source_id=source_id)
+
             class DriftWrapper(torch.nn.Module):
+                """Drift with CFG baked in.
+                Runs conditional (text) and unconditional (zero emb) passes then combines:
+                    out = uncond + cfg_scale * (cond - uncond)
+                cfg_scale is a float32 tensor of shape [1] so the browser can control it.
+                """
                 def __init__(self, drift):
                     super().__init__()
                     self.drift = drift
-                def forward(self, z, t, text_bytes, source_id):
-                    dummy_labels = torch.zeros(z.shape[0], dtype=torch.long, device=z.device)
-                    return self.drift(z, t, dummy_labels, text_bytes=text_bytes, source_id=source_id)
+
+                def forward(self, z, t, text_bytes, source_id, cfg_scale):
+                    B = z.shape[0]
+                    if t.dim() == 1:
+                        t = t.unsqueeze(-1)
+                    t_emb = self.drift.time_mlp(t)
+                    dummy_labels = torch.zeros(B, dtype=torch.long, device=z.device)
+
+                    # Conditional: use text encoder
+                    cond_text_emb = self.drift.text_encoder(text_bytes)
+                    cond = self.drift._forward_with_emb(z, t, dummy_labels, cond_text_emb, t_emb, source_id)
+
+                    # Unconditional: zero embedding (matches training null conditioning)
+                    uncond_text_emb = torch.zeros(B, config.TEXT_EMBEDDING_DIM, device=z.device)
+                    uncond = self.drift._forward_with_emb(z, t, dummy_labels, uncond_text_emb, t_emb, source_id)
+
+                    return uncond + cfg_scale[0] * (cond - uncond)
         else:
             class VAEGenerator(torch.nn.Module):
                 def __init__(self, vae):
@@ -788,8 +808,9 @@ class EnhancedLabelTrainer:
             drift_model = DriftWrapper(drift_for_export)
 
             if config.USE_NEURAL_TOKENIZER:
-                drift_args = (dummy_z, dummy_t, dummy_text, dummy_source)
-                drift_input_names = ['z', 't', 'text_bytes', 'source_id']
+                dummy_cfg = torch.tensor([config.CFG_SCALE], device=config.DEVICE)
+                drift_args = (dummy_z, dummy_t, dummy_text, dummy_source, dummy_cfg)
+                drift_input_names = ['z', 't', 'text_bytes', 'source_id', 'cfg_scale']
                 drift_dynamic_axes = {
                     'z': {0: 'batch_size'},
                     't': {0: 'batch_size'},

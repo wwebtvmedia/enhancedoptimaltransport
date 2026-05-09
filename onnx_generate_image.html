@@ -200,6 +200,11 @@
                 </select>
             </div>
 
+            <div class="control-group">
+                <label for="cfgSlider">CFG Scale <span id="cfgValue" class="badge">6.5</span></label>
+                <input type="range" id="cfgSlider" min="1.0" max="12.0" value="6.5" step="0.5">
+            </div>
+
             <div class="control-group" style="grid-column: 1 / -1; border-top: 1px solid var(--google-gray-200); padding-top: 24px;">
                 <label for="dirInput">📂 Load Models from Directory (Optional)</label>
                 <div style="display: flex; gap: 10px;">
@@ -359,6 +364,9 @@
 
             tempSlider.addEventListener('input', () => tempValue.textContent = parseFloat(tempSlider.value).toFixed(2));
             stepsSlider.addEventListener('input', () => stepsValue.textContent = stepsSlider.value);
+            document.getElementById('cfgSlider').addEventListener('input', e => {
+                document.getElementById('cfgValue').textContent = parseFloat(e.target.value).toFixed(1);
+            });
 
             // Simple seeded random for consistency
             let seed = 42;
@@ -452,12 +460,13 @@
                 }
             })();
 
-            async function runDrift(z, t, textBytesTensor, sourceIdTensor) {
+            async function runDrift(z, t, textBytesTensor, sourceIdTensor, cfgTensor) {
                 const results = await driftSession.run({
                     z,
                     t: createTensor([t], [1, 1]),
                     text_bytes: textBytesTensor,
-                    source_id: sourceIdTensor
+                    source_id: sourceIdTensor,
+                    cfg_scale: cfgTensor
                 });
                 return results.drift;
             }
@@ -492,11 +501,13 @@
                 try {
                     const label = parseInt(labelSelect.value, 10);
                     const sourceId = parseInt(document.getElementById('sourceSelect').value, 10);
+                    const cfgScale = parseFloat(document.getElementById('cfgSlider').value);
                     const steps = parseInt(stepsSlider.value, 10);
                     const method = document.getElementById('methodSelect').value;
                     const temp = parseFloat(tempSlider.value);
                     const dt = 1.0 / steps;
                     const sourceIdTensor = createTensor([sourceId], [1], 'int64');
+                    const cfgTensor = createTensor([cfgScale], [1]);
                     const textBytes = CLASS_TEXT_BYTES[label] || CLASS_TEXT_BYTES[0];
                     const textBytesTensor = new ort.Tensor('int64', textBytes, [1, MAX_TEXT_BYTES]);
 
@@ -515,7 +526,7 @@
 
                     for (let i = 0; i < steps; i++) {
                         const t = i * dt;
-                        const d = await runDrift(z, t, textBytesTensor, sourceIdTensor);
+                        const d = await runDrift(z, t, textBytesTensor, sourceIdTensor, cfgTensor);
 
                         // Update stats panel with drift magnitude
                         let dSumSq = 0;
@@ -533,7 +544,7 @@
                             const k1 = d;
                             const z2Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + dt * k1.data[j];
-                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + dt, textBytesTensor, sourceIdTensor);
+                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + dt, textBytesTensor, sourceIdTensor, cfgTensor);
                             const finalZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) {
                                 finalZ[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + (dt/2) * (k1.data[j] + k2.data[j])));
@@ -543,13 +554,13 @@
                             const k1 = d;
                             const z2Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + (dt/2) * k1.data[j];
-                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + (dt/2), textBytesTensor, sourceIdTensor);
+                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + (dt/2), textBytesTensor, sourceIdTensor, cfgTensor);
                             const z3Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z3Data[j] = z.data[j] + (dt/2) * k2.data[j];
-                            const k3 = await runDrift(createTensor(z3Data, LATENT_SHAPE), t + (dt/2), textBytesTensor, sourceIdTensor);
+                            const k3 = await runDrift(createTensor(z3Data, LATENT_SHAPE), t + (dt/2), textBytesTensor, sourceIdTensor, cfgTensor);
                             const z4Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z4Data[j] = z.data[j] + dt * k3.data[j];
-                            const k4 = await runDrift(createTensor(z4Data, LATENT_SHAPE), t + dt, textBytesTensor, sourceIdTensor);
+                            const k4 = await runDrift(createTensor(z4Data, LATENT_SHAPE), t + dt, textBytesTensor, sourceIdTensor, cfgTensor);
                             const finalZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) {
                                 finalZ[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + (dt/6) * (k1.data[j] + 2*k2.data[j] + 2*k3.data[j] + k4.data[j])));
@@ -571,7 +582,7 @@
                     if (langevinSteps > 0) {
                         statusEl.textContent = 'Refining...';
                         for (let s = 0; s < langevinSteps; s++) {
-                            const drift = await runDrift(z, 1.0, textBytesTensor, sourceIdTensor);
+                            const drift = await runDrift(z, 1.0, textBytesTensor, sourceIdTensor, cfgTensor);
                             const nextZ = new Float32Array(z.data.length);
                             // Match Python noise decay: (1 - 0.5 * step_ratio)
                             const noiseScale = Math.sqrt(2 * baseLr) * (1 - 0.5 * (s / langevinSteps));
