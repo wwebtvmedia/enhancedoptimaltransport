@@ -43,11 +43,16 @@ class SelfAttention(nn.Module):
         self.ln = nn.LayerNorm(in_channels)
     def forward(self, x):
         b, c, h, w = x.shape
-        # Ensure contiguous before reshape
-        res = x.reshape(b, c, -1).permute(0, 2, 1).contiguous()
-        attn_out, _ = self.mha(res, res, res)
+        res = x.reshape(b, c, -1).permute(0, 2, 1).contiguous()  # [B, HW, C]
+        if config.USE_FLASH_ATTENTION and hasattr(F, 'scaled_dot_product_attention'):
+            head_dim = c // 4
+            q = res.reshape(b, h*w, 4, head_dim).transpose(1, 2)
+            k = q; v = q
+            attn_out = F.scaled_dot_product_attention(q, k, v)
+            attn_out = attn_out.transpose(1, 2).reshape(b, h*w, c)
+        else:
+            attn_out, _ = self.mha(res, res, res)
         out = self.ln(res + attn_out)
-        # Ensure contiguous before reshape
         return out.permute(0, 2, 1).contiguous().reshape(b, c, h, w)
 
 class SpatialSplitAttention(nn.Module):
@@ -73,15 +78,21 @@ class SpatialSplitAttention(nn.Module):
         # Shape: [B, C, H, W] -> [B, W, H, C] -> [B*W, H, C]
         v = x.permute(0, 3, 2, 1).reshape(b * w, h, c).contiguous()
         v_norm = self.ln_h(v)
-        v_attn, _ = self.h_mha(v_norm, v_norm, v_norm)
+        if config.USE_FLASH_ATTENTION and hasattr(F, 'scaled_dot_product_attention'):
+            v_attn = F.scaled_dot_product_attention(v_norm, v_norm, v_norm)
+        else:
+            v_attn, _ = self.h_mha(v_norm, v_norm, v_norm)
         # Correct residual: only add the attention delta back to the original x
         x = x + v_attn.reshape(b, w, h, c).permute(0, 3, 2, 1).contiguous()
-        
+
         # 2. Horizontal Split Attention (Attend along W for each H)
         # Shape: [B, C, H, W] -> [B, H, W, C] -> [B*H, W, C]
         h_in = x.permute(0, 2, 3, 1).reshape(b * h, w, c).contiguous()
         h_norm = self.ln_w(h_in)
-        h_attn, _ = self.w_mha(h_norm, h_norm, h_norm)
+        if config.USE_FLASH_ATTENTION and hasattr(F, 'scaled_dot_product_attention'):
+            h_attn = F.scaled_dot_product_attention(h_norm, h_norm, h_norm)
+        else:
+            h_attn, _ = self.w_mha(h_norm, h_norm, h_norm)
         # Correct residual: only add the attention delta back to the original x
         x = x + h_attn.reshape(b, h, w, c).permute(0, 3, 1, 2).contiguous()
         
@@ -723,7 +734,7 @@ class LabelConditionedDrift(nn.Module):
         time_scale = blended.reshape(-1, 1, 1, 1).contiguous()                # (batch, 1, 1, 1)
                 
         # Gentle clamping instead of tanh
-        z = torch.clamp(z, -10, 10)
+        z = torch.clamp(z, -config.ODE_CLAMP_MAX, config.ODE_CLAMP_MAX)
         
         # U-Net forward
         h = self.head(z)

@@ -200,14 +200,6 @@
                 </select>
             </div>
 
-            <div class="control-group">
-                <label for="sourceSelect">Data Source Context</label>
-                <select id="sourceSelect">
-                    <option value="0">Source 0 (STL-10)</option>
-                    <option value="1">Source 1 (CIFAR-10)</option>
-                </select>
-            </div>
-
             <div class="control-group" style="grid-column: 1 / -1; border-top: 1px solid var(--google-gray-200); padding-top: 24px;">
                 <label for="dirInput">📂 Load Models from Directory (Optional)</label>
                 <div style="display: flex; gap: 10px;">
@@ -234,6 +226,32 @@
     </div>
 
     <script>
+        const CLASS_DESCRIPTIONS = [
+            "an airplane flying in the sky",
+            "a bird perched on a branch",
+            "a car driving on the road",
+            "a cat sitting on a couch",
+            "a deer in a forest",
+            "a dog playing in the park",
+            "a horse running in a field",
+            "a monkey climbing a tree",
+            "a ship sailing on water",
+            "a truck on the highway"
+        ];
+        const MAX_TEXT_BYTES = 128;
+        const PAD_TOKEN = 256;
+
+        function textToBytes(text) {
+            const utf8 = new TextEncoder().encode(text);
+            const result = new BigInt64Array(MAX_TEXT_BYTES).fill(BigInt(PAD_TOKEN));
+            const len = Math.min(utf8.length, MAX_TEXT_BYTES);
+            for (let i = 0; i < len; i++) result[i] = BigInt(utf8[i]);
+            return result;
+        }
+
+        // Pre-compute byte representations for all classes
+        const CLASS_TEXT_BYTES = CLASS_DESCRIPTIONS.map(d => textToBytes(d));
+
         function getZStats(zData) {
             let sum = 0, sumSq = 0, min = 1e9, max = -1e9;
             for (let i = 0; i < zData.length; i++) {
@@ -434,30 +452,31 @@
                 }
             })();
 
-            async function runDrift(z, t, labelTensor) {
-                const feeds = { 
-                    z, 
-                    t: createTensor([t], [1, 1]), 
-                    label: labelTensor
+            async function runDrift(z, t, labelTensor, textBytesTensor) {
+                const feeds = {
+                    z,
+                    t: createTensor([t], [1, 1]),
+                    label: labelTensor,
+                    text_bytes: textBytesTensor
                 };
-                // Drift model was exported without source_id to minimize size
                 const results = await driftSession.run(feeds);
                 return results.drift;
             }
 
-            async function decodeAndRender(z, labelTensor, sourceIdTensor) {
-                const feeds = { 
-                    z, 
+            async function decodeAndRender(z, labelTensor, sourceIdTensor, textBytesTensor) {
+                const feeds = {
+                    z,
                     label: labelTensor,
-                    source_id: sourceIdTensor 
+                    source_id: sourceIdTensor,
+                    text_bytes: textBytesTensor
                 };
                 // Generator (VAE) requires source_id context for correct texture decoding
                 const results = await vaeSession.run(feeds);
                 const data = results.reconstruction.data;
-                const canvasData = ctx.createImageData(96, 96);
+                const canvasData = ctx.createImageData(IMG_SIZE, IMG_SIZE);
                 const pixels = canvasData.data;
 
-                const planeSize = 96 * 96;
+                const planeSize = IMG_SIZE * IMG_SIZE;
                 for (let i = 0; i < planeSize; i++) {
                     for (let c = 0; c < 3; c++) {
                         const val = data[c * planeSize + i];
@@ -481,6 +500,8 @@
                     const dt = 1.0 / steps;
                     const labelTensor = createTensor([label], [1], 'int64');
                     const sourceIdTensor = createTensor([sourceId], [1], 'int64');
+                    const textBytes = CLASS_TEXT_BYTES[label] || CLASS_TEXT_BYTES[0];
+                    const textBytesTensor = new ort.Tensor('int64', textBytes, [1, MAX_TEXT_BYTES]);
 
                     logTrace(`Generating ${labelSelect.options[labelSelect.selectedIndex].text} (Index ${label}), Source=${sourceId}...`);
 
@@ -497,8 +518,8 @@
 
                     for (let i = 0; i < steps; i++) {
                         const t = i * dt;
-                        const d = await runDrift(z, t, labelTensor);
-                        
+                        const d = await runDrift(z, t, labelTensor, textBytesTensor);
+
                         // Update stats panel with drift magnitude
                         let dSumSq = 0;
                         for(let j=0; j<d.data.length; j++) dSumSq += d.data[j]*d.data[j];
@@ -515,7 +536,7 @@
                             const k1 = d;
                             const z2Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + dt * k1.data[j];
-                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + dt, labelTensor);
+                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + dt, labelTensor, textBytesTensor);
                             const finalZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) {
                                 finalZ[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + (dt/2) * (k1.data[j] + k2.data[j])));
@@ -525,23 +546,23 @@
                             const k1 = d;
                             const z2Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + (dt/2) * k1.data[j];
-                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + (dt/2), labelTensor);
+                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + (dt/2), labelTensor, textBytesTensor);
                             const z3Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z3Data[j] = z.data[j] + (dt/2) * k2.data[j];
-                            const k3 = await runDrift(createTensor(z3Data, LATENT_SHAPE), t + (dt/2), labelTensor);
+                            const k3 = await runDrift(createTensor(z3Data, LATENT_SHAPE), t + (dt/2), labelTensor, textBytesTensor);
                             const z4Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z4Data[j] = z.data[j] + dt * k3.data[j];
-                            const k4 = await runDrift(createTensor(z4Data, LATENT_SHAPE), t + dt, labelTensor);
+                            const k4 = await runDrift(createTensor(z4Data, LATENT_SHAPE), t + dt, labelTensor, textBytesTensor);
                             const finalZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) {
                                 finalZ[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + (dt/6) * (k1.data[j] + 2*k2.data[j] + 2*k3.data[j] + k4.data[j])));
                             }
                             z = createTensor(finalZ, LATENT_SHAPE);
                         }
-                        
+
                         if (i % 10 === 0) {
                             statusEl.textContent = `Progress: ${Math.round((i/steps)*100)}%`;
-                            await decodeAndRender(z, labelTensor, sourceIdTensor);
+                            await decodeAndRender(z, labelTensor, sourceIdTensor, textBytesTensor);
                             await new Promise(resolve => setTimeout(resolve, 0));
                         }
                     }
@@ -553,7 +574,7 @@
                     if (langevinSteps > 0) {
                         statusEl.textContent = 'Refining...';
                         for (let s = 0; s < langevinSteps; s++) {
-                            const drift = await runDrift(z, 1.0, labelTensor);
+                            const drift = await runDrift(z, 1.0, labelTensor, textBytesTensor);
                             const nextZ = new Float32Array(z.data.length);
                             // Match Python noise decay: (1 - 0.5 * step_ratio)
                             const noiseScale = Math.sqrt(2 * baseLr) * (1 - 0.5 * (s / langevinSteps));
@@ -568,7 +589,7 @@
                     const finalStats = getZStats(z.data);
                     logTrace(`Done: mean=${finalStats.mean.toFixed(3)}, std=${finalStats.std.toFixed(3)}`);
 
-                    await decodeAndRender(z, labelTensor, sourceIdTensor);
+                    await decodeAndRender(z, labelTensor, sourceIdTensor, textBytesTensor);
                     statusEl.textContent = 'Done!';
                 } catch (e) {
                     statusEl.textContent = 'Error: ' + e.message;

@@ -165,6 +165,17 @@ KPI_WINDOW_SIZE = 100
 EARLY_STOP_PATIENCE = 15
 
 # ============================================================================
+# EMA (EXPONENTIAL MOVING AVERAGE)
+# ============================================================================
+USE_EMA = True
+EMA_DECAY = 0.999
+
+# ============================================================================
+# ATTENTION
+# ============================================================================
+USE_FLASH_ATTENTION = True   # Use F.scaled_dot_product_attention (PyTorch 2.0+)
+
+# ============================================================================
 # OU BRIDGE AND AMP
 # ============================================================================
 USE_OU_BRIDGE = False
@@ -183,7 +194,7 @@ PHASE2_EPOCHS = 400
 
 # NEW: Recovery Mode settings
 RECOVERY_EPOCHS = 20
-IN_RECOVERY_MODE = True  # Set to True to trigger the 20-epoch VAE repair
+IN_RECOVERY_MODE = False  # Set to True to trigger the 20-epoch VAE repair
 RECOVERY_START_EPOCH = None # Internal state tracking
 
 # ============================================================================
@@ -194,16 +205,91 @@ SCHEDULE_MANUALLY_SET = True
 CUSTOM_SCHED = {}
 
 TRAINING_SCHEDULE = {
-    'mode': 'manual',                        
-    'force_phase': 1 if IN_RECOVERY_MODE else 3,                     
-    'custom_schedule': CUSTOM_SCHED,         
-    'switch_epoch': 150,                       
-    'switch_epoch_1': PHASE1_EPOCHS,           
-    'switch_epoch_2': PHASE2_EPOCHS,           
-    'vae_epochs': list(range(0, 150)),
-    'drift_epochs': list(range(150, 400)),
+    'mode': 'manual',
+    'force_phase': 1 if IN_RECOVERY_MODE else 3,
+    'custom_schedule': CUSTOM_SCHED,
+    'switch_epoch': 150,
+    'switch_epoch_1': PHASE1_EPOCHS,
+    'switch_epoch_2': PHASE2_EPOCHS,
     'alternate_freq': 5,
 }
+
+# ============================================================================
+# ODE / BRIDGE NUMERICS
+# ============================================================================
+ODE_CLAMP_MAX = 10.0                  # Clamp latents during ODE integration
+LANGEVIN_MANIFOLD_CLAMP = 4.0         # Manifold constraint during Langevin refinement
+
+# ============================================================================
+# TRAINING ENGINE INTERVALS
+# ============================================================================
+CHECKPOINT_SAVE_INTERVAL = 5          # Save checkpoint every N epochs
+GENERATE_SAMPLE_INTERVAL = 10        # Generate samples every N epochs
+SWARM_COMMAND_TTL = 30               # Seconds before a swarm command is considered stale
+CONSECUTIVE_FAILURES_MAX = 3          # Stop training after this many consecutive NaN epochs
+NAN_LOSS_THRESHOLD = 1e8             # Loss value considered a NaN/Inf failure
+
+# ============================================================================
+# PHASE TRANSITION THRESHOLDS (AUTONOMOUS STRATEGY)
+# ============================================================================
+PHASE1_SNR_THRESHOLD = 20.0          # SNR (dB) required to leave Phase 1
+PHASE1_SSIM_MAX = 0.26               # SSIM loss must be below this to leave Phase 1
+PHASE1_MIN_EPOCH = 80                # Minimum epoch before Phase 1->2 transition
+PHASE2_DRIFT_MAX = 1.25              # Drift loss must be below this to leave Phase 2
+PHASE2_SSIM_MAX = 0.21               # SSIM loss must be below this to leave Phase 2
+PHASE2_MIN_EPOCH = 160               # Minimum epoch before Phase 2->3 transition
+
+# ============================================================================
+# STOCHASTIC RESTART / EMERGENCY
+# ============================================================================
+STOCHASTIC_RESTART_SCORE_THRESHOLD = -60  # Composite score below this triggers possible restart
+CONSECUTIVE_BAD_SCORES_MAX = 5            # Require this many bad scores before restarting
+PANIC_SCORE_THRESHOLD = -120             # Emergency restore trigger (composite score)
+PANIC_DRIFT_THRESHOLD = 15.0            # Emergency restore trigger (drift loss)
+KPI_STABILITY_LIMIT = 5.0              # Drift loss ceiling for KPI stability checks
+
+# ============================================================================
+# DYNAMIC PARAMETER BOUNDS (KPI-DRIVEN CONTROL)
+# ============================================================================
+MIN_RECON_WEIGHT = 4.0
+MAX_RECON_WEIGHT = 20.0
+MIN_CFG_SCALE = 2.5
+MAX_CFG_SCALE = 12.0
+MIN_LANGEVIN_SCORE_SCALE = 0.1
+MAX_LANGEVIN_SCORE_SCALE = 0.8
+MIN_DRIFT_WEIGHT_DYNAMIC = 0.8
+MAX_DRIFT_WEIGHT_DYNAMIC = 3.0
+SSIM_BLUR_THRESHOLD = 0.65
+SSIM_SHARP_THRESHOLD = 0.55
+SHARPNESS_BLUR_THRESHOLD = 0.075
+SHARPNESS_SHARP_THRESHOLD = 0.16
+MU_STD_NOISE_CEILING = 1.1
+MU_STD_STABLE_FLOOR = 0.7
+
+# ============================================================================
+# PERCEPTUAL LOSS (VGG)
+# ============================================================================
+VGG_NORM_MEAN = [0.485, 0.456, 0.406]
+VGG_NORM_STD  = [0.229, 0.224, 0.225]
+
+# ============================================================================
+# SSIM LOSS
+# ============================================================================
+SSIM_WINDOW_SIZE = 11
+SSIM_SIGMA = 1.5
+
+# ============================================================================
+# ONNX EXPORT
+# ============================================================================
+ONNX_OPSET_VERSION = 18
+
+# ============================================================================
+# CLASS METADATA (shared between Python and documentation)
+# ============================================================================
+CLASS_NAMES = [
+    "airplane", "bird", "car", "cat", "deer",
+    "dog", "horse", "monkey", "ship", "truck"
+]
 
 # ============================================================================
 # NEURAL TOKENIZER AND CONTRASTIVE LEARNING (NEW)
@@ -297,8 +383,6 @@ def initialize_hardware():
             info = "💻 CPU (Slow)"
             BATCH_SIZE = 16
             
-    # Global override for safety on shared GPUs
-    BATCH_SIZE = 16
     return info
 
 # ============================================================================

@@ -3,6 +3,7 @@
 # ============================================================================
 
 import os
+import bisect
 import torch
 import torchvision.transforms as T
 import torchvision.datasets as datasets
@@ -150,7 +151,13 @@ def save_checkpoint(trainer, is_best: bool = False, is_best_overall: bool = Fals
     # Save reference VAE if it exists
     if hasattr(trainer, 'vae_ref') and trainer.vae_ref is not None:
         checkpoint['vae_ref_state'] = trainer.vae_ref.state_dict()
-    
+
+    # Save EMA models if available
+    if hasattr(trainer, 'ema_vae') and trainer.ema_vae is not None:
+        checkpoint['ema_vae_state'] = trainer.ema_vae.state_dict()
+    if hasattr(trainer, 'ema_drift') and trainer.ema_drift is not None:
+        checkpoint['ema_drift_state'] = trainer.ema_drift.state_dict()
+
     latest_path = config.DIRS["ckpt"] / "latest.pt"
     torch.save(checkpoint, latest_path)
     config.logger.info(f"Checkpoint saved to {latest_path}")
@@ -193,8 +200,9 @@ def flexible_load(model, state_dict, prefix=""):
             if lora_key in model_state:
                 lora_mapped_state[lora_key] = v
     
+    state_dict = dict(state_dict)  # work on a copy to avoid mutating the caller's dict
     state_dict.update(lora_mapped_state)
-    
+
     for k, v in state_dict.items():
         mapped_key = k
         for old_key, new_key in mapping.items():
@@ -237,7 +245,14 @@ def load_checkpoint(trainer, path: Optional[Path] = None) -> bool:
         # Use flexible load for both networks
         flexible_load(trainer.vae, checkpoint['vae_state'])
         flexible_load(trainer.drift, checkpoint['drift_state'])
-        
+
+        # Load EMA models if available
+        if config.USE_EMA:
+            if 'ema_vae_state' in checkpoint and hasattr(trainer, 'ema_vae') and trainer.ema_vae is not None:
+                flexible_load(trainer.ema_vae, checkpoint['ema_vae_state'])
+            if 'ema_drift_state' in checkpoint and hasattr(trainer, 'ema_drift') and trainer.ema_drift is not None:
+                flexible_load(trainer.ema_drift, checkpoint['ema_drift_state'])
+
         # --- Robust Optimizer Loading ---
         def safe_load_opt(optimizer, state_dict, name="Optimizer"):
             if state_dict is None:
@@ -451,13 +466,17 @@ class LabeledImageDataset(Dataset):
     def __init__(self, base_dataset, transform=None):
         self.dataset = base_dataset
         self.transform = transform
-        
+
         if hasattr(base_dataset, 'classes'):
             self.classes = base_dataset.classes
         else:
             self.classes = ['airplane', 'bird', 'car', 'cat', 'deer', 'dog', 'horse', 'monkey', 'ship', 'truck']
-        
+
         self.label_map = {cls: idx for idx, cls in enumerate(self.classes)}
+        self._text_byte_cache = {
+            i: torch.tensor(text_to_bytes(CLASS_DESCRIPTIONS[i]), dtype=torch.long)
+            for i in range(len(CLASS_DESCRIPTIONS))
+        }
     
     def __len__(self) -> int:
         return len(self.dataset)
@@ -476,12 +495,12 @@ class LabeledImageDataset(Dataset):
         
         # Get text description
         text_desc = CLASS_DESCRIPTIONS[label_idx] if label_idx < 10 else f"class_{label_idx}"
-        text_bytes = text_to_bytes(text_desc)
-        
+        text_bytes_tensor = self._text_byte_cache.get(label_idx, torch.tensor(text_to_bytes(text_desc), dtype=torch.long))
+
         return {
             'image': img,
             'label': torch.tensor(label_idx, dtype=torch.long),
-            'text_bytes': torch.tensor(text_bytes, dtype=torch.long),
+            'text_bytes': text_bytes_tensor,
             'label_text': text_desc,
             'index': idx
         }
@@ -543,7 +562,8 @@ class MultiSourceDataset(Dataset):
         # Calculate lengths and cumulative lengths
         self.lengths = [len(ds) for ds in self.datasets]
         self.cumulative_lengths = [sum(self.lengths[:i+1]) for i in range(len(self.lengths))]
-        
+        self.dataset_names = list(config.DATASETS[:len(datasets_list)])
+
         # Shared class mapping (standardized across STL10 and CIFAR10)
         self.classes = ['airplane', 'bird', 'car', 'cat', 'deer', 'dog', 'horse', 'monkey', 'ship', 'truck']
         
@@ -553,17 +573,18 @@ class MultiSourceDataset(Dataset):
         # Mapping from source dataset index to standardized index
         self.cifar_map = {0:0, 1:2, 2:1, 3:3, 4:4, 5:5, 6:10, 7:6, 8:8, 9:9} # Mapping 'frog' (6) to 'NULL' (10)
         self.stl_map = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9}
+        self._text_byte_cache = {
+            i: torch.tensor(text_to_bytes(CLASS_DESCRIPTIONS[i]), dtype=torch.long)
+            for i in range(len(CLASS_DESCRIPTIONS))
+        }
     
     def __len__(self) -> int:
         return self.cumulative_lengths[-1]
     
     def __getitem__(self, idx: int) -> Dict:
         # Find which dataset this index belongs to
-        ds_idx = 0
-        for i, cum_len in enumerate(self.cumulative_lengths):
-            if idx < cum_len:
-                ds_idx = i
-                break
+        ds_idx = bisect.bisect_right(self.cumulative_lengths, idx)
+        ds_idx = min(ds_idx, len(self.datasets) - 1)
         
         # Adjust index for the specific dataset
         internal_idx = idx if ds_idx == 0 else idx - self.cumulative_lengths[ds_idx-1]
@@ -574,7 +595,7 @@ class MultiSourceDataset(Dataset):
         if isinstance(item, tuple):
             img, label_idx = item
             # Standardize label_idx
-            if config.DATASETS[ds_idx] == "CIFAR10":
+            if self.dataset_names[ds_idx] == "CIFAR10":
                 label_idx = self.cifar_map.get(label_idx, label_idx)
             else:
                 label_idx = self.stl_map.get(label_idx, label_idx)
@@ -587,12 +608,12 @@ class MultiSourceDataset(Dataset):
             
         # Get text description
         text_desc = CLASS_DESCRIPTIONS[label_idx] if label_idx < 10 else f"class_{label_idx}"
-        text_bytes = text_to_bytes(text_desc)
-            
+        text_bytes_tensor = self._text_byte_cache.get(label_idx, torch.tensor(text_to_bytes(text_desc), dtype=torch.long))
+
         return {
             'image': img,
             'label': torch.tensor(label_idx, dtype=torch.long),
-            'text_bytes': torch.tensor(text_bytes, dtype=torch.long),
+            'text_bytes': text_bytes_tensor,
             'source_id': torch.tensor(source_id, dtype=torch.long),
             'label_text': text_desc,
             'index': idx

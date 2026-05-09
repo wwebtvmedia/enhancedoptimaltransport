@@ -29,6 +29,7 @@ class TrainingProcessor:
         self.node_id = f"node_{os.getpid()}_{random.randint(1000, 9999)}"
         self.swarm_dir = Path("enhanced_label_sb/swarm")
         self.swarm_dir.mkdir(parents=True, exist_ok=True)
+        self._bad_score_count = 0
 
     def _broadcast_swarm_status(self, epoch: int, losses: Dict[str, Any]):
         """Broadcast current node state to the swarm."""
@@ -62,8 +63,8 @@ class TrainingProcessor:
                 with open(override_file, 'r') as f:
                     cmd = json.load(f)
                 
-                # Only apply if recent (last 30 seconds)
-                if time.time() - cmd.get('timestamp', 0) < 30:
+                # Only apply if recent (within TTL)
+                if time.time() - cmd.get('timestamp', 0) < config.SWARM_COMMAND_TTL:
                     config.CFG_SCALE = cmd.get('cfg', config.CFG_SCALE)
                     config.DRIFT_WEIGHT = cmd.get('dw', config.DRIFT_WEIGHT)
                     config.logger.info(f"🛰️ [Swarm] Global Override applied: CFG={config.CFG_SCALE}, DW={config.DRIFT_WEIGHT}")
@@ -108,7 +109,7 @@ class TrainingProcessor:
         sharpness = losses.get('sharpness', 0.08)
         
         # Stability Baseline
-        STABILITY_LIMIT = 5.0
+        STABILITY_LIMIT = config.KPI_STABILITY_LIMIT
         
         # Store old values for logging
         prev = {
@@ -118,29 +119,29 @@ class TrainingProcessor:
         }
 
         # 2. SSIM-BASED STRUCTURAL CONTROL (Realistic Thresholds for Phase 3)
-        # SSIM around 0.6 is common in Phase 3. 
-        if ssim_loss > 0.65:
+        # SSIM around 0.6 is common in Phase 3.
+        if ssim_loss > config.SSIM_BLUR_THRESHOLD:
             # BLURRY: Increase intensity
             # Pro: Sharpens boundaries. Con: Risk of artifacts.
-            config.RECON_WEIGHT = min(20.0, config.RECON_WEIGHT * 1.05)
-            config.CFG_SCALE = min(12.0, config.CFG_SCALE + 0.2)
-        elif ssim_loss < 0.55:
+            config.RECON_WEIGHT = min(config.MAX_RECON_WEIGHT, config.RECON_WEIGHT * 1.05)
+            config.CFG_SCALE = min(config.MAX_CFG_SCALE, config.CFG_SCALE + 0.2)
+        elif ssim_loss < config.SSIM_SHARP_THRESHOLD:
             # SHARP: Can relax to favor diversity
             # Pro: More creative generations. Con: Risk of getting "soft".
-            config.RECON_WEIGHT = max(4.0, config.RECON_WEIGHT * 0.95)
-            config.CFG_SCALE = max(2.5, config.CFG_SCALE - 0.1)
+            config.RECON_WEIGHT = max(config.MIN_RECON_WEIGHT, config.RECON_WEIGHT * 0.95)
+            config.CFG_SCALE = max(config.MIN_CFG_SCALE, config.CFG_SCALE - 0.1)
 
         # 3. SHARPNESS-DRIVEN CONTROL (Direct gradient monitoring)
         # Target sharpness range: 0.08 - 0.15
-        if sharpness < 0.075:
+        if sharpness < config.SHARPNESS_BLUR_THRESHOLD:
             # BLURRY: Increase CFG and Langevin influence
-            config.CFG_SCALE = min(10.0, config.CFG_SCALE + 0.3)
-            config.LANGEVIN_SCORE_SCALE = min(0.8, config.LANGEVIN_SCORE_SCALE + 0.05)
+            config.CFG_SCALE = min(config.MAX_CFG_SCALE, config.CFG_SCALE + 0.3)
+            config.LANGEVIN_SCORE_SCALE = min(config.MAX_LANGEVIN_SCORE_SCALE, config.LANGEVIN_SCORE_SCALE + 0.05)
             config.logger.info(f"🔍 [App Control] Detected Blur (Sharp={sharpness:.4f}): Boosting CFG/LScale")
-        elif sharpness > 0.16:
+        elif sharpness > config.SHARPNESS_SHARP_THRESHOLD:
             # FRIED/ARTIFACTS: Pull back to restore structural integrity
-            config.CFG_SCALE = max(3.0, config.CFG_SCALE - 0.4)
-            config.LANGEVIN_SCORE_SCALE = max(0.1, config.LANGEVIN_SCORE_SCALE - 0.05)
+            config.CFG_SCALE = max(config.MIN_CFG_SCALE, config.CFG_SCALE - 0.4)
+            config.LANGEVIN_SCORE_SCALE = max(config.MIN_LANGEVIN_SCORE_SCALE, config.LANGEVIN_SCORE_SCALE - 0.05)
             config.logger.info(f"🔍 [App Control] Detected Over-sharpening (Sharp={sharpness:.4f}): Reducing CFG/LScale")
 
         # 4. CONTRAST & DETAIL (Based on Score Trend)
@@ -148,23 +149,23 @@ class TrainingProcessor:
         if comp_score < -45:
             # QUALITY DROP: Pull back slightly
             # Pro: Prevents burn-in artifacts. Con: Temporary lower contrast.
-            config.CFG_SCALE = max(3.0, config.CFG_SCALE * 0.9)
-            config.RECON_WEIGHT = max(5.0, config.RECON_WEIGHT * 0.9)
-            config.LANGEVIN_SCORE_SCALE = max(0.1, config.LANGEVIN_SCORE_SCALE * 0.9)
+            config.CFG_SCALE = max(config.MIN_CFG_SCALE, config.CFG_SCALE * 0.9)
+            config.RECON_WEIGHT = max(config.MIN_RECON_WEIGHT, config.RECON_WEIGHT * 0.9)
+            config.LANGEVIN_SCORE_SCALE = max(config.MIN_LANGEVIN_SCORE_SCALE, config.LANGEVIN_SCORE_SCALE * 0.9)
         elif comp_score > -25:
             # HIGH QUALITY: Can push for extra detail
             # Pro: Professional-level micro-textures. Con: GPU heat/time.
             config.LANGEVIN_SCORE_SCALE = min(0.6, config.LANGEVIN_SCORE_SCALE * 1.05)
 
         # 4. ANTI-ARTIFACT & STABILITY (The "Noise & Chaos" Block)
-        if mu_std > 1.1 or drift_loss > STABILITY_LIMIT * 0.8:
+        if mu_std > config.MU_STD_NOISE_CEILING or drift_loss > STABILITY_LIMIT * 0.8:
             # NOISY/INSTABLE: Increase smoothing
             # Pro: Cleaner backgrounds. Con: Less high-freq detail.
-            config.DRIFT_WEIGHT = max(0.8, config.DRIFT_WEIGHT * 0.9)
+            config.DRIFT_WEIGHT = max(config.MIN_DRIFT_WEIGHT_DYNAMIC, config.DRIFT_WEIGHT * 0.9)
             config.DEFAULT_LANGEVIN_STEPS = min(40, config.DEFAULT_LANGEVIN_STEPS + 2) # Reduced cap and step
-        elif mu_std < 0.7 and drift_loss < 1.0:
+        elif mu_std < config.MU_STD_STABLE_FLOOR and drift_loss < 1.0:
             # STABLE: Push for faster learning
-            config.DRIFT_WEIGHT = min(3.0, config.DRIFT_WEIGHT * 1.02)
+            config.DRIFT_WEIGHT = min(config.MAX_DRIFT_WEIGHT_DYNAMIC, config.DRIFT_WEIGHT * 1.02)
             config.DEFAULT_LANGEVIN_STEPS = max(5, config.DEFAULT_LANGEVIN_STEPS - 2) # Lower floor
 
         # 5. TRAINING TYPE JITTER (DISABLED for stability)
@@ -172,7 +173,7 @@ class TrainingProcessor:
         pass
 
         # 6. PANIC BUTTON (Catastrophic divergence)
-        if comp_score < -120 or drift_loss > 15.0:
+        if comp_score < config.PANIC_SCORE_THRESHOLD or drift_loss > config.PANIC_DRIFT_THRESHOLD:
             config.logger.warning("🚨 [App Control] EMERGENCY RESTORE: Training diverging.")
             config.CFG_SCALE = 4.0
             config.DRIFT_WEIGHT = 1.5
@@ -228,25 +229,30 @@ class TrainingProcessor:
         if current_phase == 1:
             snr = losses.get('snr', 0)
             ssim = losses.get('ssim_loss', 1.0)
-            if snr > 20.0 and ssim < 0.26 and epoch >= 80:
+            if snr > config.PHASE1_SNR_THRESHOLD and ssim < config.PHASE1_SSIM_MAX and epoch >= config.PHASE1_MIN_EPOCH:
                 config.logger.info(f"✨ [Auto-Strategy] VAE Sharpness reached. Transitioning to Phase 2.")
                 config.TRAINING_SCHEDULE['mode'] = 'manual'
                 config.TRAINING_SCHEDULE['force_phase'] = 2
-                
+
         elif current_phase == 2:
             drift = losses.get('drift', 10.0)
             ssim = losses.get('ssim_loss', 1.0)
-            if drift < 1.25 and ssim < 0.21 and epoch >= 160:
+            if drift < config.PHASE2_DRIFT_MAX and ssim < config.PHASE2_SSIM_MAX and epoch >= config.PHASE2_MIN_EPOCH:
                 config.logger.info(f"✨ [Auto-Strategy] Drift Stability reached. Transitioning to Phase 3.")
                 config.TRAINING_SCHEDULE['mode'] = 'manual'
                 config.TRAINING_SCHEDULE['force_phase'] = 3
 
         # --- 2. STOCHASTIC RESTART capability (Back-switching) ---
-        # Very small proba to go back a phase if fine-tuning is failing
-        if current_phase == 3 and losses.get('composite_score', 0) < -60:
-            if random.random() < 0.05:
-                config.logger.info("↩️ [Auto-Strategy] Fine-tuning regression: Reverting to Phase 2 for trajectory fix.")
-                config.TRAINING_SCHEDULE['force_phase'] = 2
+        # Use a consecutive-failures counter to avoid random phase regressions
+        elif current_phase == 3:
+            if losses.get('composite_score', 0) < config.STOCHASTIC_RESTART_SCORE_THRESHOLD:
+                self._bad_score_count += 1
+                if self._bad_score_count >= config.CONSECUTIVE_BAD_SCORES_MAX:
+                    config.logger.info("↩️ [Auto-Strategy] Fine-tuning regression: Reverting to Phase 2 for trajectory fix.")
+                    config.TRAINING_SCHEDULE['force_phase'] = 2
+                    self._bad_score_count = 0
+            else:
+                self._bad_score_count = 0
 
 
     def _run_loop(self, on_epoch_done, force_fresh=False):
@@ -276,10 +282,10 @@ class TrainingProcessor:
                 
                 # Check for critical failure
                 total_loss = losses.get('total', 0)
-                if total_loss >= 1e8:
+                if total_loss >= config.NAN_LOSS_THRESHOLD:
                     consecutive_failures += 1
-                    if consecutive_failures >= 3:
-                        config.logger.error("🛑 Training stopped: 3 consecutive failed epochs (NaN/Inf).")
+                    if consecutive_failures >= config.CONSECUTIVE_FAILURES_MAX:
+                        config.logger.error("🛑 Training stopped: consecutive failed epochs (NaN/Inf).")
                         break
                 else:
                     consecutive_failures = 0
@@ -300,9 +306,9 @@ class TrainingProcessor:
                     on_epoch_done(epoch, losses)
                 
                 # Periodically save/generate
-                if (epoch+1) % 5 == 0:
+                if (epoch+1) % config.CHECKPOINT_SAVE_INTERVAL == 0:
                     self.trainer.save_checkpoint()
-                if (epoch+1) % 10 == 0:
+                if (epoch+1) % config.GENERATE_SAMPLE_INTERVAL == 0:
                     self.trainer.generate_reconstructions()
                     self.trainer.generate_samples()
                     # Signal to UI that new samples are available

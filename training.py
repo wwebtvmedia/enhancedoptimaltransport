@@ -229,11 +229,22 @@ class EnhancedLabelTrainer:
         # Initialize AMP
         self.scaler = None
         if config.USE_AMP and config.AMP_AVAILABLE:
-            if config.DEVICE.type == 'cuda': self.scaler = torch.cuda.amp.GradScaler()
+            if config.DEVICE.type == 'cuda': self.scaler = torch.amp.GradScaler('cuda')
         
         # 1. Initialize models on CPU to avoid startup OOM
         self.vae = models.LabelConditionedVAE()
         self.drift = models.LabelConditionedDrift()
+
+        # EMA shadow models (kept on CPU until needed)
+        if config.USE_EMA:
+            import copy
+            self.ema_vae = copy.deepcopy(self.vae)
+            self.ema_drift = copy.deepcopy(self.drift)
+            for p in self.ema_vae.parameters(): p.requires_grad = False
+            for p in self.ema_drift.parameters(): p.requires_grad = False
+        else:
+            self.ema_vae = None
+            self.ema_drift = None
 
         if config.USE_LORA:
             n_vae = lora.apply_lora(self.vae, r=config.LORA_RANK, lora_alpha=config.LORA_ALPHA, target_modules=config.LORA_TARGET_MODULES)
@@ -254,11 +265,11 @@ class EnhancedLabelTrainer:
             self.snapshot_vae = self.snapshot_drift = None
             
         # 3. Register buffers
-        self.register_buffer('vgg_mean', torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1))
-        self.register_buffer('vgg_std', torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1))
+        self.register_buffer('vgg_mean', torch.tensor(config.VGG_NORM_MEAN).reshape(1, 3, 1, 1))
+        self.register_buffer('vgg_std', torch.tensor(config.VGG_NORM_STD).reshape(1, 3, 1, 1))
 
-        window_size = 11
-        gauss = torch.exp(-(torch.arange(window_size, dtype=torch.float32) - window_size//2)**2 / (2 * 1.5**2))
+        window_size = config.SSIM_WINDOW_SIZE
+        gauss = torch.exp(-(torch.arange(window_size, dtype=torch.float32) - window_size//2)**2 / (2 * config.SSIM_SIGMA**2))
         gauss = gauss / gauss.sum()
         window = (gauss[:, None] * gauss[None, :])[None, None, :, :].expand(3, -1, -1, -1).contiguous()
         self.register_buffer('ssim_window', window)
@@ -274,6 +285,16 @@ class EnhancedLabelTrainer:
         self._buffers[name] = tensor.to(config.DEVICE)
         setattr(self, name, self._buffers[name])
 
+    def _update_ema(self):
+        """Update EMA shadow weights after each optimizer step."""
+        if not config.USE_EMA or self.ema_vae is None:
+            return
+        decay = config.EMA_DECAY
+        for p_ema, p in zip(self.ema_vae.parameters(), self.vae.parameters()):
+            p_ema.data.mul_(decay).add_(p.data.to(p_ema.device), alpha=1 - decay)
+        for p_ema, p in zip(self.ema_drift.parameters(), self.drift.parameters()):
+            p_ema.data.mul_(decay).add_(p.data.to(p_ema.device), alpha=1 - decay)
+
     def perceptual_loss(self, recon, target):
         if not hasattr(self, 'vgg'):
             try:
@@ -282,7 +303,7 @@ class EnhancedLabelTrainer:
                 if self.phase == 1: self.vgg.to(config.DEVICE)
                 for p in self.vgg.parameters(): p.requires_grad = False
                 self.vgg.eval()
-            except: return torch.tensor(0.0, device=config.DEVICE)
+            except Exception: return torch.tensor(0.0, device=config.DEVICE)
         
         if self.phase != 1: return torch.tensor(0.0, device=config.DEVICE)
         
@@ -345,7 +366,7 @@ class EnhancedLabelTrainer:
             else:
                 config.logger.info(f"💻 Device: {config.DEVICE.type.upper()} Mode.")
             
-        self.vae.train() if new_phase != 2 else self.vae.train() # VAE train mode for encoding
+        self.vae.train()  # VAE always in train mode; encoder used with gradients in all phases
         self.drift.train() if new_phase >= 2 else self.drift.eval()
 
         if new_phase == 1:
@@ -503,12 +524,18 @@ class EnhancedLabelTrainer:
                     
                     # 4. Final Scale Update
                     self.scaler.update()
+                    self._update_ema()
                 else:
                     loss_dict['total'].backward()
-                    torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
-                    torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP*2)
-                    self.opt_vae.step()
-                    self.opt_drift.step()
+                    if phase == 1:
+                        torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
+                        self.opt_vae.step()
+                    else:
+                        torch.nn.utils.clip_grad_norm_(self.vae.parameters(), config.GRAD_CLIP)
+                        torch.nn.utils.clip_grad_norm_(self.drift.parameters(), config.GRAD_CLIP * config.DRIFT_GRAD_CLIP_FACTOR * 2)
+                        self.opt_vae.step()
+                        self.opt_drift.step()
+                    self._update_ema()
 
                 # Metrics logging
                 current_score = composite_score(loss_dict, phase)
@@ -528,7 +555,7 @@ class EnhancedLabelTrainer:
                     except:
                         # If update fails too, recreate the scaler to be safe
                         if config.DEVICE.type == 'cuda':
-                            self.scaler = torch.cuda.amp.GradScaler()
+                            self.scaler = torch.amp.GradScaler('cuda')
                 
                 config.logger.error(f"Batch {idx} error: {e}")
                 if "out of memory" in str(e): 
@@ -830,7 +857,15 @@ class EnhancedLabelTrainer:
         self.drift.eval()
         self.vae.to(config.DEVICE)
         self.drift.to(config.DEVICE)
-        
+
+        # Use EMA models for generation if available
+        vae_to_use = self.ema_vae if (config.USE_EMA and self.ema_vae is not None) else self.vae
+        drift_to_use = self.ema_drift if (config.USE_EMA and self.ema_drift is not None) else self.drift
+        vae_to_use.eval()
+        drift_to_use.eval()
+        vae_to_use.to(config.DEVICE)
+        drift_to_use.to(config.DEVICE)
+
         if labels is not None:
             num_samples = len(labels)
         else:
@@ -868,8 +903,8 @@ class EnhancedLabelTrainer:
                 t_cur = torch.full((num_samples, 1), i * dt, device=config.DEVICE)
                 
                 # Predict drift with context
-                drift = self.drift(z, t_cur, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
-                
+                drift = drift_to_use(z, t_cur, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+
                 # Monitor drift magnitude (adaptive clipping is inside the drift network)
                 drift_norm = drift.flatten(start_dim=1).norm(p=2, dim=1).mean().item()
 
@@ -879,21 +914,21 @@ class EnhancedLabelTrainer:
                     k1 = drift
                     t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_pred = z + dt * k1
-                    k2 = self.drift(z_pred, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    k2 = drift_to_use(z_pred, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     z = z + (dt / 2.0) * (k1 + k2)
                 elif method == 'rk4':
                     k1 = drift
                     t_half = torch.full((num_samples, 1), (i + 0.5) * dt, device=config.DEVICE)
                     z_half = z + 0.5 * dt * k1
-                    k2 = self.drift(z_half, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    k2 = drift_to_use(z_half, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     z_half2 = z + 0.5 * dt * k2
-                    k3 = self.drift(z_half2, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    k3 = drift_to_use(z_half2, t_half, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     t_next = torch.full((num_samples, 1), (i + 1) * dt, device=config.DEVICE)
                     z_next = z + dt * k3
-                    k4 = self.drift(z_next, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
+                    k4 = drift_to_use(z_next, t_next, labels_tensor, text_bytes=text_bytes_tensor, cfg_scale=cfg_scale, source_id=s_id)
                     z = z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
     
-                z = torch.clamp(z, -10, 10)   # gentle clamping
+                z = torch.clamp(z, -config.ODE_CLAMP_MAX, config.ODE_CLAMP_MAX)   # gentle clamping
                 
                 if i % 10 == 0:
                     config.logger.info(f"Step {i:3d}, t={i*dt:.3f}, drift norm: {drift_norm:.4f}, z std: {z.std():.4f}")
@@ -913,7 +948,7 @@ class EnhancedLabelTrainer:
                 for step in range(langevin_steps):
                     # 1. Compute Score Proxy 
                     # Using drift at t=1 is theoretically the 'terminal' velocity
-                    drift_at_end = self.drift(z, t_one, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
+                    drift_at_end = drift_to_use(z, t_one, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
                     
                     # 2. Add Annealed Noise
                     # We decay the noise scale as we converge to the manifold
@@ -927,7 +962,7 @@ class EnhancedLabelTrainer:
                     
                     # 4. Gentle Manifold Constraint
                     # Prevents latents from escaping the range expected by the VAE decoder
-                    z = torch.clamp(z, -config.DIVERSITY_MAX_STD * 2, config.DIVERSITY_MAX_STD * 2)
+                    z = torch.clamp(z, -config.LANGEVIN_MANIFOLD_CLAMP, config.LANGEVIN_MANIFOLD_CLAMP)
                     
                     if (step + 1) % 5 == 0:
                         config.logger.info(f" Langevin Step {step+1}: z_std={z.std():.4f}")
@@ -936,9 +971,9 @@ class EnhancedLabelTrainer:
             config.logger.info(f"Refinement complete: Final z_std={z.std():.4f}")
             
             # Decode
-            self.vae.set_force_active(True)
-            images = self.vae.decode(z, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
-            self.vae.set_force_active(False)
+            vae_to_use.set_force_active(True)
+            images = vae_to_use.decode(z, labels_tensor, text_bytes=text_bytes_tensor, source_id=s_id)
+            vae_to_use.set_force_active(False)
             images = torch.clamp(images, -1, 1)
             
             config.logger.info(f"Generated images - min: {images.min():.3f}, max: {images.max():.3f}, mean: {images.mean():.3f}")

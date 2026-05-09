@@ -274,6 +274,31 @@
             }
         }
         
+        const CLASS_DESCRIPTIONS = [
+            "an airplane flying in the sky",
+            "a bird perched on a branch",
+            "a car driving on the road",
+            "a cat sitting on a couch",
+            "a deer in a forest",
+            "a dog playing in the park",
+            "a horse running in a field",
+            "a monkey climbing a tree",
+            "a ship sailing on water",
+            "a truck on the highway"
+        ];
+        const MAX_TEXT_BYTES = 128;
+        const PAD_TOKEN = 256;
+
+        function textToBytes(text) {
+            const utf8 = new TextEncoder().encode(text);
+            const result = new BigInt64Array(MAX_TEXT_BYTES).fill(BigInt(PAD_TOKEN));
+            const len = Math.min(utf8.length, MAX_TEXT_BYTES);
+            for (let i = 0; i < len; i++) result[i] = BigInt(utf8[i]);
+            return result;
+        }
+
+        const CLASS_TEXT_BYTES = CLASS_DESCRIPTIONS.map(d => textToBytes(d));
+
         let sessions = {
             fp32_drift: null,
             fp32_gen: null,
@@ -429,24 +454,26 @@
         async function runBridge(driftSess, genSess, label, steps, seedVal, canvasId, timeId, method = 'rk4', sourceId = 0) {
             const ctx = document.getElementById(canvasId).getContext('2d');
             const start = performance.now();
-            
+
             const latentSize = LATENT_SHAPE.reduce((a, b) => a * b, 1);
             const z0Data = new Float32Array(latentSize);
             // Label is added to seed to ensure different categories look distinct
             // even if the user doesn't change the seed value.
-            seed = seedVal + label; 
-            
+            seed = seedVal + label;
+
             // Align with config.CST_COEF_GAUSSIAN_PRIO (0.8)
             for (let i = 0; i < latentSize; i++) z0Data[i] = normalRandom() * 0.8;
 
             let z = new ort.Tensor('float32', z0Data, LATENT_SHAPE);
             const labelTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(label)]), [1]);
             const sourceIdTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(sourceId)]), [1]);
+            const textBytes = CLASS_TEXT_BYTES[label] || CLASS_TEXT_BYTES[0];
+            const textBytesTensor = new ort.Tensor('int64', textBytes, [1, MAX_TEXT_BYTES]);
             const dt = 1.0 / steps;
 
             async function getDrift(latent, tVal) {
                 const t = new ort.Tensor('float32', new Float32Array([tVal]), [1, 1]);
-                const res = await driftSess.run({ z: latent, t, label: labelTensor });
+                const res = await driftSess.run({ z: latent, t, label: labelTensor, text_bytes: textBytesTensor });
                 return res.drift;
             }
 
@@ -505,10 +532,11 @@
                 z = new ort.Tensor('float32', nextZData, LATENT_SHAPE);
             }
 
-            const genResults = await genSess.run({ 
-                z, 
+            const genResults = await genSess.run({
+                z,
                 label: labelTensor,
-                source_id: sourceIdTensor
+                source_id: sourceIdTensor,
+                text_bytes: textBytesTensor
             });
             renderToCanvas(genResults.reconstruction.data, ctx);
             

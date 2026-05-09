@@ -13,7 +13,7 @@ class CORSRequestHandler(Handler):
         # Enable Cross-Origin Isolation for high-performance WASM multi-threading
         self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
         self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
-        
+ 
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         super().end_headers()
@@ -29,10 +29,11 @@ class CORSRequestHandler(Handler):
 def run_server():
     print(f"🚀 Launching Schrödinger Bridge Web Server on port {PORT}...")
     print(f"🔗 URL: http://localhost:{PORT}/onnx_generate_image.html")
-    
+
     with socketserver.TCPServer(("", PORT), CORSRequestHandler) as httpd:
         # Auto-open browser
         webbrowser.open(f"http://localhost:{PORT}/onnx_generate_image.html")
+        webbrowser.open(f"http://localhost:{PORT}/onnx_inference_tester.html")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
