@@ -65,6 +65,17 @@ $$f_{cfg} = f_{uncond} + s \cdot (f_{cond} - f_{uncond})$$
 
 ## Model Architecture Details
 
+### 🧠 CNN Neural Tokenizer (Mathematical Formulation)
+The system maps raw text prompts $T$ to a semantic vector $E_{text} \in \mathbb{R}^{512}$ through a four-stage neural pipeline:
+
+1.  **Byte-Level Projection**: Text is converted to UTF-8 bytes $B \in \{0 \dots 255\}^L$ and projected to $X_0 \in \mathbb{R}^{L \times D}$.
+2.  **1D-CNN Feature Extraction**: Captures local n-gram structures using a SiLU-activated 1D convolution:
+    $$X_{conv} = \text{SiLU}(\text{Conv1d}(X_0))$$
+3.  **Global Self-Attention**: Resolves long-range dependencies across the prompt:
+    $$X_{attn} = \text{MHSA}(\text{LayerNorm}(X_{conv}))$$
+4.  **Contrastive Alignment**: During Phase 1, the text vector is aligned with image latents $z$ using the **InfoNCE** objective:
+    $$\mathcal{L}_{C} = -\mathbb{E} \left[ \log \frac{e^{sim(z, E_{text})/\tau}}{\sum e^{sim(z, E_{text, j})/\tau}} \right]$$
+
 ### Multimodal VAE
 - **Encoder**: Maps 96x96 RGB to 12x12x8 latent space.
 - **Decoder**: PixelShuffle-based upsampling with FiLM conditioning.

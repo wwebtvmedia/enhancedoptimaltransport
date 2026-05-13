@@ -40,10 +40,16 @@ if __name__ == "__main__":
     else:
         print("Run quantize_static.py first to generate drift_static_int8.onnx")
 
-    # Generator: dynamic int8 works fine
-    quantize_generator_dynamic(
-        os.path.join(base_dir, "generator.onnx"),
-        os.path.join(base_dir, "generator_int8.onnx"),
-    )
+    # Generator: prefer static int8 if available, otherwise fallback to dynamic
+    gen_static = os.path.join(base_dir, "generator_static_int8.onnx")
+    gen_int8 = os.path.join(base_dir, "generator_int8.onnx")
+    if os.path.exists(gen_static):
+        shutil.copy2(gen_static, gen_int8)
+        print(f"Generator int8: copied from static -> {gen_int8}")
+    else:
+        quantize_generator_dynamic(
+            os.path.join(base_dir, "generator.onnx"),
+            gen_int8,
+        )
 
     print("\nQuantization complete.")

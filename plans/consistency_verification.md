@@ -10,8 +10,8 @@ Systematically verify the consistency between architectural plans and the physic
 | Category | Item | Verified | Implementation Note |
 | :--- | :--- | :---: | :--- |
 | **Dimensions** | 512-dim shared space | ✅ | `config.TEXT_EMBEDDING_DIM = 512`. |
-| **Logic** | Neural Tokenizer Output | 🚧 | Implementation in `models.py` pending. |
-| **Data** | Byte-level Conversion | 🚧 | `data_management.py` mapping pending. |
+| **Logic** | Neural Tokenizer Output | ✅ | Implementation in `models.py` complete. |
+| **Data** | Byte-level Conversion | ✅ | `data_management.py` mapping complete. |
 | **Solvers** | CFG Integration | ✅ | `training.py` handles label-drop correctly. |
 
 ---

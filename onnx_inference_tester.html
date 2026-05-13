@@ -144,33 +144,28 @@
 
         <div class="controls">
             <div class="control-group">
-                <label>FP32 Drift (.onnx)</label>
-                <input type="file" id="file_fp32_drift" accept=".onnx">
-                <small style="font-size: 0.7rem; color: #64748b;">From onnx/drift.onnx</small>
+                <label>FP32 Reference</label>
+                <div style="display: flex; gap: 5px;">
+                    <input type="file" id="file_fp32_drift" accept=".onnx" style="width: 50%;">
+                    <input type="file" id="file_fp32_gen" accept=".onnx" style="width: 50%;">
+                </div>
             </div>
             <div class="control-group">
-                <label>FP32 Generator (.onnx)</label>
-                <input type="file" id="file_fp32_gen" accept=".onnx">
-                <small style="font-size: 0.7rem; color: #64748b;">From onnx/generator.onnx</small>
+                <label>Dynamic INT8</label>
+                <div style="display: flex; gap: 5px;">
+                    <input type="file" id="file_int8_drift" accept=".onnx" style="width: 50%;">
+                    <input type="file" id="file_int8_gen" accept=".onnx" style="width: 50%;">
+                </div>
             </div>
             <div class="control-group">
-                <label>INT8 Drift (.onnx)</label>
-                <input type="file" id="file_int8_drift" accept=".onnx">
-                <small style="font-size: 0.7rem; color: #64748b;">Optional: Quantized</small>
+                <label>Static INT8 (Optimized)</label>
+                <div style="display: flex; gap: 5px;">
+                    <input type="file" id="file_static_drift" accept=".onnx" style="width: 50%;">
+                    <input type="file" id="file_static_gen" accept=".onnx" style="width: 50%;">
+                </div>
             </div>
-            <div class="control-group">
-                <label>INT8 Generator (.onnx)</label>
-                <input type="file" id="file_int8_gen" accept=".onnx">
-                <small style="font-size: 0.7rem; color: #64748b;">Optional: Quantized</small>
-            </div>
-            <div class="control-group" style="justify-content: flex-end; grid-column: 1 / -1;">
-                <button id="loadModelsBtn" style="background: var(--warning); color: black; width: 100%;">📁 Load Models from Files</button>
-            </div>
-            <div class="control-group" style="grid-column: 1 / -1; display: flex; gap: 10px;">
-                <button onclick="downloadModel('fp32_drift')" style="flex: 1; background: #475569;">💾 Save FP32 Drift</button>
-                <button onclick="downloadModel('fp32_gen')" style="flex: 1; background: #475569;">💾 Save FP32 Gen</button>
-                <button onclick="downloadModel('int8_drift')" style="flex: 1; background: var(--success);">💾 Save INT8 Drift</button>
-                <button onclick="downloadModel('int8_gen')" style="flex: 1; background: var(--success);">💾 Save INT8 Gen</button>
+            <div class="control-group" style="justify-content: flex-end;">
+                <button id="loadModelsBtn" style="background: var(--warning); color: black; width: 100%;">📁 Load Selected Files</button>
             </div>
         </div>
 
@@ -191,26 +186,18 @@
                 </select>
             </div>
             <div class="control-group">
+                <label>Comparison Mode</label>
+                <select id="quantMode">
+                    <option value="static" selected>Static INT8 (Best)</option>
+                    <option value="dynamic">Dynamic INT8 (Legacy)</option>
+                </select>
+            </div>
+            <div class="control-group">
                 <label>Steps</label>
-                <input type="number" id="stepsInput" value="100" min="5" max="100">
-            </div>
-            <div class="control-group">
-                <label>Solver Method</label>
-                <select id="methodSelect">
-                    <option value="rk4" selected>RK4 (High Quality)</option>
-                    <option value="heun">Heun (2nd Order)</option>
-                    <option value="euler">Euler (Fast)</option>
-                </select>
-            </div>
-            <div class="control-group">
-                <label>Data Source Context</label>
-                <select id="sourceSelect">
-                    <option value="0">Source 0 (STL-10)</option>
-                    <option value="1">Source 1 (CIFAR-10)</option>
-                </select>
+                <input type="number" id="stepsInput" value="50" min="5" max="100">
             </div>
             <div class="control-group" style="justify-content: flex-end;">
-                <button id="compareBtn">🚀 Generate & Compare</button>
+                <button id="compareBtn">🚀 Run Comparison</button>
             </div>
         </div>
 
@@ -303,14 +290,18 @@
             fp32_drift: null,
             fp32_gen: null,
             int8_drift: null,
-            int8_gen: null
+            int8_gen: null,
+            static_drift: null,
+            static_gen: null
         };
 
         let modelBuffers = {
             fp32_drift: null,
             fp32_gen: null,
             int8_drift: null,
-            int8_gen: null
+            int8_gen: null,
+            static_drift: null,
+            static_gen: null
         };
 
         const logEl = document.getElementById('log');
@@ -321,13 +312,15 @@
         }
 
         async function createSession(modelData) {
-            // Try WebGPU first if available, otherwise fallback to WASM. 
-            const providers = hasWebGPU ? ['webgpu', 'wasm'] : ['wasm'];
+            // Try WASM first for comparison tool to ensure bit-exactness and compatibility with INT8
             try {
-                return await ort.InferenceSession.create(modelData, { executionProviders: providers });
+                return await ort.InferenceSession.create(modelData, { 
+                    executionProviders: ['wasm'],
+                    logSeverityLevel: 0
+                });
             } catch (e) {
-                log(`Primary providers failed, trying pure WASM: ${e?.message ?? String(e)}`, 'warn');
-                return await ort.InferenceSession.create(modelData, { executionProviders: ['wasm'] });
+                log(`Session creation failed: ${e?.message ?? String(e)}`, 'error');
+                throw e;
             }
         }
 
@@ -336,24 +329,6 @@
             const buffer = await file.arrayBuffer();
             const session = await createSession(buffer);
             return { session, buffer };
-        }
-
-        function downloadModel(key) {
-            const buffer = modelBuffers[key];
-            if (!buffer) {
-                log(`No model data for ${key} to save.`, 'warn');
-                return;
-            }
-            const blob = new Blob([buffer], { type: 'application/octet-stream' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${key}.onnx`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            log(`Downloaded ${key}.onnx`);
         }
 
         document.getElementById('loadModelsBtn').addEventListener('click', async () => {
@@ -368,18 +343,22 @@
                     fp32_drift: document.getElementById('file_fp32_drift').files[0],
                     fp32_gen: document.getElementById('file_fp32_gen').files[0],
                     int8_drift: document.getElementById('file_int8_drift').files[0],
-                    int8_gen: document.getElementById('file_int8_gen').files[0]
+                    int8_gen: document.getElementById('file_int8_gen').files[0],
+                    static_drift: document.getElementById('file_static_drift').files[0],
+                    static_gen: document.getElementById('file_static_gen').files[0]
                 };
 
                 let loadedCount = 0;
                 for (const [key, file] of Object.entries(files)) {
                     if (file) {
                         log(`Loading ${key}: ${file.name}...`);
-                        const { session, buffer } = await loadModelFromFile(file);
-                        sessions[key] = session;
-                        modelBuffers[key] = buffer;
-                        log(`${key} loaded successfully.`);
-                        loadedCount++;
+                        const result = await loadModelFromFile(file);
+                        if (result) {
+                            sessions[key] = result.session;
+                            modelBuffers[key] = result.buffer;
+                            log(`${key} loaded successfully.`);
+                            loadedCount++;
+                        }
                     }
                 }
 
@@ -389,7 +368,7 @@
                 } else {
                     log("No files selected.", 'warn');
                     status.className = 'status-badge badge-ready';
-                    status.textContent = 'Models Ready (Existing)';
+                    status.textContent = 'Models Ready';
                 }
             } catch (e) {
                 log(`Error loading models: ${e?.message ?? String(e)}`, 'error');
@@ -403,7 +382,7 @@
         async function initModels() {
             const status = document.getElementById('globalStatus');
             try {
-                log("Loading default FP32 models...");
+                log("Loading default models from server...");
                 const loadDefault = async (key, path) => {
                     try {
                         const response = await fetch(path);
@@ -421,15 +400,11 @@
                 await loadDefault('fp32_gen', './enhanced_label_sb/onnx/generator.onnx');
                 await loadDefault('int8_drift', './enhanced_label_sb/onnx/drift_int8.onnx');
                 await loadDefault('int8_gen', './enhanced_label_sb/onnx/generator_int8.onnx');
-
-                let activeBackend = 'WASM';
-                if (sessions.fp32_drift && sessions.fp32_drift.handler) {
-                    const usedProviders = sessions.fp32_drift.handler.executionProvider || '';
-                    if (usedProviders.includes('webgpu')) activeBackend = 'WebGPU';
-                }
+                await loadDefault('static_drift', './enhanced_label_sb/onnx/drift_static_int8.onnx');
+                await loadDefault('static_gen', './enhanced_label_sb/onnx/generator_static_int8.onnx');
 
                 status.className = 'status-badge badge-ready';
-                status.innerHTML = `Models Ready <span style="font-size: 0.7em;">🚀 ${activeBackend}</span>`;
+                status.innerHTML = `Models Ready <span style="font-size: 0.7em;">🚀 WASM</span>`;
             } catch (e) {
                 log(`Initialization failed: ${e.message}`, 'error');
                 status.className = 'status-badge badge-error';
@@ -571,8 +546,7 @@
             
             const label = parseInt(document.getElementById('labelSelect').value);
             const steps = parseInt(document.getElementById('stepsInput').value);
-            const method = document.getElementById('methodSelect').value;
-            const sourceId = parseInt(document.getElementById('sourceSelect').value);
+            const mode = document.getElementById('quantMode').value;
             
             // Generate a truly random seed for variety, but link it to label
             const seedVal = Math.floor(Math.random() * 1000000) + label;
@@ -581,23 +555,27 @@
                 if (!sessions.fp32_drift || !sessions.fp32_gen) {
                     throw new Error("FP32 models must be loaded.");
                 }
-                log(`Starting FP32 Reference (${method.toUpperCase()}, Label ${label})...`);
-                const fp32Data = await runBridge(sessions.fp32_drift, sessions.fp32_gen, label, steps, seedVal, 'canvasFP32', 'timeFP32', method, sourceId);
+                log(`Starting FP32 Reference (RK4, Label ${label})...`);
+                const fp32Data = await runBridge(sessions.fp32_drift, sessions.fp32_gen, label, steps, seedVal, 'canvasFP32', 'timeFP32', 'rk4', 0);
                 
-                if (sessions.int8_drift && sessions.int8_gen) {
-                    log("Starting INT8 Quantized generation...");
-                    const int8Data = await runBridge(sessions.int8_drift, sessions.int8_gen, label, steps, seedVal, 'canvasINT8', 'timeINT8', method, sourceId);
+                const qDriftKey = mode === 'static' ? 'static_drift' : 'int8_drift';
+                const qGenKey = mode === 'static' ? 'static_gen' : 'int8_gen';
+
+                if (sessions[qDriftKey] && sessions[qGenKey]) {
+                    log(`Starting ${mode.toUpperCase()} Quantized generation...`);
+                    const int8Data = await runBridge(sessions[qDriftKey], sessions[qGenKey], label, steps, seedVal, 'canvasINT8', 'timeINT8', 'rk4', 0);
                     const diff = calculateDiff(fp32Data, int8Data);
                     document.getElementById('diffINT8').textContent = `Diff: ${diff}%`;
                     log(`Comparison complete. Visual difference: ${diff}%`);
                 } else {
-                    log("INT8 models not available for comparison.", 'warn');
+                    log(`${mode.toUpperCase()} models not available for comparison.`, 'warn');
+                    document.getElementById('diffINT8').textContent = 'N/A';
                 }
             } catch (e) {
                 log(`Error: ${e.message}`, 'error');
             } finally {
                 btn.disabled = false;
-                btn.textContent = '🚀 Generate & Compare';
+                btn.textContent = '🚀 Run Comparison';
             }
         });
 

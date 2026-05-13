@@ -29,6 +29,7 @@ class CORSRequestHandler(Handler):
 def run_server():
     print(f"🚀 Launching Schrödinger Bridge Web Server on port {PORT}...")
     print(f"🔗 URL: http://localhost:{PORT}/onnx_generate_image.html")
+    print(f"🔗 URL: http://localhost:{PORT}/onnx_inference_tester.html")
 
     with socketserver.TCPServer(("", PORT), CORSRequestHandler) as httpd:
         # Auto-open browser

@@ -91,7 +91,7 @@ $$f_{cfg} = f(z, t, \text{null}) + s \cdot (f(z, t, y) - f(z, t, \text{null}))$$
 
 ### U-Net Drift Network
 - **Structure:** Time-aware U-Net with residual blocks and spatial self-attention.
-- **Conditioning:** Combined Fourier time embeddings and learned label/text embeddings.
+- **Conditioning:** Dynamic switching between learned label embeddings and **Neural Tokenizer** embeddings.
 - **Stability:** Adaptive Clipping tracks drift statistics to prevent exploding gradients.
 
 ---
@@ -113,6 +113,11 @@ The system features an autonomous supervisor (`app_processor.py`) that monitors 
 Models can be exported to ONNX for browser-based inference:
 - **Generator:** `generator.onnx` (Latent $\to$ Image)
 - **Drift:** `drift.onnx` (Trajectory Prediction)
+- **Security:** `run_web_server.py` implements **Cross-Origin Isolation** (COOP/COEP) to enable high-performance multi-threaded WASM.
+
+---
+*Developed for high-performance generative research on consumer hardware.*
+rift:** `drift.onnx` (Trajectory Prediction)
 - **Security:** `run_web_server.py` implements **Cross-Origin Isolation** (COOP/COEP) to enable high-performance multi-threaded WASM.
 
 ---

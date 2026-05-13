@@ -64,7 +64,7 @@ st.markdown("""
     .kpi-pos { color: #00ff00; }
     .kpi-neg { color: #ff4b4b; }
     </style>
-""", unsafe_allow_state_html=True)
+""", unsafe_allow_html=True)
 
 st.title("🐝 Schrödinger Bridge Swarm Dashboard")
 st.sidebar.header("Swarm Control")
@@ -108,14 +108,14 @@ with tabs[0]:
                 <hr>
                 <small>DW: {node['params']['dw']:.2f} | CFG: {node['params']['cfg']:.1f} | SW: {node['params']['sw']:.1f}</small>
             </div>
-            """, unsafe_allow_state_html=True)
+            """, unsafe_allow_html=True)
 
 with tabs[1]:
     st.subheader("Latest Generations across Swarm")
     sample_files = sorted(glob.glob("enhanced_label_sb/samples/gen_epoch*.png"), reverse=True)[:12]
     if sample_files:
         idx = st.slider("Timeline", 0, len(sample_files)-1, 0)
-        st.image(sample_files[idx], use_column_width=True, caption=f"Collective Progress - Snapshot {idx}")
+        st.image(sample_files[idx], width='stretch', caption=f"Collective Progress - Snapshot {idx}")
     else:
         st.write("Waiting for swarm samples...")
 

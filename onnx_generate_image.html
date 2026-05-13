@@ -183,6 +183,15 @@
             </div>
 
             <div class="control-group">
+                <label for="precisionSelect">Precision</label>
+                <select id="precisionSelect">
+                    <option value="fp32" selected>FP32 (Original)</option>
+                    <option value="int8">Dynamic INT8</option>
+                    <option value="static_int8">Static INT8 (Optimized)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
                 <label for="tempSlider">Noise Scale <span id="tempValue" class="badge">0.80</span></label>
                 <input type="range" id="tempSlider" min="0.1" max="1.5" value="0.80" step="0.05">
             </div>
@@ -226,6 +235,9 @@
             </div>
             <div id="traceLog" class="stats-panel" style="height: 150px; overflow-y: auto; background: #202124; color: #00ff00; font-family: 'Courier New', monospace; margin-top: 10px; width: 100%; border: 1px solid #333;">
                 [Trace Log Ready]
+            </div>
+            <div style="margin-top: 10px; font-size: 0.8em; color: var(--google-gray-700);">
+                Trouble with Static INT8? Try the <a href="onnx_static_debug.html" style="color: var(--google-blue);">Static Debugger</a>.
             </div>
         </div>
     </div>
@@ -436,12 +448,25 @@
                 else statusEl.textContent = 'Select directory first.';
             });
 
+            const precisionSelect = document.getElementById('precisionSelect');
+
+            precisionSelect.addEventListener('change', () => {
+                const precision = precisionSelect.value;
+                generateBtn.disabled = true;
+                generateBtn.textContent = 'Switching Precision...';
+                loadDefaultModels(precision);
+            });
+
             // Auto-load attempt
-            (async function autoLoad() {
+            async function loadDefaultModels(precision = 'fp32') {
                 try {
-                    logTrace("Auto-loading models from ./enhanced_label_sb/onnx/...");
-                    driftSession = await createSession('./enhanced_label_sb/onnx/drift.onnx');
-                    vaeSession = await createSession('./enhanced_label_sb/onnx/generator.onnx');
+                    let suffix = '.onnx';
+                    if (precision === 'int8') suffix = '_int8.onnx';
+                    else if (precision === 'static_int8') suffix = '_static_int8.onnx';
+                    
+                    logTrace(`Auto-loading ${precision.toUpperCase()} models from ./enhanced_label_sb/onnx/...`);
+                    driftSession = await createSession(`./enhanced_label_sb/onnx/drift${suffix}`);
+                    vaeSession = await createSession(`./enhanced_label_sb/onnx/generator${suffix}`);
                     
                     let activeBackend = 'WASM';
                     const usedProviders = vaeSession.handler ? (vaeSession.handler.executionProvider || '') : '';
@@ -458,7 +483,9 @@
                     logTrace("Auto-load failed. Waiting for manual folder selection.");
                     console.warn("Auto-load failed:", e?.message ?? String(e));
                 }
-            })();
+            }
+
+            loadDefaultModels('fp32');
 
             async function runDrift(z, t, textBytesTensor, sourceIdTensor, cfgTensor) {
                 const results = await driftSession.run({

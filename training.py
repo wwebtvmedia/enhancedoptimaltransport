@@ -231,15 +231,37 @@ class EnhancedLabelTrainer:
         if config.USE_AMP and config.AMP_AVAILABLE:
             if config.DEVICE.type == 'cuda': self.scaler = torch.amp.GradScaler('cuda')
         
-        # 1. Initialize models on CPU to avoid startup OOM
-        self.vae = models.LabelConditionedVAE()
-        self.drift = models.LabelConditionedDrift()
+        # 1. Initialize shared components for multimodal alignment
+        self.shared_text_encoder = None
+        self.shared_image_proj = None
+        
+        if config.USE_NEURAL_TOKENIZER:
+            self.shared_text_encoder = models.NeuralTokenizer()
+        if config.USE_PROJECTION_HEADS:
+            self.shared_image_proj = models.SharedEmbeddingHead(config.LATENT_DIM)
+            
+        # 2. Initialize models on CPU to avoid startup OOM
+        self.vae = models.LabelConditionedVAE(
+            text_encoder=self.shared_text_encoder, 
+            image_proj=self.shared_image_proj
+        )
+        self.drift = models.LabelConditionedDrift(
+            text_encoder=self.shared_text_encoder, 
+            image_proj=self.shared_image_proj
+        )
 
         # EMA shadow models (kept on CPU until needed)
         if config.USE_EMA:
             import copy
             self.ema_vae = copy.deepcopy(self.vae)
             self.ema_drift = copy.deepcopy(self.drift)
+            
+            # CRITICAL: Re-link EMA shared components to maintain consistency
+            if config.USE_NEURAL_TOKENIZER:
+                self.ema_vae.text_encoder = self.ema_drift.text_encoder = self.shared_text_encoder
+            if config.USE_PROJECTION_HEADS:
+                self.ema_vae.image_proj = self.ema_drift.image_proj = self.shared_image_proj
+                
             for p in self.ema_vae.parameters(): p.requires_grad = False
             for p in self.ema_drift.parameters(): p.requires_grad = False
         else:
@@ -416,14 +438,24 @@ class EnhancedLabelTrainer:
         text_bytes = batch.get('text_bytes').to(config.DEVICE) if batch.get('text_bytes') is not None else None
         source_id = batch.get('source_id').to(config.DEVICE) if batch.get('source_id') is not None else None
 
+        # Multimodal alignment loss (Shared across all phases)
+        c_loss = torch.tensor(0.0, device=config.DEVICE)
+        if config.USE_NEURAL_TOKENIZER and config.USE_PROJECTION_HEADS and text_bytes is not None:
+            # Note: We use the VAE's encoder output (mu) for image features
+            mu_flat, _ = self.vae.encode(images, labels, text_bytes, source_id)
+            c_loss = self.contrastive_criterion(
+                self.vae.image_proj(mu_flat.flatten(1)), 
+                self.vae.text_encoder(text_bytes)
+            )
+
         if phase == 1:
             recon, mu, logvar = self.vae(images, labels, text_bytes=text_bytes, source_id=source_id)
-            c_loss = self.contrastive_criterion(self.vae.image_proj(mu.flatten(1)), self.vae.text_encoder(text_bytes)) if config.USE_PROJECTION_HEADS and text_bytes is not None else torch.tensor(0.0, device=config.DEVICE)
             kl_loss = kl_divergence_spatial(mu, logvar) * config.KL_WEIGHT * min(1.0, self.epoch / config.KL_ANNEALING_EPOCHS)
             recon_loss = F.l1_loss(recon, images) * config.RECON_WEIGHT + config.PERCEPTUAL_WEIGHT * self.perceptual_loss(recon, images)
             ssim_loss = self.ssim_loss(recon, images) * config.SSIM_WEIGHT if config.SSIM_WEIGHT > 0 else torch.tensor(0.0, device=config.DEVICE)
             edge_loss = (F.mse_loss(torch.abs(recon[:,:,:,1:]-recon[:,:,:,:-1]), torch.abs(images[:,:,:,1:]-images[:,:,:,:-1])) + F.mse_loss(torch.abs(recon[:,:,1:,:]-recon[:,:,:-1,:]), torch.abs(images[:,:,1:,:]-images[:,:,:-1,:]))) * config.EDGE_WEIGHT
             div_loss = self.vae.diversity_loss * config.DIVERSITY_WEIGHT if self.vae.diversity_loss is not None else torch.tensor(0.0, device=config.DEVICE)
+            
             total = recon_loss + kl_loss + ssim_loss + edge_loss + total_variation_loss(recon, config.TV_WEIGHT) + div_loss + c_loss * config.CONTRASTIVE_WEIGHT
             
             sharpness = calculate_sharpness(recon.detach())
@@ -461,7 +493,7 @@ class EnhancedLabelTrainer:
                 recon_p3 = self.vae.decode(mu, labels, text_bytes, source_id)
                 # Increase Phase 3 recon scale to maintain integrity
                 recon_loss_p3 = F.l1_loss(recon_p3, images) * config.RECON_WEIGHT * 0.5
-                total = drift_loss + consistency_loss + recon_loss_p3 + (self.vae._channel_diversity_loss(mu) * config.DIVERSITY_WEIGHT)
+                total = drift_loss + consistency_loss + recon_loss_p3 + (self.vae._channel_diversity_loss(mu) * config.DIVERSITY_WEIGHT) + c_loss * config.CONTRASTIVE_WEIGHT
                 
                 sharpness = calculate_sharpness(recon_p3.detach())
                 return {
@@ -469,14 +501,17 @@ class EnhancedLabelTrainer:
                     'drift': drift_loss.item(), 
                     'consistency': consistency_loss.item(), 
                     'recon_p3': recon_loss_p3.item(), 
+                    'contrastive': c_loss.item(),
                     'mu_std': mu.std().item(),
                     'sharpness': sharpness
                 }
             else:
+                total = drift_loss + consistency_loss + c_loss * config.CONTRASTIVE_WEIGHT
                 return {
-                    'total': drift_loss + consistency_loss, 
+                    'total': total, 
                     'drift': drift_loss.item(), 
                     'consistency': consistency_loss.item(), 
+                    'contrastive': c_loss.item(),
                     'mu_std': mu.std().item(),
                     'sharpness': sharpness
                 }

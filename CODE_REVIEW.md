@@ -10,8 +10,8 @@ This document tracks the technical integrity of the `enhancedoptimaltransport` p
 | **Schrödinger Bridge Drift** | ✅ | U-Net with Fourier time embeddings. |
 | **OU Reference Process** | ✅ | Theoretically correct bridge velocity. |
 | **Multi-Source Data** | ✅ | STL10 + CIFAR10 integration. |
-| **Neural Tokenizer** | 🚧 | Byte-level encoding (In Development). |
-| **Shared Embedding Space** | 🚧 | Contrastive alignment (Planned). |
+| **Neural Tokenizer** | ✅ | Byte-level encoding (Implemented & Verified). |
+| **Shared Embedding Space** | ✅ | Contrastive alignment (Implemented & Verified). |
 | **Autonomous Engine** | ✅ | KPI-based phase switching and nudges. |
 | **EMA Smoothing** | ✅ | Exponential Moving Average (decay=0.999). |
 

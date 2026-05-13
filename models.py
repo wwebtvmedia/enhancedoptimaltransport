@@ -327,14 +327,14 @@ class SubpixelUpsample(nn.Module):
 # ============================================================
 class LabelConditionedVAE(nn.Module):
     """VAE with label conditioning and optimized spatial resolution (12x12)."""
-    def __init__(self, free_bits=config.FREE_BITS):
+    def __init__(self, free_bits=config.FREE_BITS, text_encoder=None, image_proj=None):
         super().__init__()
         self.free_bits = free_bits
         self._is_exporting = False
         
         # Multimodal Text Encoder
         if config.USE_NEURAL_TOKENIZER:
-            self.text_encoder = NeuralTokenizer()
+            self.text_encoder = text_encoder if text_encoder is not None else NeuralTokenizer()
         else:
             self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
             
@@ -344,7 +344,7 @@ class LabelConditionedVAE(nn.Module):
         # Shared projection for image-text alignment
         if config.USE_PROJECTION_HEADS:
             # Latent dim: C * H * W
-            self.image_proj = SharedEmbeddingHead(config.LATENT_DIM)
+            self.image_proj = image_proj if image_proj is not None else SharedEmbeddingHead(config.LATENT_DIM)
         
         # Fourier feature channels
         if config.USE_FOURIER_FEATURES:
@@ -585,7 +585,7 @@ class FourierTimeEmbed(nn.Module):
 # ============================================================
 class LabelConditionedDrift(nn.Module):
     """Drift network for probability flow ODE."""
-    def __init__(self):
+    def __init__(self, text_encoder=None, image_proj=None):
         super().__init__()
         self._is_exporting = False
         # ========== ENHANCED TIME EMBEDDING WITH FOURIER FEATURES ==========
@@ -598,13 +598,13 @@ class LabelConditionedDrift(nn.Module):
         
         # Multimodal Text Encoder (same as VAE)
         if config.USE_NEURAL_TOKENIZER:
-            self.text_encoder = NeuralTokenizer()
+            self.text_encoder = text_encoder if text_encoder is not None else NeuralTokenizer()
         else:
             self.label_emb = nn.Embedding(config.NUM_CLASSES, config.LABEL_EMB_DIM)
         
         # Shared projection for image-text alignment
         if config.USE_PROJECTION_HEADS:
-            self.image_proj = SharedEmbeddingHead(config.LATENT_DIM)
+            self.image_proj = image_proj if image_proj is not None else SharedEmbeddingHead(config.LATENT_DIM)
         
         # Contextual embedding (Source Dataset ID)
         l_dim = config.TEXT_EMBEDDING_DIM if config.USE_NEURAL_TOKENIZER else config.LABEL_EMB_DIM

@@ -121,9 +121,13 @@ def quantize_model_static(model_path, output_path):
         calibration_data_reader=dr,
         quant_format=1,  # QDQ: QuantizeLinear/DequantizeLinear — supported by onnxruntime-web WASM
         activation_type=QuantType.QUInt8,
-        weight_type=QuantType.QUInt8,
+        weight_type=QuantType.QInt8, # Signed Int8 is often better for weights
         calibrate_method=CalibrationMethod.MinMax,
-        extra_options={'EnableShapeInference': True}
+        extra_options={
+            'EnableShapeInference': True,
+            'ActivationSymmetric': False,
+            'WeightSymmetric': True,
+        }
     )
     print(f"Saved static INT8 model to {output_path}")
 

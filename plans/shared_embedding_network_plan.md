@@ -9,11 +9,11 @@ Replace BPE-based text encoding with a neural network that creates a shared embe
 
 | Component | Status | Notes |
 | :--- | :---: | :--- |
-| **Neural Tokenizer (CNN)** | 🚧 | Implementation in progress. |
+| **Neural Tokenizer (CNN)** | ✅ | Instance shared between VAE and Drift. |
 | **Shared Embedding Design** | ✅ | Dimensions and mapping finalized. |
-| **Contrastive Loss (InfoNCE)** | ✅ | Logic defined. |
-| **Data Pipeline Integration** | 🚧 | STL10 descriptions mapped. |
-| **Three-Phase Integration** | 📅 | Scheduled after VAE baseline. |
+| **Contrastive Loss (InfoNCE)** | ✅ | Active in all training phases. |
+| **Data Pipeline Integration** | ✅ | STL10 descriptions mapped. |
+| **Three-Phase Integration** | ✅ | Fully integrated into joint training. |
 
 ---
 
@@ -23,20 +23,22 @@ Replace BPE-based text encoding with a neural network that creates a shared embe
 - **Input**: Raw UTF-8 bytes (0-255).
 - **Structure**: 1D CNN with adaptive pooling.
 - **Output**: Fixed-length embedding (512-dim).
+- **Sharing**: Single instance injected into both VAE and Drift.
 
 ### 2. Shared Embedding Space
 - **Image Path**: VAE Encoder $\to$ Linear Projection (1152 $\to$ 512).
 - **Text Path**: Neural Tokenizer $\to$ Fixed Embedding (512).
-- **Alignment**: Symmetric InfoNCE loss (Contrastive Learning).
+- **Alignment**: Symmetric InfoNCE loss (Contrastive Learning) applied during all phases.
 
 ---
 
 ## 📅 Execution Roadmap
 
-### Phase 1: Core Components 🚧
+### Phase 1: Core Components ✅
 - [x] Define `NeuralTokenizer` class with 1D convolutions.
-- [ ] Implement `ContrastiveLoss` (InfoNCE).
-- [ ] Update `config.py` with `USE_NEURAL_TOKENIZER` flags.
+- [x] Implement `ContrastiveLoss` (InfoNCE).
+- [x] Update `config.py` with `USE_NEURAL_TOKENIZER` flags.
+- [x] Refactor models and trainer for shared instance injection.
 
 ### Phase 2: Data Pipeline 🚧
 - [ ] Add raw text descriptions for STL10 classes in `data_management.py`.
