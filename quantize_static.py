@@ -1,4 +1,5 @@
 import onnx
+import onnx.numpy_helper
 import os
 import numpy as np
 import torch
@@ -84,6 +85,70 @@ def fix_batch_size(model_path, output_path, batch_size=1):
     onnx.save(model, output_path)
     return output_path
 
+def strip_nonstandard_opsets(model):
+    """Remove opset imports not supported by onnxruntime-web WASM (e.g. com.microsoft, org.pytorch.aten)."""
+    web_safe_domains = {'', 'ai.onnx'}
+    kept = [o for o in model.opset_import if o.domain in web_safe_domains]
+    del model.opset_import[:]
+    model.opset_import.extend(kept)
+    return model
+
+
+def fold_int32_dequantize_nodes(model):
+    """
+    Replace constant INT32 DequantizeLinear nodes with plain float32 initializers.
+
+    onnxruntime-web WASM has no runtime kernel for DequantizeLinear with INT32 input.
+    Desktop ORT constant-folds these at session init; WASM does not.  Bias nodes for
+    Conv/Gemm and scale/bias nodes for InstanceNorm/LayerNorm all land here.
+    """
+    init_map = {i.name: i for i in model.graph.initializer}
+    nodes_to_remove = []
+    new_initializers = []
+
+    for node in model.graph.node:
+        if node.op_type != 'DequantizeLinear' or len(node.input) < 3:
+            continue
+        zp_name = node.input[2]
+        x_name  = node.input[0]
+        scale_name = node.input[1]
+        if zp_name not in init_map or init_map[zp_name].data_type != onnx.TensorProto.INT32:
+            continue
+        if x_name not in init_map or scale_name not in init_map:
+            continue  # dynamic tensor — leave as-is
+
+        x_arr     = onnx.numpy_helper.to_array(init_map[x_name]).astype(np.int32)
+        scale_arr = onnx.numpy_helper.to_array(init_map[scale_name]).astype(np.float32)
+        zp_arr    = onnx.numpy_helper.to_array(init_map[zp_name]).astype(np.int32)
+
+        dequant = (x_arr.astype(np.float64) - zp_arr.astype(np.float64)) * scale_arr.astype(np.float64)
+        dequant_f32 = dequant.astype(np.float32)
+
+        out_name = node.output[0]
+        new_init = onnx.numpy_helper.from_array(dequant_f32, name=out_name)
+        new_initializers.append(new_init)
+        nodes_to_remove.append(node)
+
+    for node in nodes_to_remove:
+        model.graph.node.remove(node)
+    model.graph.initializer.extend(new_initializers)
+
+    # Remove stale initializers that were only used as DQ inputs
+    used_names = set()
+    for node in model.graph.node:
+        used_names.update(node.input)
+    for graph_input in model.graph.input:
+        used_names.add(graph_input.name)
+
+    to_remove = [i for i in model.graph.initializer if i.name not in used_names]
+    for i in to_remove:
+        model.graph.initializer.remove(i)
+
+    print(f"  Folded {len(nodes_to_remove)} INT32 DequantizeLinear nodes; "
+          f"removed {len(to_remove)} stale initializers.")
+    return model
+
+
 def quantize_model_static(model_path, output_path):
     """
     Quantizes an ONNX model to INT8 (static).
@@ -130,6 +195,16 @@ def quantize_model_static(model_path, output_path):
         }
     )
     print(f"Saved static INT8 model to {output_path}")
+
+    # Post-process for onnxruntime-web WASM compatibility:
+    # 1. Strip non-standard opset imports added by quant_pre_process (com.microsoft, etc.)
+    # 2. Constant-fold INT32 DequantizeLinear nodes (WASM has no runtime kernel for these)
+    print("Post-processing for WASM compatibility...")
+    model = onnx.load(output_path)
+    model = strip_nonstandard_opsets(model)
+    model = fold_int32_dequantize_nodes(model)
+    onnx.save(model, output_path)
+    print(f"WASM-compatible model saved to {output_path}")
 
     # Cleanup
     for p in [pre_processed_path, fixed_path]:
