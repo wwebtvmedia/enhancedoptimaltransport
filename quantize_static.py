@@ -292,6 +292,47 @@ def fix_dcr_mode(model):
                         attr.s = b'DCR'
     return model
 
+def simplify_onnx(model_path, output_path):
+    """
+    Simplifies the ONNX model using onnx-simplifier (constant folding, shape inference, etc.)
+    """
+    import onnx
+    from onnxsim import simplify
+    print(f"Simplifying {model_path}...")
+    model = onnx.load(model_path)
+    model_simp, check = simplify(model)
+    if not check:
+        print("Warning: Simplified model check failed!")
+    onnx.save(model_simp, output_path)
+    return output_path
+
+def convert_int64_to_int32(model):
+    """
+    Converts all INT64 inputs and initializers to INT32.
+    """
+    import onnx
+    import numpy as np
+    print("Converting INT64 to INT32 for hardware compatibility...")
+    
+    # 1. Convert INT64 inputs to INT32
+    for input in model.graph.input:
+        if input.type.tensor_type.elem_type == onnx.TensorProto.INT64:
+            input.type.tensor_type.elem_type = onnx.TensorProto.INT32
+            
+    # 2. Convert INT64 initializers to INT32
+    for init in model.graph.initializer:
+        if init.data_type == onnx.TensorProto.INT64:
+            arr = onnx.numpy_helper.to_array(init)
+            new_init = onnx.numpy_helper.from_array(arr.astype(np.int32), name=init.name)
+            init.CopyFrom(new_init)
+            
+    # 3. Convert INT64 value_info to INT32
+    for vi in model.graph.value_info:
+        if vi.type.tensor_type.elem_type == onnx.TensorProto.INT64:
+            vi.type.tensor_type.elem_type = onnx.TensorProto.INT32
+            
+    return model
+
 def quantize_model_static(model_path, output_path):
     """
     Quantizes an ONNX model to INT8 (static).
@@ -300,19 +341,15 @@ def quantize_model_static(model_path, output_path):
         print(f"Error: Model not found at {model_path}")
         return
 
-    # 1. Pre-process the model (symbolic shape inference, etc.)
-    pre_processed_path = model_path.replace(".onnx", "_pre.onnx")
-    print(f"Pre-processing {model_path}...")
-    try:
-        quant_pre_process(model_path, pre_processed_path)
-    except Exception as e:
-        print(f"Pre-processing failed (might be already optimized): {e}")
-        # If pre-processing fails, try to continue with the original model
-        shutil.copy(model_path, pre_processed_path)
-
-    # 2. Static quantization often works better with fixed shapes
-    fixed_path = pre_processed_path.replace("_pre.onnx", "_fixed.onnx")
-    fix_batch_size(pre_processed_path, fixed_path, batch_size=1)
+    # 1. Simplify and fix batch size before quantization
+    temp_simp = model_path.replace(".onnx", "_temp_simp.onnx")
+    simplify_onnx(model_path, temp_simp)
+    
+    fixed_path = temp_simp.replace("_temp_simp.onnx", "_fixed.onnx")
+    fix_batch_size(temp_simp, fixed_path, batch_size=1)
+    
+    # Simplify AGAIN after fixing batch size to constant-fold shape-dependent nodes
+    simplify_onnx(fixed_path, fixed_path)
 
     print(f"Preparing calibration data for {fixed_path}...")
     
@@ -339,21 +376,26 @@ def quantize_model_static(model_path, output_path):
     )
     print(f"Saved static INT8 model to {output_path}")
 
-    # Post-process for onnxruntime-web WASM compatibility:
-    # 1. Strip non-standard opset imports added by quant_pre_process (com.microsoft, etc.)
-    # 2. Constant-fold INT32 DequantizeLinear nodes (WASM has no runtime kernel for these)
-    print("Post-processing for WASM compatibility...")
+    # Post-process for onnxruntime-web WASM and STM32 compatibility:
+    print("Post-processing for compatibility...")
     model = onnx.load(output_path)
     model = strip_nonstandard_opsets(model)
     model = fold_int32_dequantize_nodes(model)
     model = split_shared_qdq_outputs(model)
     model = fix_dcr_mode(model)
     model = topological_sort(model)
+    
+    # Convert to INT32 for STM32 hardware compatibility (after quantization to avoid ORT errors)
+    model = convert_int64_to_int32(model)
+    
     onnx.save(model, output_path)
-    print(f"WASM-compatible model saved to {output_path}")
+    
+    # Final simplification pass to clean up any messy Q/DQ splits
+    simplify_onnx(output_path, output_path)
+    print(f"Compatibility-optimized model saved to {output_path}")
 
     # Cleanup
-    for p in [pre_processed_path, fixed_path]:
+    for p in [temp_simp, fixed_path]:
         if os.path.exists(p):
             os.remove(p)
 
