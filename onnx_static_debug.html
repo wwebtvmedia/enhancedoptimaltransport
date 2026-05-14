@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SB Static Quantization Debugger</title>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: #e0e0e0; margin: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .card { background: #1e1e1e; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #333; }
+        h1, h2 { color: #4af; }
+        pre { background: #000; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 12px; color: #0f0; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        canvas { background: #000; width: 100%; image-rendering: pixelated; border: 1px solid #444; }
+        button { background: #4af; color: #000; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        button:disabled { background: #444; color: #888; }
+        .log-entry { margin-bottom: 5px; border-bottom: 1px solid #222; padding-bottom: 2px; }
+        .error { color: #f44; }
+        .warn { color: #fa0; }
+        .success { color: #4f4; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.all.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>🛠️ Static Quantization Debugger</h1>
+        
+        <div class="card">
+            <h2>1. Model Loading</h2>
+            <p>This tool specifically targets <code>*_static_int8.onnx</code> models which use pre-calculated activation ranges.</p>
+            <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+                <button id="loadAllStaticBtn" style="background: #2b2;">🚀 Load All Static (Recommended)</button>
+                <button id="loadDriftStaticBtn">Load Drift Static</button>
+                <button id="loadGenStaticBtn">Load Gen Static</button>
+                <button id="loadFp32Btn" style="background: #666;">Load FP32 (Reference)</button>
+            </div>
+            <div id="loadStatus" style="font-weight: bold;">Status: Waiting...</div>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <h2>Inference</h2>
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <label>Category: <select id="labelSelect">
+                        <option value="0">Airplane</option><option value="1">Bird</option>
+                        <option value="2">Car</option><option value="3">Cat</option>
+                        <option value="4">Deer</option><option value="5">Dog</option>
+                        <option value="6">Horse</option><option value="7">Monkey</option>
+                        <option value="8">Ship</option><option value="9">Truck</option>
+                    </select></label>
+                    <label>Steps: <input type="number" id="stepsInput" value="50" min="1" max="100"></label>
+                    <button id="runBtn" disabled>Run Inference</button>
+                </div>
+                <div style="margin-top: 20px;">
+                    <canvas id="outputCanvas" width="96" height="96"></canvas>
+                </div>
+            </div>
+            <div class="card">
+                <h2>Detailed Logs</h2>
+                <div id="logBox" style="height: 400px; overflow-y: auto; background: #000; padding: 10px; font-family: monospace; font-size: 11px;">
+                    [Console Ready]
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Model Metadata</h2>
+            <div class="grid">
+                <div>
+                    <h3>Drift Model</h3>
+                    <pre id="driftMeta">N/A</pre>
+                </div>
+                <div>
+                    <h3>Generator Model</h3>
+                    <pre id="genMeta">N/A</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const logBox = document.getElementById('logBox');
+        function log(msg, cls = '') {
+            const div = document.createElement('div');
+            div.className = 'log-entry ' + cls;
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logBox.appendChild(div);
+            logBox.scrollTop = logBox.scrollHeight;
+        }
+
+        let driftSession = null;
+        let genSession = null;
+        const IMG_SIZE = 96;
+        const LATENT_SHAPE = [1, 8, 12, 12];
+        const MAX_TEXT_BYTES = 128;
+
+        const CLASS_DESCRIPTIONS = ["airplane", "bird", "car", "cat", "deer", "dog", "horse", "monkey", "ship", "truck"];
+        function textToBytes(text) {
+            const utf8 = new TextEncoder().encode(text);
+            const result = new BigInt64Array(MAX_TEXT_BYTES).fill(256n);
+            for (let i = 0; i < Math.min(utf8.length, MAX_TEXT_BYTES); i++) result[i] = BigInt(utf8[i]);
+            return result;
+        }
+
+        async function createSession(url) {
+            log(`Fetching ${url}...`);
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const buffer = await response.arrayBuffer();
+                log(`Loading session for ${url} (Size: ${(buffer.byteLength/1024/1024).toFixed(2)}MB)...`);
+                
+                // basic optimization avoids extended QDQ-fusion crash on drift INT8 models
+                const session = await ort.InferenceSession.create(buffer, {
+                    executionProviders: ['wasm'],
+                    graphOptimizationLevel: 'basic',
+                    logSeverityLevel: 0
+                });
+                log(`Session created successfully.`, 'success');
+                return session;
+            } catch (e) {
+                log(`Failed to load ${url}: ${e.message}`, 'error');
+                throw e;
+            }
+        }
+
+        function displayMeta(session, id) {
+            const info = {
+                inputs: session.inputNames.map(name => ({
+                    name,
+                    type: session.inputMetadata[name].type,
+                    dims: session.inputMetadata[name].dims
+                })),
+                outputs: session.outputNames.map(name => ({
+                    name,
+                    type: session.outputMetadata[name].type,
+                    dims: session.outputMetadata[name].dims
+                }))
+            };
+            document.getElementById(id).textContent = JSON.stringify(info, null, 2);
+        }
+
+        document.getElementById('loadAllStaticBtn').onclick = async () => {
+            const btn = document.getElementById('loadAllStaticBtn');
+            btn.disabled = true;
+            document.getElementById('loadStatus').textContent = 'Loading...';
+            try {
+                driftSession = await createSession('./enhanced_label_sb/onnx/drift_static_int8.onnx');
+                genSession = await createSession('./enhanced_label_sb/onnx/generator_static_int8.onnx');
+                displayMeta(driftSession, 'driftMeta');
+                displayMeta(genSession, 'genMeta');
+                document.getElementById('runBtn').disabled = false;
+                document.getElementById('loadStatus').innerHTML = '<span class="success">✅ All Static Models Loaded</span>';
+                log('Static models loaded.', 'success');
+            } catch (e) {
+                document.getElementById('loadStatus').innerHTML = '<span class="error">❌ Failed to load. Check console/network.</span>';
+                log('Failed to load static models: ' + e.message, 'error');
+            }
+            btn.disabled = false;
+        };
+
+        document.getElementById('loadDriftStaticBtn').onclick = async () => {
+            try {
+                driftSession = await createSession('./enhanced_label_sb/onnx/drift_static_int8.onnx');
+                displayMeta(driftSession, 'driftMeta');
+                log('Drift static loaded.', 'success');
+            } catch (e) {}
+        };
+
+        document.getElementById('loadGenStaticBtn').onclick = async () => {
+            try {
+                genSession = await createSession('./enhanced_label_sb/onnx/generator_static_int8.onnx');
+                displayMeta(genSession, 'genMeta');
+                log('Generator static loaded.', 'success');
+            } catch (e) {}
+        };
+
+        document.getElementById('loadFp32Btn').onclick = async () => {
+            const btn = document.getElementById('loadFp32Btn');
+            btn.disabled = true;
+            document.getElementById('loadStatus').textContent = 'Loading...';
+            try {
+                driftSession = await createSession('./enhanced_label_sb/onnx/drift.onnx');
+                genSession = await createSession('./enhanced_label_sb/onnx/generator.onnx');
+                displayMeta(driftSession, 'driftMeta');
+                displayMeta(genSession, 'genMeta');
+                document.getElementById('runBtn').disabled = false;
+                document.getElementById('loadStatus').innerHTML = '<span class="success">✅ FP32 Models Loaded (Reference)</span>';
+                log('FP32 models loaded.', 'success');
+            } catch (e) {
+                document.getElementById('loadStatus').innerHTML = '<span class="error">❌ Failed to load FP32.</span>';
+                log('Failed to load FP32 models.', 'error');
+            }
+            btn.disabled = false;
+        };
+
+        document.getElementById('runBtn').onclick = async () => {
+            const label = parseInt(document.getElementById('labelSelect').value);
+            const steps = parseInt(document.getElementById('stepsInput').value);
+            const btn = document.getElementById('runBtn');
+            btn.disabled = true;
+            log(`Starting inference: Label=${label}, Steps=${steps}`);
+
+            try {
+                const latentSize = LATENT_SHAPE.reduce((a,b)=>a*b, 1);
+                let zData = new Float32Array(latentSize);
+                for(let i=0; i<latentSize; i++) zData[i] = (Math.random()*2-1) * 0.8;
+                
+                let z = new ort.Tensor('float32', zData, LATENT_SHAPE);
+                const textBytes = textToBytes(CLASS_DESCRIPTIONS[label]);
+                const textTensor = new ort.Tensor('int64', textBytes, [1, MAX_TEXT_BYTES]);
+                const sourceTensor = new ort.Tensor('int64', new BigInt64Array([0n]), [1]);
+                const cfgTensor = new ort.Tensor('float32', new Float32Array([6.5]), [1]);
+                const dt = 1.0 / steps;
+
+                for(let i=0; i<steps; i++) {
+                    const tVal = i * dt;
+                    const tTensor = new ort.Tensor('float32', new Float32Array([tVal]), [1, 1]);
+                    
+                    const driftRes = await driftSession.run({
+                        z, t: tTensor, text_bytes: textTensor, source_id: sourceTensor, cfg_scale: cfgTensor
+                    });
+                    
+                    const d = driftRes.drift;
+                    const nextZ = new Float32Array(z.data.length);
+                    for(let j=0; j<z.data.length; j++) {
+                        nextZ[j] = z.data[j] + d.data[j] * dt;
+                    }
+                    z = new ort.Tensor('float32', nextZ, LATENT_SHAPE);
+                    
+                    if (i % 10 === 0) log(`Step ${i}/${steps} complete...`);
+                }
+
+                log('Trajectory complete. Decoding...');
+                const genRes = await genSession.run({
+                    z, text_bytes: textTensor, source_id: sourceTensor
+                });
+                
+                const pixels = genRes.reconstruction.data;
+                const canvas = document.getElementById('outputCanvas');
+                const ctx = canvas.getContext('2d');
+                const imgData = ctx.createImageData(IMG_SIZE, IMG_SIZE);
+                const plane = IMG_SIZE * IMG_SIZE;
+                
+                for(let i=0; i<plane; i++) {
+                    imgData.data[i*4+0] = Math.min(255, Math.max(0, (pixels[0*plane+i]+1)/2 * 255));
+                    imgData.data[i*4+1] = Math.min(255, Math.max(0, (pixels[1*plane+i]+1)/2 * 255));
+                    imgData.data[i*4+2] = Math.min(255, Math.max(0, (pixels[2*plane+i]+1)/2 * 255));
+                    imgData.data[i*4+3] = 255;
+                }
+                ctx.putImageData(imgData, 0, 0);
+                log('Success!', 'success');
+
+            } catch (e) {
+                log(`Inference error: ${e.message}`, 'error');
+                console.error(e);
+            }
+            btn.disabled = false;
+        };
+    </script>
+</body>
+</html>

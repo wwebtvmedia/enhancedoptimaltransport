@@ -312,10 +312,13 @@
         }
 
         async function createSession(modelData) {
-            // Try WASM first for comparison tool to ensure bit-exactness and compatibility with INT8
+            // graphOptimizationLevel:'basic' avoids the onnxruntime 1.20 extended-optimizer
+            // crash on QDQ drift models (RemoveNode/CanRemoveNodeAndMergeEdges mismatch).
+            // WASM has no native INT8 SIMD so extended QDQ fusion gives no speed benefit anyway.
             try {
-                return await ort.InferenceSession.create(modelData, { 
+                return await ort.InferenceSession.create(modelData, {
                     executionProviders: ['wasm'],
+                    graphOptimizationLevel: 'basic',
                     logSeverityLevel: 0
                 });
             } catch (e) {

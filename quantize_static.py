@@ -94,6 +94,61 @@ def strip_nonstandard_opsets(model):
     return model
 
 
+def split_shared_qdq_outputs(model):
+    """
+    Enforce strict 1-consumer-per-output for QuantizeLinear and DequantizeLinear.
+
+    onnxruntime's RemoveNode / CanRemoveNodeAndMergeEdges optimizer logic
+    assumes each Q/DQ output has exactly one consumer.  In the CFG drift model,
+    shared weights and activations fan-out through the same Q or DQ node into
+    both conditioned and unconditioned branches, causing ORT 1.20 to raise:
+      "Should be unreachable if CanRemoveNodeAndMergeEdges is in sync…"
+    Fix: for each extra consumer beyond the first, clone the Q/DQ node with a
+    fresh output name so every consumer has its own dedicated Q/DQ node.
+    """
+    from collections import defaultdict
+
+    def build_consumers(graph):
+        c = defaultdict(list)
+        for node in graph.node:
+            for idx, inp in enumerate(node.input):
+                if inp:
+                    c[inp].append((node, idx))
+        return c
+
+    split_count = 0
+
+    for op_type in ('QuantizeLinear', 'DequantizeLinear'):
+        consumers = build_consumers(model.graph)
+        new_nodes = []
+        for node in list(model.graph.node):
+            if node.op_type != op_type:
+                continue
+            out = node.output[0]
+            consuming = consumers.get(out, [])
+            if len(consuming) <= 1:
+                continue
+            for consumer_node, input_idx in consuming[1:]:
+                split_count += 1
+                new_out = f"{out}_split_{split_count}"
+                new_node = onnx.helper.make_node(
+                    op_type,
+                    inputs=list(node.input),
+                    outputs=[new_out],
+                    name=f"{node.name}_split_{split_count}" if node.name else f"{op_type}_split_{split_count}",
+                )
+                for attr in node.attribute:
+                    new_node.attribute.append(attr)
+                new_nodes.append(new_node)
+                consumer_node.input[input_idx] = new_out
+        model.graph.node.extend(new_nodes)
+        if new_nodes:
+            print(f"  Split {len(new_nodes)} shared {op_type} consumer edges.")
+
+    print(f"  Total splits: {split_count} (+{split_count} new Q/DQ nodes).")
+    return model
+
+
 def fold_int32_dequantize_nodes(model):
     """
     Replace constant INT32 DequantizeLinear nodes with plain float32 initializers.
@@ -203,6 +258,7 @@ def quantize_model_static(model_path, output_path):
     model = onnx.load(output_path)
     model = strip_nonstandard_opsets(model)
     model = fold_int32_dequantize_nodes(model)
+    model = split_shared_qdq_outputs(model)
     onnx.save(model, output_path)
     print(f"WASM-compatible model saved to {output_path}")
 
