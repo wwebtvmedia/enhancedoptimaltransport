@@ -307,12 +307,14 @@ class LabelConditionedBlock(nn.Module):
 class SubpixelUpsample(nn.Module):
     """
     Subpixel Convolution (PixelShuffle) for sharper upsampling.
-    Uses ICNR initialization to prevent checkerboard artifacts.
+    Uses a manual implementation instead of nn.PixelShuffle to ensure 
+    better compatibility with hardware compilers like STM32Cube.AI 
+    (avoiding the 'only DCR mode is supported' error).
     """
     def __init__(self, in_channels, out_channels, upscale_factor=2):
         super().__init__()
+        self.upscale_factor = upscale_factor
         self.conv = nn.Conv2d(in_channels, out_channels * (upscale_factor**2), kernel_size=3, stride=1, padding=1)
-        self.shuffle = nn.PixelShuffle(upscale_factor)
         self.norm = nn.GroupNorm(min(8, out_channels), out_channels)
         
         # Initialize with ICNR
@@ -320,7 +322,21 @@ class SubpixelUpsample(nn.Module):
         nn.init.zeros_(self.conv.bias)
 
     def forward(self, x):
-        return F.silu(self.norm(self.shuffle(self.conv(x))))
+        # Manual PixelShuffle (CRD-compatible layout that exports as Reshape/Transpose)
+        x = self.conv(x)
+        b, c_rr, h, w = x.shape
+        r = self.upscale_factor
+        c = c_rr // (r*r)
+        
+        # Reshape to [B, C, r, r, H, W]
+        x = x.reshape(b, c, r, r, h, w)
+        # Permute to [B, C, H, r, W, r]
+        x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
+        # Reshape to [B, C, H*r, W*r]
+        x = x.reshape(b, c, h*r, w*r)
+        
+        return F.silu(self.norm(x))
+
 
 # ============================================================
 # LABEL-CONDITIONED VAE
