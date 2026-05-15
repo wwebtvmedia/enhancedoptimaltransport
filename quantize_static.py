@@ -38,14 +38,20 @@ class SBCalibrationDataReader(CalibrationDataReader):
             batch_labels = labels[i:i+batch_size]
             batch_text = text_bytes[i:i+batch_size]
             batch_source = np.zeros((batch_size,), dtype=np.int64)
-            
+
             # z depends on the model
             z = np.random.randn(batch_size, config.LATENT_CHANNELS, config.LATENT_H, config.LATENT_W).astype(np.float32)
-            
+
+            # Pre-compute normalized text embeddings for headless models
+            text_emb = np.random.randn(batch_size, config.TEXT_EMBEDDING_DIM).astype(np.float32)
+            norms = np.linalg.norm(text_emb, axis=-1, keepdims=True)
+            text_emb = text_emb / (norms + 1e-8)
+
             sample = {}
             if 'z' in input_names: sample['z'] = z
             if 'label' in input_names: sample['label'] = batch_labels
             if 'text_bytes' in input_names: sample['text_bytes'] = batch_text
+            if 'text_embedding' in input_names: sample['text_embedding'] = text_emb
             if 'source_id' in input_names: sample['source_id'] = batch_source
             
             # Apply the same scaling as in training/inference if it's the drift model
@@ -252,45 +258,211 @@ def topological_sort(model):
 
 def fix_dcr_mode(model):
     """
-    STM32Cube.AI only supports DCR mode for DepthToSpace nodes.
-    This function converts CRD mode to DCR mode by adding a Transpose before the node.
+    ST Edge AI / atonn only supports DCR mode for DepthToSpace nodes.
+
+    PyTorch's F.pixel_shuffle traces to DepthToSpace(mode=CRD).  CRD and DCR
+    differ in channel ordering:
+      CRD: out[n,c,h*r+a,w*r+b] = in[n, c*r*r + a*r + b, h, w]
+      DCR: out[n,c,h*r+a,w*r+b] = in[n, a*r*C + b*C + c,   h, w]
+
+    To convert without changing model semantics we permute the OUTPUT CHANNELS
+    of the Conv immediately upstream of DepthToSpace from CRD order to DCR
+    order, then change the DepthToSpace mode attribute to DCR.  The permutation
+    is: dcr_perm[a*r*C + b*C + c] = c*r*r + a*r + b
     """
-    nodes_to_remove = []
-    new_nodes = []
-    
+    init_map = {i.name: i for i in model.graph.initializer}
+    # Map output tensor → producing node (for walking upstream)
+    output_to_node = {}
+    for n in model.graph.node:
+        for out in n.output:
+            output_to_node[out] = n
+
+    count = 0
     for node in model.graph.node:
-        if node.op_type == 'DepthToSpace':
-            mode = 'CRD'
-            blocksize = 1
+        if node.op_type != 'DepthToSpace':
+            continue
+        mode = 'CRD'
+        blocksize = 2
+        for attr in node.attribute:
+            if attr.name == 'mode':
+                mode = attr.s.decode('utf-8')
+            if attr.name == 'blocksize':
+                blocksize = attr.i
+        if mode != 'CRD':
+            continue
+
+        r = blocksize
+        print(f"  Converting {node.name} (blocksize={r}) CRD→DCR with weight permutation…")
+
+        # Walk upstream through DequantizeLinear nodes to find the Conv
+        upstream_name = node.input[0]
+        upstream = output_to_node.get(upstream_name)
+        while upstream is not None and upstream.op_type in ('DequantizeLinear', 'QuantizeLinear'):
+            upstream_name = upstream.input[0]
+            upstream = output_to_node.get(upstream_name)
+
+        if upstream is None or upstream.op_type != 'Conv':
+            print(f"    WARNING: could not find upstream Conv for {node.name}, skipping permutation.")
             for attr in node.attribute:
                 if attr.name == 'mode':
-                    mode = attr.s.decode('utf-8')
-                if attr.name == 'blocksize':
-                    blocksize = attr.i
-            
-            if mode == 'CRD':
-                print(f"  Converting {node.name} from CRD to DCR mode...")
-                # CRD layout: [N, C, r, r, H, W] reshaped from [N, C*r*r, H, W]
-                # DCR layout: [N, r, r, C, H, W] reshaped from [N, r*r*C, H, W]
-                
-                # To convert CRD to DCR:
-                # 1. The input to DepthToSpace (CRD) is [N, C*r*r, H, W]
-                # 2. We need to Transpose the input so that the r*r components are at the start of the C dimension.
-                # Actually, PixelShuffle in PyTorch is CRD: out[n, c, h*r, w*r] = in[n, c*r*r + r*iy + ix, h, w]
-                # DCR is: out[n, c, h*r, w*r] = in[n, (iy*r + ix)*C + c, h, w]
-                
-                # Instead of complex Transpose, we can just change the mode attribute if the hardware 
-                # expectation matches our data, but usually it doesn't.
-                # However, many users report that just switching the attribute and hoping for the best 
-                # works if the preceding Conv was trained with that layout in mind.
-                # But here we want a general fix.
-                
-                # For STM32, let's just change the attribute and warn the user.
-                # Most ST tools expect DCR.
-                for attr in node.attribute:
-                    if attr.name == 'mode':
-                        attr.s = b'DCR'
+                    attr.s = b'DCR'
+            continue
+
+        # Determine C (output channels / r^2).
+        # In QDQ models the Conv weight goes: INT8_init → DequantizeLinear → Conv,
+        # so upstream.input[1] is a DQ output, not a direct initializer.
+        weight_ref = upstream.input[1]
+        if weight_ref not in init_map:
+            # Walk through DequantizeLinear
+            dq = output_to_node.get(weight_ref)
+            if dq is not None and dq.op_type == 'DequantizeLinear':
+                weight_ref = dq.input[0]
+        if weight_ref not in init_map:
+            print(f"    WARNING: Conv weight not in initializers for {node.name}, skipping.")
+            for attr in node.attribute:
+                if attr.name == 'mode':
+                    attr.s = b'DCR'
+            continue
+
+        weight_init = init_map[weight_ref]
+        w_arr = onnx.numpy_helper.to_array(weight_init)
+        N = w_arr.shape[0]          # total output channels = C * r * r
+        C = N // (r * r)
+
+        # Build CRD→DCR permutation
+        # dcr_channel for pixel (c,a,b): a*r*C + b*C + c
+        # crd_channel for pixel (c,a,b): c*r*r + a*r + b
+        # We want: new_weight_row[dcr_idx] = old_weight_row[crd_idx]
+        perm = np.zeros(N, dtype=np.int64)
+        for a in range(r):
+            for b in range(r):
+                for c in range(C):
+                    crd_idx = c * r * r + a * r + b
+                    dcr_idx = a * r * C + b * C + c
+                    perm[dcr_idx] = crd_idx
+
+        # Apply permutation to Conv weight rows (INT8 or float32)
+        new_w = w_arr[perm]
+        new_init = onnx.numpy_helper.from_array(new_w, name=weight_ref)
+        weight_init.CopyFrom(new_init)
+
+        # Apply permutation to bias (if present; may be direct or via DQ)
+        if len(upstream.input) > 2 and upstream.input[2]:
+            bias_ref = upstream.input[2]
+            if bias_ref not in init_map:
+                dq = output_to_node.get(bias_ref)
+                if dq is not None and dq.op_type == 'DequantizeLinear':
+                    bias_ref = dq.input[0]
+            if bias_ref in init_map:
+                b_arr = onnx.numpy_helper.to_array(init_map[bias_ref])
+                if b_arr.ndim == 1 and b_arr.shape[0] == N:
+                    new_b = b_arr[perm]
+                    new_bias = onnx.numpy_helper.from_array(new_b, name=bias_ref)
+                    init_map[bias_ref].CopyFrom(new_bias)
+
+        # Permute per-channel Q/DQ scale and zero_point for the Conv output
+        # and for the DequantizeLinear that feeds the weight.
+        conv_out = upstream.output[0]
+        for qnode in model.graph.node:
+            if qnode.op_type not in ('QuantizeLinear', 'DequantizeLinear'):
+                continue
+            # Q/DQ attached to Conv output (output quantization)
+            if qnode.input[0] == conv_out:
+                for slot in (1, 2):
+                    if len(qnode.input) > slot and qnode.input[slot] in init_map:
+                        arr = onnx.numpy_helper.to_array(init_map[qnode.input[slot]])
+                        if arr.ndim == 1 and arr.shape[0] == N:
+                            new_arr = arr[perm]
+                            new_i = onnx.numpy_helper.from_array(new_arr, name=qnode.input[slot])
+                            init_map[qnode.input[slot]].CopyFrom(new_i)
+            # DQ attached to the weight initializer (weight dequantization)
+            if (qnode.op_type == 'DequantizeLinear' and
+                    len(qnode.input) > 0 and qnode.input[0] == weight_ref):
+                for slot in (1, 2):
+                    if len(qnode.input) > slot and qnode.input[slot] in init_map:
+                        arr = onnx.numpy_helper.to_array(init_map[qnode.input[slot]])
+                        if arr.ndim == 1 and arr.shape[0] == N:
+                            new_arr = arr[perm]
+                            new_i = onnx.numpy_helper.from_array(new_arr, name=qnode.input[slot])
+                            init_map[qnode.input[slot]].CopyFrom(new_i)
+
+        # Finally flip the mode attribute
+        for attr in node.attribute:
+            if attr.name == 'mode':
+                attr.s = b'DCR'
+        count += 1
+
+    print(f"  Converted {count} DepthToSpace node(s) CRD→DCR with weight permutation.")
     return model
+
+def replace_depthtospace_with_reshape(model):
+    """
+    Replace DepthToSpace nodes with a 6D Reshape+Transpose+Reshape decomposition.
+
+    stedgeai 4.0 / atonn does not support the DepthToSpace op despite listing it in
+    supported-ops.  The 6D Reshape+Transpose+Reshape sequence is semantically equivalent
+    and IS accepted by atonn (falls back to a SW epoch).
+
+    DCR mode:  input [N, r²C, H, W] → Reshape[N,r,r,C,H,W] → Transpose[0,3,4,1,5,2]
+                                     → Reshape[N,C,Hr,Wr]
+    CRD mode:  input [N, Cr², H, W] → Reshape[N,C,r,r,H,W] → Transpose[0,1,4,2,5,3]
+                                     → Reshape[N,C,Hr,Wr]
+    """
+    shape_map = {}
+    for vi in list(model.graph.input) + list(model.graph.value_info) + list(model.graph.output):
+        if vi.type.tensor_type.HasField('shape'):
+            shape_map[vi.name] = [d.dim_value for d in vi.type.tensor_type.shape.dim]
+
+    nodes_to_remove, new_nodes, new_inits = [], [], []
+    count = 0
+
+    for node in model.graph.node:
+        if node.op_type != 'DepthToSpace':
+            continue
+        r, mode = 2, 'DCR'
+        for a in node.attribute:
+            if a.name == 'blocksize': r = a.i
+            if a.name == 'mode': mode = a.s.decode()
+
+        inp, out = node.input[0], node.output[0]
+        in_shape = shape_map.get(inp)
+        if in_shape is None:
+            print(f"  WARNING: no shape for {inp}, skipping {node.name}")
+            continue
+
+        N, rrC, H, W = in_shape
+        C = rrC // (r * r)
+        prefix = (node.name or f'dts_{count}').replace('/', '_')
+
+        sh1_name, sh2_name = f'{prefix}_sh1', f'{prefix}_sh2'
+        r1_name, t1_name  = f'{prefix}_r1', f'{prefix}_t1'
+
+        if mode == 'DCR':
+            shape1, perm = [N, r, r, C, H, W], [0, 3, 4, 1, 5, 2]
+        else:
+            shape1, perm = [N, C, r, r, H, W], [0, 1, 4, 2, 5, 3]
+        shape2 = [N, C, H * r, W * r]
+
+        new_inits += [
+            onnx.numpy_helper.from_array(np.array(shape1, dtype=np.int64), name=sh1_name),
+            onnx.numpy_helper.from_array(np.array(shape2, dtype=np.int64), name=sh2_name),
+        ]
+        new_nodes += [
+            onnx.helper.make_node('Reshape',   [inp, sh1_name], [r1_name], name=f'{prefix}_reshape1'),
+            onnx.helper.make_node('Transpose', [r1_name],        [t1_name], perm=perm, name=f'{prefix}_transpose'),
+            onnx.helper.make_node('Reshape',   [t1_name, sh2_name], [out], name=f'{prefix}_reshape2'),
+        ]
+        nodes_to_remove.append(node)
+        count += 1
+        print(f'  Replaced {node.name} ({mode}, r={r}): {in_shape} -> {shape2}')
+
+    for n in nodes_to_remove:
+        model.graph.node.remove(n)
+    model.graph.node.extend(new_nodes)
+    model.graph.initializer.extend(new_inits)
+    print(f'  Replaced {count} DepthToSpace node(s) with Reshape+Transpose+Reshape.')
+    return model
+
 
 def simplify_onnx(model_path, output_path):
     """
@@ -382,16 +554,42 @@ def quantize_model_static(model_path, output_path):
     model = strip_nonstandard_opsets(model)
     model = fold_int32_dequantize_nodes(model)
     model = split_shared_qdq_outputs(model)
-    model = fix_dcr_mode(model)
     model = topological_sort(model)
-    
-    # Convert to INT32 for STM32 hardware compatibility (after quantization to avoid ORT errors)
-    model = convert_int64_to_int32(model)
-    
+    # Note: INT64→INT32 conversion is intentionally skipped. All data inputs are now
+    # float32 (text_embedding replaces text_bytes; source_id is folded to constant).
+    # The only remaining INT64 values are ONNX-required shape tensors for Reshape nodes,
+    # which must remain INT64 per the ONNX spec — converting them breaks shape inference.
+
     onnx.save(model, output_path)
-    
+
     # Final simplification pass to clean up any messy Q/DQ splits
     simplify_onnx(output_path, output_path)
+
+    # Populate value_info with explicit type/shape annotations for all intermediate
+    # tensors (including unquantized float32 LayerNorm ops).  stedgeai's shape
+    # inference engine fails when these are absent.
+    from onnx import shape_inference as _si
+    model = onnx.load(output_path)
+    model = _si.infer_shapes(model)
+    onnx.save(model, output_path)
+
+    # fix_dcr_mode MUST run last — onnxsim reverts DepthToSpace attributes.
+    # It also permutes the preceding Conv output channels so CRD→DCR is lossless.
+    model = onnx.load(output_path)
+    model = fix_dcr_mode(model)
+    onnx.save(model, output_path)
+
+    # Replace DepthToSpace with 6D Reshape+Transpose+Reshape.
+    # stedgeai 4.0 / atonn does not support the DepthToSpace op (despite listing it in
+    # supported-ops). The 6D Reshape+Transpose+Reshape decomposition is semantically
+    # equivalent and IS accepted by atonn as a SW epoch. fix_dcr_mode must run first
+    # so the correct DCR decomposition is used.
+    model = onnx.load(output_path)
+    model = replace_depthtospace_with_reshape(model)
+    model = topological_sort(model)
+    from onnx import shape_inference as _si2
+    model = _si2.infer_shapes(model)
+    onnx.save(model, output_path)
     print(f"Compatibility-optimized model saved to {output_path}")
 
     # Cleanup

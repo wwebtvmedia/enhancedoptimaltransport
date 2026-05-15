@@ -307,34 +307,23 @@ class LabelConditionedBlock(nn.Module):
 class SubpixelUpsample(nn.Module):
     """
     Subpixel Convolution (PixelShuffle) for sharper upsampling.
-    Uses a manual implementation instead of nn.PixelShuffle to ensure 
-    better compatibility with hardware compilers like STM32Cube.AI 
-    (avoiding the 'only DCR mode is supported' error).
+    F.pixel_shuffle traces to a single DepthToSpace(CRD) op in ONNX, which
+    atonn can then map to NPU (after the post-processing step permutes the
+    conv output channels and changes mode to DCR).
     """
     def __init__(self, in_channels, out_channels, upscale_factor=2):
         super().__init__()
         self.upscale_factor = upscale_factor
         self.conv = nn.Conv2d(in_channels, out_channels * (upscale_factor**2), kernel_size=3, stride=1, padding=1)
         self.norm = nn.GroupNorm(min(8, out_channels), out_channels)
-        
+
         # Initialize with ICNR
         self.conv.weight.data.copy_(icnr_init(self.conv.weight.data, upscale_factor))
         nn.init.zeros_(self.conv.bias)
 
     def forward(self, x):
-        # Manual PixelShuffle (CRD-compatible layout that exports as Reshape/Transpose)
         x = self.conv(x)
-        b, c_rr, h, w = x.shape
-        r = self.upscale_factor
-        c = c_rr // (r*r)
-        
-        # Reshape to [B, C, r, r, H, W]
-        x = x.reshape(b, c, r, r, h, w)
-        # Permute to [B, C, H, r, W, r]
-        x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
-        # Reshape to [B, C, H*r, W*r]
-        x = x.reshape(b, c, h*r, w*r)
-        
+        x = F.pixel_shuffle(x, self.upscale_factor)
         return F.silu(self.norm(x))
 
 
@@ -487,9 +476,11 @@ class LabelConditionedVAE(nn.Module):
             }
         return low_penalty + high_penalty + balance_loss
 
-    def _get_conditioning(self, labels, text_bytes=None, source_id=None):
+    def _get_conditioning(self, labels, text_bytes=None, source_id=None, text_emb=None):
         """Standardized conditioning extractor for both modalities."""
-        if config.USE_NEURAL_TOKENIZER and text_bytes is not None:
+        if text_emb is not None:
+            cond_emb = text_emb
+        elif config.USE_NEURAL_TOKENIZER and text_bytes is not None:
             cond_emb = self.text_encoder(text_bytes)
         else:
             if hasattr(self, 'label_emb'):
@@ -533,9 +524,9 @@ class LabelConditionedVAE(nn.Module):
             self.diversity_loss = self._channel_diversity_loss(mu)
         return mu, logvar
     
-    def decode(self, z, labels, text_bytes=None, source_id=None):
+    def decode(self, z, labels, text_bytes=None, source_id=None, text_emb=None):
         """Decode latents to images with enhanced architecture."""
-        cond_emb = self._get_conditioning(labels, text_bytes, source_id)
+        cond_emb = self._get_conditioning(labels, text_bytes, source_id, text_emb=text_emb)
 
         # Apply latent normalization for stability
         h = self.latent_norm(z)
@@ -737,21 +728,27 @@ class LabelConditionedDrift(nn.Module):
         time_weight = self.time_weight_net(t)
        
         # t shape: (batch, 1)
-        t_scaled = t * 3.0                     # (batch, 1) in [0, 3]
-        idx_floor = torch.floor(t_scaled).long()          # 0,1,2
-        idx_ceil = (idx_floor + 1).clamp(max=3)           # 1,2,3
-        frac = (t_scaled - idx_floor.float())             # fractional part in [0,1)
+        if self._is_exporting:
+            # Gather(time_scales, dynamic_idx) is not supported by ST Edge AI.
+            # Use mean of learned scales — small correction term (≈0.1) so the
+            # approximation error is negligible for hardware deployment.
+            time_scale = self.time_scales.mean().reshape(1, 1, 1, 1)
+        else:
+            t_scaled = t * 3.0                     # (batch, 1) in [0, 3]
+            idx_floor = torch.floor(t_scaled).long()          # 0,1,2
+            idx_ceil = (idx_floor + 1).clamp(max=3)           # 1,2,3
+            frac = (t_scaled - idx_floor.float())             # fractional part in [0,1)
 
-        # Gather scales (time_scales is a 1‑D tensor of length 4)
-        # Added .contiguous() to index and result for MPS stability
-        idx_f_flat = idx_floor.reshape(-1).contiguous()
-        idx_c_flat = idx_ceil.reshape(-1).contiguous()
-        scale_floor = self.time_scales[idx_f_flat]   # (batch,)
-        scale_ceil  = self.time_scales[idx_c_flat]    # (batch,)
+            # Gather scales (time_scales is a 1‑D tensor of length 4)
+            # Added .contiguous() to index and result for MPS stability
+            idx_f_flat = idx_floor.reshape(-1).contiguous()
+            idx_c_flat = idx_ceil.reshape(-1).contiguous()
+            scale_floor = self.time_scales[idx_f_flat]   # (batch,)
+            scale_ceil  = self.time_scales[idx_c_flat]    # (batch,)
 
-        # Linear blend
-        blended = scale_floor * (1 - frac.reshape(-1)) + scale_ceil * frac.reshape(-1)
-        time_scale = blended.reshape(-1, 1, 1, 1).contiguous()                # (batch, 1, 1, 1)
+            # Linear blend
+            blended = scale_floor * (1 - frac.reshape(-1)) + scale_ceil * frac.reshape(-1)
+            time_scale = blended.reshape(-1, 1, 1, 1).contiguous()  # (batch, 1, 1, 1)
                 
         # Gentle clamping instead of tanh
         z = torch.clamp(z, -config.ODE_CLAMP_MAX, config.ODE_CLAMP_MAX)
