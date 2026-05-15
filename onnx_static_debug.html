@@ -125,16 +125,17 @@
         }
 
         function displayMeta(session, id) {
+            const meta = session.inputMetadata || (session.handler ? session.handler.inputMetadata : null);
             const info = {
                 inputs: session.inputNames.map(name => ({
                     name,
-                    type: session.inputMetadata[name].type,
-                    dims: session.inputMetadata[name].dims
+                    type: meta && meta[name] ? meta[name].type : 'unknown',
+                    dims: meta && meta[name] ? meta[name].dims : 'unknown'
                 })),
                 outputs: session.outputNames.map(name => ({
                     name,
-                    type: session.outputMetadata[name].type,
-                    dims: session.outputMetadata[name].dims
+                    type: session.outputMetadata && session.outputMetadata[name] ? session.outputMetadata[name].type : 'unknown',
+                    dims: session.outputMetadata && session.outputMetadata[name] ? session.outputMetadata[name].dims : 'unknown'
                 }))
             };
             document.getElementById(id).textContent = JSON.stringify(info, null, 2);
@@ -204,12 +205,19 @@
             try {
                 const latentSize = LATENT_SHAPE.reduce((a,b)=>a*b, 1);
                 let zData = new Float32Array(latentSize);
-                for(let i=0; i<latentSize; i++) zData[i] = (Math.random()*2-1) * 0.8;
+                // N(0, 0.8) as in app_ai_display.c
+                for(let i=0; i<latentSize; i++) {
+                    const u1 = Math.random();
+                    const u2 = Math.random();
+                    const mag = Math.sqrt(-2.0 * Math.log(u1 + 1e-7));
+                    zData[i] = mag * Math.cos(2.0 * Math.PI * u2) * 0.8;
+                }
                 
                 let z = new ort.Tensor('float32', zData, LATENT_SHAPE);
-                const textBytes = textToBytes(CLASS_DESCRIPTIONS[label]);
-                const textTensor = new ort.Tensor('int64', textBytes, [1, MAX_TEXT_BYTES]);
-                const sourceTensor = new ort.Tensor('int64', new BigInt64Array([0n]), [1]);
+                
+                // Static models use text_embedding [1, 512]
+                const textEmb = new Float32Array(512).fill(0);
+                const textTensor = new ort.Tensor('float32', textEmb, [1, 512]);
                 const cfgTensor = new ort.Tensor('float32', new Float32Array([6.5]), [1]);
                 const dt = 1.0 / steps;
 
@@ -217,9 +225,15 @@
                     const tVal = i * dt;
                     const tTensor = new ort.Tensor('float32', new Float32Array([tVal]), [1, 1]);
                     
-                    const driftRes = await driftSession.run({
-                        z, t: tTensor, text_bytes: textTensor, source_id: sourceTensor, cfg_scale: cfgTensor
-                    });
+                    const inputs = { z, t: tTensor, text_embedding: textTensor, cfg_scale: cfgTensor };
+                    // If FP32 models are loaded, they might use text_bytes
+                    if (driftSession.inputNames.includes('text_bytes')) {
+                        delete inputs.text_embedding;
+                        inputs.text_bytes = textToBytes(CLASS_DESCRIPTIONS[label]);
+                        inputs.source_id = new ort.Tensor('int64', new BigInt64Array([0n]), [1]);
+                    }
+
+                    const driftRes = await driftSession.run(inputs);
                     
                     const d = driftRes.drift;
                     const nextZ = new Float32Array(z.data.length);
@@ -232,9 +246,14 @@
                 }
 
                 log('Trajectory complete. Decoding...');
-                const genRes = await genSession.run({
-                    z, text_bytes: textTensor, source_id: sourceTensor
-                });
+                const genInputs = { z, text_embedding: textTensor };
+                if (genSession.inputNames.includes('text_bytes')) {
+                    delete genInputs.text_embedding;
+                    genInputs.text_bytes = textToBytes(CLASS_DESCRIPTIONS[label]);
+                    genInputs.source_id = new ort.Tensor('int64', new BigInt64Array([0n]), [1]);
+                }
+
+                const genRes = await genSession.run(genInputs);
                 
                 const pixels = genRes.reconstruction.data;
                 const canvas = document.getElementById('outputCanvas');
