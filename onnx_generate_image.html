@@ -318,7 +318,100 @@
             const loadDirBtn = document.getElementById('loadDirBtn');
             const dirInput = document.getElementById('dirInput');
 
-            // ... (WebGPU check logic remains same) ...
+            // Check for WebGPU availability thoroughly
+            let hasWebGPU = false;
+            try {
+                if (navigator.gpu) {
+                    const adapter = await navigator.gpu.requestAdapter();
+                    if (adapter) {
+                        hasWebGPU = true;
+                    } else {
+                        console.warn("WebGPU: No adapter found. Falling back to WASM.");
+                    }
+                }
+            } catch (e) {
+                console.warn("WebGPU check failed:", e);
+            }
+
+            if (!hasWebGPU) {
+                console.log("WebGPU not supported or available. Using WASM.");
+                logTrace("WebGPU not available. Using WASM backend.");
+            } else {
+                logTrace("WebGPU adapter found. Using GPU acceleration.");
+            }
+
+            function detectModelShapes() {
+                if (!vaeSession || !driftSession) return;
+                try {
+                    const inputNames = vaeSession.inputNames;
+                    const inputMetadata = vaeSession.inputMetadata || (vaeSession.handler ? vaeSession.handler.inputMetadata : null);
+                    if (inputMetadata && inputMetadata.z) {
+                        const detectedDims = inputMetadata.z.dims.map(d => typeof d === 'number' ? d : 1);
+                        detectedDims[0] = 1;
+                        LATENT_SHAPE = detectedDims;
+                    }
+
+                    const outputMetadata = vaeSession.outputMetadata || (vaeSession.handler ? vaeSession.handler.outputMetadata : null);
+                    if (outputMetadata && outputMetadata.reconstruction) {
+                        const outDims = outputMetadata.reconstruction.dims;
+                        if (outDims.length === 4) {
+                            IMG_SIZE = outDims[2];
+                            canvas.width = IMG_SIZE;
+                            canvas.height = IMG_SIZE;
+                        }
+                    }
+                    statusEl.textContent = `Ready (Detected: ${LATENT_SHAPE[1]}ch latent, ${IMG_SIZE}px image).`;
+                } catch (e) {
+                    console.warn("Shape detection failed:", e);
+                }
+            }
+
+            resSelect.addEventListener('change', () => {
+                IMG_SIZE = parseInt(resSelect.value, 10);
+                const latentDim = IMG_SIZE / 8;
+                const channels = LATENT_SHAPE[1];
+                LATENT_SHAPE = [1, channels, latentDim, latentDim];
+                canvas.width = IMG_SIZE;
+                canvas.height = IMG_SIZE;
+            });
+
+            tempSlider.addEventListener('input', () => tempValue.textContent = parseFloat(tempSlider.value).toFixed(2));
+            stepsSlider.addEventListener('input', () => stepsValue.textContent = stepsSlider.value);
+            document.getElementById('cfgSlider').addEventListener('input', e => {
+                document.getElementById('cfgValue').textContent = parseFloat(e.target.value).toFixed(1);
+            });
+
+            // Simple seeded random for consistency
+            let seed = 42;
+            function seededRandom() {
+                const x = Math.sin(seed++) * 10000;
+                return x - Math.floor(x);
+            }
+
+            function normalRandom(mean = 0, std = 1) {
+                let u = 0, v = 0;
+                while (u === 0) u = seededRandom();
+                while (v === 0) v = seededRandom();
+                return mean + std * (Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v));
+            }
+
+            function createTensor(data, dims, type = 'float32') {
+                if (type === 'int64') return new ort.Tensor('int64', BigInt64Array.from(data, x => BigInt(x)), dims);
+                if (type === 'int32') return new ort.Tensor('int32', Int32Array.from(data), dims);
+                return new ort.Tensor('float32', new Float32Array(data), dims);
+            }
+
+            async function createSession(modelData) {
+                // Try WebGPU first if available, otherwise fallback to WASM. 
+                // WebGL is skipped as it often lacks support for newer opsets (like Opset 18 Split).
+                const providers = hasWebGPU ? ['webgpu', 'wasm'] : ['wasm'];
+                try {
+                    return await ort.InferenceSession.create(modelData, { executionProviders: providers });
+                } catch (e) {
+                    console.warn("Primary providers failed, trying pure WASM:", e?.message ?? String(e));
+                    return await ort.InferenceSession.create(modelData, { executionProviders: ['wasm'] });
+                }
+            }
 
             async function loadFromFiles(files) {
                 let vaeFile, driftFile, embedFile;
