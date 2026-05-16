@@ -879,6 +879,32 @@ class EnhancedLabelTrainer:
             merge_external_data(drift_path)
             config.logger.info(f"Drift exported to {drift_path} (inputs: {drift_input_names})")
 
+            # --- Export label embeddings for browser-side inference ---
+            try:
+                import json
+                embeddings = {}
+                config.logger.info("Exporting label embeddings to JSON for browser support...")
+                with torch.no_grad():
+                    for i in range(10):
+                        desc = dm.CLASS_DESCRIPTIONS[i]
+                        text_bytes = torch.tensor([dm.text_to_bytes(desc)], device=config.DEVICE)
+                        if config.USE_NEURAL_TOKENIZER:
+                            emb = self.vae.text_encoder(text_bytes)
+                        else:
+                            emb = self.vae.label_emb(torch.tensor([i], device=config.DEVICE))
+                        embeddings[str(i)] = emb.squeeze().cpu().numpy().tolist()
+                    
+                    # NULL/Unconditional class
+                    uncond_emb = torch.zeros(config.TEXT_EMBEDDING_DIM)
+                    embeddings["uncond"] = uncond_emb.numpy().tolist()
+
+                embed_path = config.DIRS["onnx"] / "label_embeddings.json"
+                with open(embed_path, 'w') as f:
+                    json.dump(embeddings, f)
+                config.logger.info(f"Label embeddings saved to {embed_path.name}")
+            except Exception as e:
+                config.logger.warning(f"Could not export label embeddings: {e}")
+
             # --- Auto-configure the HTML file to match the current dimensions ---
             html_path = Path("onnx_generate_image.html")
             if html_path.exists():

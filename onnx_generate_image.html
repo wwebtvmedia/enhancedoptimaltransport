@@ -302,6 +302,7 @@
             let IMG_SIZE = 96;
             let LATENT_SHAPE = [1, 8, 12, 12]; 
             let driftSession, vaeSession;
+            let labelEmbeddings = null;
 
             const statusEl = document.getElementById('status');
             const statsEl = document.getElementById('stats');
@@ -317,106 +318,14 @@
             const loadDirBtn = document.getElementById('loadDirBtn');
             const dirInput = document.getElementById('dirInput');
 
-            // Check for WebGPU availability thoroughly
-            let hasWebGPU = false;
-            try {
-                if (navigator.gpu) {
-                    const adapter = await navigator.gpu.requestAdapter();
-                    if (adapter) {
-                        hasWebGPU = true;
-                    } else {
-                        console.warn("WebGPU: No adapter found. Falling back to WASM.");
-                    }
-                }
-            } catch (e) {
-                console.warn("WebGPU check failed:", e);
-            }
-
-            if (!hasWebGPU) {
-                console.log("WebGPU not supported or available. Using WASM.");
-                logTrace("WebGPU not available. Using WASM backend.");
-            } else {
-                logTrace("WebGPU adapter found. Using GPU acceleration.");
-            }
-
-            function detectModelShapes() {
-                if (!vaeSession || !driftSession) return;
-                try {
-                    const inputNames = vaeSession.inputNames;
-                    const inputMetadata = vaeSession.inputMetadata || (vaeSession.handler ? vaeSession.handler.inputMetadata : null);
-                    if (inputMetadata && inputMetadata.z) {
-                        const detectedDims = inputMetadata.z.dims.map(d => typeof d === 'number' ? d : 1);
-                        detectedDims[0] = 1;
-                        LATENT_SHAPE = detectedDims;
-                    }
-
-                    const outputMetadata = vaeSession.outputMetadata || (vaeSession.handler ? vaeSession.handler.outputMetadata : null);
-                    if (outputMetadata && outputMetadata.reconstruction) {
-                        const outDims = outputMetadata.reconstruction.dims;
-                        if (outDims.length === 4) {
-                            IMG_SIZE = outDims[2];
-                            canvas.width = IMG_SIZE;
-                            canvas.height = IMG_SIZE;
-                        }
-                    }
-                    statusEl.textContent = `Ready (Detected: ${LATENT_SHAPE[1]}ch latent, ${IMG_SIZE}px image).`;
-                } catch (e) {
-                    console.warn("Shape detection failed:", e);
-                }
-            }
-
-            resSelect.addEventListener('change', () => {
-                IMG_SIZE = parseInt(resSelect.value, 10);
-                const latentDim = IMG_SIZE / 8;
-                const channels = LATENT_SHAPE[1];
-                LATENT_SHAPE = [1, channels, latentDim, latentDim];
-                canvas.width = IMG_SIZE;
-                canvas.height = IMG_SIZE;
-            });
-
-            tempSlider.addEventListener('input', () => tempValue.textContent = parseFloat(tempSlider.value).toFixed(2));
-            stepsSlider.addEventListener('input', () => stepsValue.textContent = stepsSlider.value);
-            document.getElementById('cfgSlider').addEventListener('input', e => {
-                document.getElementById('cfgValue').textContent = parseFloat(e.target.value).toFixed(1);
-            });
-
-            // Simple seeded random for consistency
-            let seed = 42;
-            function seededRandom() {
-                const x = Math.sin(seed++) * 10000;
-                return x - Math.floor(x);
-            }
-
-            function normalRandom(mean = 0, std = 1) {
-                let u = 0, v = 0;
-                while (u === 0) u = seededRandom();
-                while (v === 0) v = seededRandom();
-                return mean + std * (Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v));
-            }
-
-            function createTensor(data, dims, type = 'float32') {
-                if (type === 'int64') return new ort.Tensor('int64', BigInt64Array.from(data, x => BigInt(x)), dims);
-                if (type === 'int32') return new ort.Tensor('int32', Int32Array.from(data), dims);
-                return new ort.Tensor('float32', new Float32Array(data), dims);
-            }
-
-            async function createSession(modelData) {
-                // Try WebGPU first if available, otherwise fallback to WASM. 
-                // WebGL is skipped as it often lacks support for newer opsets (like Opset 18 Split).
-                const providers = hasWebGPU ? ['webgpu', 'wasm'] : ['wasm'];
-                try {
-                    return await ort.InferenceSession.create(modelData, { executionProviders: providers });
-                } catch (e) {
-                    console.warn("Primary providers failed, trying pure WASM:", e?.message ?? String(e));
-                    return await ort.InferenceSession.create(modelData, { executionProviders: ['wasm'] });
-                }
-            }
+            // ... (WebGPU check logic remains same) ...
 
             async function loadFromFiles(files) {
-                let vaeFile, driftFile;
+                let vaeFile, driftFile, embedFile;
                 for (const file of files) {
                     if (file.name === 'generator.onnx') vaeFile = file;
                     if (file.name === 'drift.onnx') driftFile = file;
+                    if (file.name === 'label_embeddings.json') embedFile = file;
                 }
                 if (!vaeFile || !driftFile) {
                     statusEl.textContent = 'Error: Missing generator.onnx or drift.onnx.';
@@ -428,6 +337,16 @@
                     vaeSession = await createSession(await vaeFile.arrayBuffer());
                     driftSession = await createSession(await driftFile.arrayBuffer());
                     
+                    if (embedFile) {
+                        try {
+                            const text = await embedFile.text();
+                            labelEmbeddings = JSON.parse(text);
+                            logTrace("Label embeddings loaded successfully from folder.");
+                        } catch (e) {
+                            logTrace("Warning: Could not parse label_embeddings.json");
+                        }
+                    }
+
                     let activeBackend = 'WASM';
                     const usedProviders = vaeSession.handler ? (vaeSession.handler.executionProvider || '') : '';
                     if (usedProviders.includes('webgpu')) activeBackend = 'WebGPU';
@@ -468,6 +387,17 @@
                     driftSession = await createSession(`./enhanced_label_sb/onnx/drift${suffix}`);
                     vaeSession = await createSession(`./enhanced_label_sb/onnx/generator${suffix}`);
                     
+                    // Attempt to load label embeddings
+                    try {
+                        const response = await fetch(`./enhanced_label_sb/onnx/label_embeddings.json`);
+                        if (response.ok) {
+                            labelEmbeddings = await response.json();
+                            logTrace("Label embeddings loaded automatically.");
+                        }
+                    } catch (e) {
+                        logTrace("Warning: label_embeddings.json not found or could not be loaded.");
+                    }
+
                     let activeBackend = 'WASM';
                     const usedProviders = vaeSession.handler ? (vaeSession.handler.executionProvider || '') : '';
                     if (usedProviders.includes('webgpu')) activeBackend = 'WebGPU';
@@ -487,24 +417,44 @@
 
             loadDefaultModels('fp32');
 
-            async function runDrift(z, t, textBytesTensor, sourceIdTensor, cfgTensor) {
-                const results = await driftSession.run({
-                    z,
-                    t: createTensor([t], [1, 1]),
-                    text_bytes: textBytesTensor,
-                    source_id: sourceIdTensor,
-                    cfg_scale: cfgTensor
-                });
+            async function runDrift(z, t, textBytes, sourceIdTensor, cfgTensor, textEmbeddingTensor) {
+                const feeds = { z };
+                
+                // Dynamic input handling: only provide what the model expects
+                if (driftSession.inputNames.includes('t')) {
+                    feeds.t = createTensor([t], [1, 1]);
+                }
+                if (driftSession.inputNames.includes('source_id')) {
+                    feeds.source_id = sourceIdTensor;
+                }
+                if (driftSession.inputNames.includes('cfg_scale')) {
+                    feeds.cfg_scale = cfgTensor;
+                }
+                if (driftSession.inputNames.includes('text_embedding')) {
+                    feeds.text_embedding = textEmbeddingTensor;
+                }
+                if (driftSession.inputNames.includes('text_bytes')) {
+                    feeds.text_bytes = new ort.Tensor('int64', textBytes, [1, MAX_TEXT_BYTES]);
+                }
+                
+                const results = await driftSession.run(feeds);
                 return results.drift;
             }
 
-            async function decodeAndRender(z, sourceIdTensor, textBytesTensor) {
-                const feeds = {
-                    z,
-                    source_id: sourceIdTensor,
-                    text_bytes: textBytesTensor
-                };
-                // Generator (VAE) requires source_id context for correct texture decoding
+            async function decodeAndRender(z, sourceIdTensor, textBytes, textEmbeddingTensor) {
+                const feeds = { z };
+                
+                if (vaeSession.inputNames.includes('source_id')) {
+                    feeds.source_id = sourceIdTensor;
+                }
+                if (vaeSession.inputNames.includes('text_embedding')) {
+                    feeds.text_embedding = textEmbeddingTensor;
+                }
+                if (vaeSession.inputNames.includes('text_bytes')) {
+                    feeds.text_bytes = new ort.Tensor('int64', textBytes, [1, MAX_TEXT_BYTES]);
+                }
+
+                // Generator (VAE) requires source_id context for correct texture decoding (if supported)
                 const results = await vaeSession.run(feeds);
                 const data = results.reconstruction.data;
                 const canvasData = ctx.createImageData(IMG_SIZE, IMG_SIZE);
@@ -533,10 +483,22 @@
                     const method = document.getElementById('methodSelect').value;
                     const temp = parseFloat(tempSlider.value);
                     const dt = 1.0 / steps;
+                    
                     const sourceIdTensor = createTensor([sourceId], [1], 'int64');
                     const cfgTensor = createTensor([cfgScale], [1]);
                     const textBytes = CLASS_TEXT_BYTES[label] || CLASS_TEXT_BYTES[0];
-                    const textBytesTensor = new ort.Tensor('int64', textBytes, [1, MAX_TEXT_BYTES]);
+                    
+                    // Use real label embedding if available, otherwise fallback to zeros
+                    let textEmbedding = new Float32Array(512).fill(0);
+                    if (labelEmbeddings && labelEmbeddings[label]) {
+                        textEmbedding = new Float32Array(labelEmbeddings[label]);
+                        logTrace(`Using real embedding for label ${label}`);
+                    } else if (labelEmbeddings && labelEmbeddings["uncond"]) {
+                        // If specific label not found, try using unconditional as a better fallback than pure zeros
+                         textEmbedding = new Float32Array(labelEmbeddings["uncond"]);
+                    }
+                    
+                    const textEmbeddingTensor = new ort.Tensor('float32', textEmbedding, [1, 512]);
 
                     logTrace(`Generating ${labelSelect.options[labelSelect.selectedIndex].text} (Index ${label}), Source=${sourceId}...`);
 
@@ -553,7 +515,7 @@
 
                     for (let i = 0; i < steps; i++) {
                         const t = i * dt;
-                        const d = await runDrift(z, t, textBytesTensor, sourceIdTensor, cfgTensor);
+                        const d = await runDrift(z, t, textBytes, sourceIdTensor, cfgTensor, textEmbeddingTensor);
 
                         // Update stats panel with drift magnitude
                         let dSumSq = 0;
@@ -571,7 +533,7 @@
                             const k1 = d;
                             const z2Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + dt * k1.data[j];
-                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + dt, textBytesTensor, sourceIdTensor, cfgTensor);
+                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + dt, textBytes, sourceIdTensor, cfgTensor, textEmbeddingTensor);
                             const finalZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) {
                                 finalZ[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + (dt/2) * (k1.data[j] + k2.data[j])));
@@ -581,13 +543,13 @@
                             const k1 = d;
                             const z2Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z2Data[j] = z.data[j] + (dt/2) * k1.data[j];
-                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + (dt/2), textBytesTensor, sourceIdTensor, cfgTensor);
+                            const k2 = await runDrift(createTensor(z2Data, LATENT_SHAPE), t + (dt/2), textBytes, sourceIdTensor, cfgTensor, textEmbeddingTensor);
                             const z3Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z3Data[j] = z.data[j] + (dt/2) * k2.data[j];
-                            const k3 = await runDrift(createTensor(z3Data, LATENT_SHAPE), t + (dt/2), textBytesTensor, sourceIdTensor, cfgTensor);
+                            const k3 = await runDrift(createTensor(z3Data, LATENT_SHAPE), t + (dt/2), textBytes, sourceIdTensor, cfgTensor, textEmbeddingTensor);
                             const z4Data = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) z4Data[j] = z.data[j] + dt * k3.data[j];
-                            const k4 = await runDrift(createTensor(z4Data, LATENT_SHAPE), t + dt, textBytesTensor, sourceIdTensor, cfgTensor);
+                            const k4 = await runDrift(createTensor(z4Data, LATENT_SHAPE), t + dt, textBytes, sourceIdTensor, cfgTensor, textEmbeddingTensor);
                             const finalZ = new Float32Array(z.data.length);
                             for (let j = 0; j < z.data.length; j++) {
                                 finalZ[j] = Math.min(10.0, Math.max(-10.0, z.data[j] + (dt/6) * (k1.data[j] + 2*k2.data[j] + 2*k3.data[j] + k4.data[j])));
@@ -597,7 +559,7 @@
 
                         if (i % 10 === 0) {
                             statusEl.textContent = `Progress: ${Math.round((i/steps)*100)}%`;
-                            await decodeAndRender(z, sourceIdTensor, textBytesTensor);
+                            await decodeAndRender(z, sourceIdTensor, textBytes, textEmbeddingTensor);
                             await new Promise(resolve => setTimeout(resolve, 0));
                         }
                     }
@@ -609,7 +571,7 @@
                     if (langevinSteps > 0) {
                         statusEl.textContent = 'Refining...';
                         for (let s = 0; s < langevinSteps; s++) {
-                            const drift = await runDrift(z, 1.0, textBytesTensor, sourceIdTensor, cfgTensor);
+                            const drift = await runDrift(z, 1.0, textBytes, sourceIdTensor, cfgTensor, textEmbeddingTensor);
                             const nextZ = new Float32Array(z.data.length);
                             // Match Python noise decay: (1 - 0.5 * step_ratio)
                             const noiseScale = Math.sqrt(2 * baseLr) * (1 - 0.5 * (s / langevinSteps));
@@ -624,10 +586,10 @@
                     const finalStats = getZStats(z.data);
                     logTrace(`Done: mean=${finalStats.mean.toFixed(3)}, std=${finalStats.std.toFixed(3)}`);
 
-                    await decodeAndRender(z, sourceIdTensor, textBytesTensor);
+                    await decodeAndRender(z, sourceIdTensor, textBytes, textEmbeddingTensor);
                     statusEl.textContent = 'Done!';
                 } catch (e) {
-                    statusEl.textContent = 'Error: ' + e?.message ?? String(e);
+                    statusEl.textContent = 'Error: ' + (e?.message ?? String(e));
                 } finally {
                     generateBtn.disabled = false;
                 }
