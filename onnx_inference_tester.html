@@ -164,8 +164,9 @@
                     <input type="file" id="file_static_gen" accept=".onnx" style="width: 50%;">
                 </div>
             </div>
-            <div class="control-group" style="justify-content: flex-end;">
-                <button id="loadModelsBtn" style="background: var(--warning); color: black; width: 100%;">📁 Load Selected Files</button>
+            <div class="control-group" style="justify-content: flex-end; flex-direction: row; gap: 10px;">
+                <button id="retryDefaultsBtn" style="background: var(--card); color: var(--primary); border: 1px solid var(--primary); width: 40%;">🔄 Retry Defaults</button>
+                <button id="loadModelsBtn" style="background: var(--warning); color: black; width: 60%;">📁 Load Selected Files</button>
             </div>
         </div>
 
@@ -240,6 +241,7 @@
 
         const IMG_SIZE = 96;
         const LATENT_SHAPE = [1, 8, 12, 12];
+        let labelEmbeddings = null;
 
         // Check for WebGPU availability thoroughly
         let hasWebGPU = false;
@@ -382,6 +384,8 @@
             }
         });
 
+        document.getElementById('retryDefaultsBtn').addEventListener('click', initModels);
+
         async function initModels() {
             const status = document.getElementById('globalStatus');
             try {
@@ -405,6 +409,17 @@
                 await loadDefault('int8_gen', './enhanced_label_sb/onnx/generator_int8.onnx');
                 await loadDefault('static_drift', './enhanced_label_sb/onnx/drift_static_int8.onnx');
                 await loadDefault('static_gen', './enhanced_label_sb/onnx/generator_static_int8.onnx');
+
+                // Attempt to load label embeddings
+                try {
+                    const response = await fetch(`./enhanced_label_sb/onnx/label_embeddings.json`);
+                    if (response.ok) {
+                        labelEmbeddings = await response.json();
+                        log("Label embeddings loaded automatically.");
+                    }
+                } catch (e) {
+                    log("Warning: label_embeddings.json not found.", "warn");
+                }
 
                 status.className = 'status-badge badge-ready';
                 status.innerHTML = `Models Ready <span style="font-size: 0.7em;">🚀 WASM</span>`;
@@ -441,10 +456,15 @@
 
             let z = new ort.Tensor('float32', z0Data, LATENT_SHAPE);
             
-            // All models now use text_embedding [1, 512]. 
-            // We use a zero embedding for unconditional generation as in the STM32 app.
-            const textEmb = new Float32Array(512).fill(0);
-            const textTensor = new ort.Tensor('float32', textEmb, [1, 512]);
+            // Use real label embedding if available, otherwise fallback to zeros
+            let textEmbData = new Float32Array(512).fill(0);
+            if (labelEmbeddings && labelEmbeddings[label]) {
+                textEmbData = new Float32Array(labelEmbeddings[label]);
+            } else if (labelEmbeddings && labelEmbeddings["uncond"]) {
+                textEmbData = new Float32Array(labelEmbeddings["uncond"]);
+            }
+            const textTensor = new ort.Tensor('float32', textEmbData, [1, 512]);
+
             const dt = 1.0 / steps;
             const cfgScaleTensor = new ort.Tensor('float32', new Float32Array([6.5]), [1]);
 
