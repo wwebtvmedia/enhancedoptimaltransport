@@ -37,7 +37,7 @@ STAI_RT    = /home/pc/opt/ST/STEdgeAI/4.0/Middlewares/ST/AI
 
 # ── MCU flags ──────────────────────────────────────────────────────────────
 MCU        = -mcpu=cortex-m55 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16
-DEFS       = -DSTM32N6570xx -DUSE_HAL_DRIVER -DUSE_FULL_LL_DRIVER
+DEFS       = -DSTM32N657xx -DUSE_HAL_DRIVER -DUSE_FULL_LL_DRIVER
 
 # ── Include paths ──────────────────────────────────────────────────────────
 INCLUDES  += -ICore/Inc
@@ -69,8 +69,6 @@ HAL_SRCS += stm32n6xx_hal_dma_ex.c
 HAL_SRCS += stm32n6xx_hal_xspi.c
 HAL_SRCS += stm32n6xx_hal_ltdc.c
 HAL_SRCS += stm32n6xx_hal_ltdc_ex.c
-HAL_SRCS += stm32n6xx_hal_dsi.c        # if DSI used by BSP LCD init
-HAL_SRCS += stm32n6xx_hal_npu.c        # NPU HAL
 C_SRCS  += $(addprefix $(HAL_DIR)/Src/, $(HAL_SRCS))
 
 # BSP board support
@@ -87,8 +85,9 @@ C_SRCS += $(NPU_RT_DIR)/ll_aton_cipher.c
 C_SRCS += $(NPU_RT_DIR)/ll_aton_dbgtrc.c
 C_SRCS += $(NPU_RT_DIR)/ecloader.c
 
-# CMSIS startup
-ASM_SRCS  = $(CMSIS_DIR)/Device/ST/STM32N6xx/Source/Templates/gcc/startup_stm32n6570xx.s
+# CMSIS startup + system init
+ASM_SRCS  = $(CMSIS_DIR)/Device/ST/STM32N6xx/Source/Templates/gcc/startup_stm32n657xx.s
+C_SRCS   += $(CMSIS_DIR)/Device/ST/STM32N6xx/Source/Templates/system_stm32n6xx_ns.c
 
 # ST.AI runtime library (CM55 GCC variant — verified present on this machine)
 STAI_LIB  = $(STAI_RT)/Lib/GCC/ARMCortexM55/NetworkRuntime1200_CM55_GCC.a
