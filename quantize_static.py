@@ -200,6 +200,9 @@ def fix_dcr_mode(model):
     for n in model.graph.node:
         for out in n.output: output_to_node[out] = n
     count = 0
+    # Track weights already permuted to avoid double-permuting shared weights
+    # (cond and uncond branches share the same Conv weight initializer).
+    permuted_weights = set()
     for node in model.graph.node:
         if node.op_type != 'DepthToSpace': continue
         mode, r = 'CRD', 2
@@ -230,25 +233,29 @@ def fix_dcr_mode(model):
         for a in range(r):
             for b in range(r):
                 for c in range(C): perm[a*r*C + b*C + c] = c*r*r + a*r + b
-        init_map[weight_ref].CopyFrom(onnx.numpy_helper.from_array(w_arr[perm], name=weight_ref))
-        if len(upstream.input) > 2 and upstream.input[2]:
-            b_ref = upstream.input[2]
-            if b_ref not in init_map:
-                dq = output_to_node.get(b_ref)
-                if dq and dq.op_type == 'DequantizeLinear': b_ref = dq.input[0]
-            if b_ref in init_map:
-                b_arr = onnx.numpy_helper.to_array(init_map[b_ref])
-                if b_arr.ndim == 1 and b_arr.shape[0] == N:
-                    init_map[b_ref].CopyFrom(onnx.numpy_helper.from_array(b_arr[perm], name=b_ref))
-        conv_out = upstream.output[0]
-        for qnode in model.graph.node:
-            if qnode.op_type not in ('QuantizeLinear', 'DequantizeLinear'): continue
-            if qnode.input[0] == conv_out or (qnode.op_type == 'DequantizeLinear' and qnode.input[0] == weight_ref):
-                for slot in (1, 2):
-                    if len(qnode.input) > slot and qnode.input[slot] in init_map:
-                        arr = onnx.numpy_helper.to_array(init_map[qnode.input[slot]])
-                        if arr.ndim == 1 and arr.shape[0] == N:
-                            init_map[qnode.input[slot]].CopyFrom(onnx.numpy_helper.from_array(arr[perm], name=qnode.input[slot]))
+        # Only permute the weight and its QDQ parameters once; shared weights between
+        # CFG branches must not be double-permuted.
+        if weight_ref not in permuted_weights:
+            permuted_weights.add(weight_ref)
+            init_map[weight_ref].CopyFrom(onnx.numpy_helper.from_array(w_arr[perm], name=weight_ref))
+            if len(upstream.input) > 2 and upstream.input[2]:
+                b_ref = upstream.input[2]
+                if b_ref not in init_map:
+                    dq = output_to_node.get(b_ref)
+                    if dq and dq.op_type == 'DequantizeLinear': b_ref = dq.input[0]
+                if b_ref in init_map:
+                    b_arr = onnx.numpy_helper.to_array(init_map[b_ref])
+                    if b_arr.ndim == 1 and b_arr.shape[0] == N:
+                        init_map[b_ref].CopyFrom(onnx.numpy_helper.from_array(b_arr[perm], name=b_ref))
+            conv_out = upstream.output[0]
+            for qnode in model.graph.node:
+                if qnode.op_type not in ('QuantizeLinear', 'DequantizeLinear'): continue
+                if qnode.input[0] == conv_out or (qnode.op_type == 'DequantizeLinear' and qnode.input[0] == weight_ref):
+                    for slot in (1, 2):
+                        if len(qnode.input) > slot and qnode.input[slot] in init_map:
+                            arr = onnx.numpy_helper.to_array(init_map[qnode.input[slot]])
+                            if arr.ndim == 1 and arr.shape[0] == N:
+                                init_map[qnode.input[slot]].CopyFrom(onnx.numpy_helper.from_array(arr[perm], name=qnode.input[slot]))
         for a in node.attribute:
             if a.name == 'mode': a.s = b'DCR'
         count += 1
@@ -334,9 +341,16 @@ def quantize_model_static(model_path, output_path):
     
     # MinMax is safer for preserving the full dynamic range of generative models
     cal_method = CalibrationMethod.MinMax
-    
-    # STM32N6 (stedgeai 4.0) prefers symmetric signed INT8 for activations
-    extra_options = {'EnableShapeInference': True, 'ActivationSymmetric': True, 'WeightSymmetric': True}
+
+    # ActivationSymmetric=False is critical: post-SiLU activations are skewed
+    # positive, so symmetric INT8 wastes half the quantization range, doubling
+    # quantization noise. Asymmetric uses the full [-128, 127] range.
+    #
+    # Only Conv layers are quantized. Gemm (FiLM/label projection) and MatMul
+    # (attention) use shared weights between the CFG conditional and unconditional
+    # branches which have very different activation distributions; quantizing them
+    # corrupts class conditioning entirely.
+    extra_options = {'EnableShapeInference': True, 'ActivationSymmetric': False, 'WeightSymmetric': True}
 
     quantize_static(
         model_input=fixed_path, model_output=output_path,
@@ -345,7 +359,7 @@ def quantize_model_static(model_path, output_path):
         calibrate_method=cal_method,
         extra_options=extra_options,
         nodes_to_exclude=nodes_to_exclude,
-        op_types_to_quantize=['Conv', 'MatMul', 'Gemm']
+        op_types_to_quantize=['Conv']
     )
     print("Post-processing...")
     model = onnx.load(output_path); model = strip_nonstandard_opsets(model)
