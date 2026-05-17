@@ -45,9 +45,39 @@ kernel void elementwise_add(global const float* a, global const float* b, global
     if (i < n) out[i] = a[i] + b[i];
 }
 
+kernel void elementwise_sub(global const float* a, global const float* b, global float* out, int n) {
+    int i = get_global_id(0);
+    if (i < n) out[i] = a[i] - b[i];
+}
+
 kernel void elementwise_mul(global const float* a, global const float* b, global float* out, int n) {
     int i = get_global_id(0);
     if (i < n) out[i] = a[i] * b[i];
+}
+
+kernel void elementwise_div(global const float* a, global const float* b, global float* out, int n) {
+    int i = get_global_id(0);
+    if (i < n) out[i] = a[i] / b[i];
+}
+
+kernel void elementwise_pow(global const float* a, float exponent, global float* out, int n) {
+    int i = get_global_id(0);
+    if (i < n) out[i] = pow(a[i], exponent);
+}
+
+kernel void elementwise_sqrt(global const float* in, global float* out, int n) {
+    int i = get_global_id(0);
+    if (i < n) out[i] = sqrt(in[i]);
+}
+
+kernel void elementwise_max(global const float* a, global const float* b, global float* out, int n) {
+    int i = get_global_id(0);
+    if (i < n) out[i] = max(a[i], b[i]);
+}
+
+kernel void elementwise_min(global const float* a, global const float* b, global float* out, int n) {
+    int i = get_global_id(0);
+    if (i < n) out[i] = min(a[i], b[i]);
 }
 
 // --- 3. MAC-Optimized: GEMM / MatMul ---
@@ -131,6 +161,32 @@ kernel void clip_op(global const float* in, global float* out, float min_val, fl
 
 // --- 6. Normalization & Reduction ---
 
+kernel void instance_norm(
+    global const float* input,
+    global float* output,
+    global const float* scale,
+    global const float* bias,
+    global const float* mean,
+    global const float* variance,
+    float epsilon,
+    int channels,
+    int spatial_dim)
+{
+    int c = get_global_id(1); // Channel
+    int s = get_global_id(0); // Spatial (H*W)
+    
+    if (c < channels && s < spatial_dim) {
+        int idx = c * spatial_dim + s;
+        float val = input[idx];
+        float m = mean[c];
+        float v = variance[c];
+        float s_val = scale[c];
+        float b_val = bias[c];
+        
+        output[idx] = s_val * (val - m) / sqrt(v + epsilon) + b_val;
+    }
+}
+
 kernel void reduce_mean(global const float* in, global float* out, int inner_dim, int outer_dim) {
     int o = get_global_id(0);
     if (o < outer_dim) {
@@ -150,5 +206,31 @@ kernel void sincos_op(global const float* in, global float* out_sin, global floa
     if (i < n) {
         out_sin[i] = sin(in[i]);
         out_cos[i] = cos(in[i]);
+    }
+}
+
+// --- 8. Softmax ---
+
+kernel void softmax_op(global const float* in, global float* out, int inner_dim, int outer_dim) {
+    int o = get_global_id(0);
+    if (o < outer_dim) {
+        // Find max for numerical stability
+        float max_val = in[o * inner_dim];
+        for (int i = 1; i < inner_dim; i++) {
+            max_val = max(max_val, in[o * inner_dim + i]);
+        }
+        
+        // Compute sum of exponentials
+        float sum = 0.0f;
+        for (int i = 0; i < inner_dim; i++) {
+            float exp_val = exp(in[o * inner_dim + i] - max_val);
+            out[o * inner_dim + i] = exp_val; // Temporarily store exp
+            sum += exp_val;
+        }
+        
+        // Normalize
+        for (int i = 0; i < inner_dim; i++) {
+            out[o * inner_dim + i] /= sum;
+        }
     }
 }
