@@ -74,3 +74,39 @@ While not "math primitives", these are required for data movement and layout man
 
 ---
 *Generated based on operators found in `enhanced_label_sb/onnx/*.onnx`*
+
+## Hardware Acceleration (VHDL)
+
+The `openvhdl/dsp_accelerator.vhd` provides a reference hardware implementation for the primitives defined in `dsp_imp.cl`.
+
+### Architecture Overview
+- **Control Interface**: AXI4-Lite Slave for register access.
+- **Data Movement**: AXI4 Master DMA for high-bandwidth data fetching and storing.
+- **Shadow Registers**: Enables "double-buffering" of configurations. The host can program the next task parameters (addresses, dimensions, opcode) into shadow registers while the accelerator is busy processing the current task.
+- **Status Monitoring**: Dedicated `Busy` and `Done` registers allow for non-blocking asynchronous control or simple polling.
+- **Interrupt Support**: An interrupt line is provided to signal task completion.
+
+### Register Map
+| Offset | Register | Description |
+| :--- | :--- | :--- |
+| 0x00 | Control | bit 0: Start, bit 1: Update from Shadow |
+| 0x04 | Status | bit 0: Busy, bit 1: Done |
+| 0x08 | Opcode | Operation selector (0: Add, 1: Sub, 2: Mul, 3: MAC/Matmul) |
+| 0x0C | Dim M | Vector Length or Matrix Dimension M |
+| 0x10 | Dim N | Matrix Dimension N |
+| 0x14 | Dim K | Matrix Dimension K |
+| 0x18 | Addr A | Source Address A (DMA) |
+| 0x1C | Addr B | Source Address B (DMA) |
+| 0x20 | Addr Out | Destination Address (DMA) |
+| 0x28-0x40 | Shadow | Shadow versions of Opcode, Dims, and Addresses |
+
+## Testing and Compilation
+
+Detailed instructions for testing and hardware compilation can be found in [openvhdl/README.md](../openvhdl/README.md).
+
+### Quick Start
+```bash
+cd openvhdl
+./install_tools.sh
+./sim_hdl.sh
+```
