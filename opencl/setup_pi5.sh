@@ -16,7 +16,7 @@ sudo apt install -y mesa-vulkan-drivers libvulkan-dev vulkan-tools libglfw3-dev
 # 3. Install OpenCL (PoCL for CPU, Mesa for potential GPU)
 echo "[3/4] Installing OpenCL implementations..."
 # PoCL is highly recommended for RPi5 as it uses ARM NEON SIMD optimizations
-sudo apt install -y pocl-opencl-icd ocl-icd-opencl-dev clinfo
+sudo apt install -y pocl-opencl-icd ocl-icd-opencl-dev opencl-headers libopencl-dev clinfo
 
 # 4. Build Tools
 echo "[4/4] Installing build essentials..."
