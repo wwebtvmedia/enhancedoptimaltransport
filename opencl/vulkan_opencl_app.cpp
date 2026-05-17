@@ -13,6 +13,10 @@
 // 1. OpenCL Inference Engine (Host Code)
 // -----------------------------------------------------------------------------
 
+const std::vector<std::string> LABEL_NAMES = {
+    "airplane", "bird", "car", "cat", "deer", "dog", "horse", "monkey", "ship", "truck"
+};
+
 class OpenCLEngine {
 public:
     cl_context context = nullptr;
@@ -187,22 +191,20 @@ void execute_drift(OpenCLEngine& engine, cl_mem d_z, cl_mem d_out, int channels,
 }
 
 void execute_generator(OpenCLEngine& engine, cl_mem d_z, cl_mem d_out, cl_mem d_emb, int z_c, int h, int w) {
-    std::cout << "[Generator] Executing Class-Conditioned Generator Network (Horse)..." << std::endl;
+    std::cout << "[Generator] Executing Generator Network..." << std::endl;
     int c1 = 256, c2 = 128, c3 = 64;
     cl_mem d_h1 = clCreateBuffer(engine.context, CL_MEM_READ_WRITE, 512 * h * w * sizeof(float), nullptr, nullptr);
     cl_mem d_up1 = clCreateBuffer(engine.context, CL_MEM_READ_WRITE, c1 * (h*2) * (w*2) * sizeof(float), nullptr, nullptr);
     cl_mem d_up2 = clCreateBuffer(engine.context, CL_MEM_READ_WRITE, c2 * (h*4) * (w*4) * sizeof(float), nullptr, nullptr);
     cl_mem d_up3 = clCreateBuffer(engine.context, CL_MEM_READ_WRITE, c3 * (h*8) * (w*8) * sizeof(float), nullptr, nullptr);
     
-    // Initial Latent Processing
     run_conv(engine, d_z, d_h1, z_c, 512, h, w, 3, 3);
-    
-    // Apply Label Conditioning (Simplification: add first 128 values of embedding to first 128 channels)
     run_conditioning(engine, d_h1, d_emb, 128, h, w);
 
     run_subpixel_upsample(engine, d_h1, d_up1, 512, c1, h, w);
     run_subpixel_upsample(engine, d_up1, d_up2, c1, c2, h*2, w*2);
     run_subpixel_upsample(engine, d_up2, d_up3, c2, c3, h*4, w*4);
+    
     size_t w_size = 3 * c3 * 3 * 3;
     std::vector<float> h_weight(w_size, 0.0f);
     for (int oc = 0; oc < 3; ++oc) h_weight[((oc * c3 + (oc % c3)) * 3 + 1) * 3 + 1] = 1.0f;
@@ -224,11 +226,13 @@ void execute_generator(OpenCLEngine& engine, cl_mem d_z, cl_mem d_out, cl_mem d_
     clSetKernelArg(engine.conv_kernel, 11, sizeof(int), &out_w);
     size_t global[3] = { (size_t)out_w, (size_t)out_h, (size_t)out_c };
     clEnqueueNDRangeKernel(engine.queue, engine.conv_kernel, 3, nullptr, global, nullptr, 0, nullptr, nullptr);
+    
     size_t total_out = 3 * (h*8) * (w*8);
     clSetKernelArg(engine.tanh_kernel, 0, sizeof(cl_mem), &d_out);
     clSetKernelArg(engine.tanh_kernel, 1, sizeof(cl_mem), &d_out);
     clSetKernelArg(engine.tanh_kernel, 2, sizeof(int), &total_out);
     clEnqueueNDRangeKernel(engine.queue, engine.tanh_kernel, 1, nullptr, &total_out, nullptr, 0, nullptr, nullptr);
+    
     clReleaseMemObject(d_weight);
     clReleaseMemObject(d_bias);
     clReleaseMemObject(d_h1);
@@ -262,7 +266,7 @@ std::vector<float> load_binary(const std::string& filename) {
     return data;
 }
 
-void execute_model_pipeline(OpenCLEngine& engine, std::vector<float>& output_image) {
+void execute_model_pipeline(OpenCLEngine& engine, std::vector<float>& output_image, int label_idx) {
     int z_c = 8, z_h = 12, z_w = 12, img_size = 96;
     size_t z_size = z_c * z_h * z_w;
     std::vector<float> h_z(z_size);
@@ -274,13 +278,13 @@ void execute_model_pipeline(OpenCLEngine& engine, std::vector<float>& output_ima
         }
     }
     
-    // Load Horse Embedding
     std::vector<float> h_emb;
+    std::string emb_path = "assets/label_" + std::to_string(label_idx) + ".bin";
     try {
-        h_emb = load_binary("horse_embedding.bin");
-        std::cout << "[IO] Loaded horse embedding (128 dims)." << std::endl;
+        h_emb = load_binary(emb_path);
+        std::cout << "[IO] Loaded " << LABEL_NAMES[label_idx] << " embedding (128 dims)." << std::endl;
     } catch (...) {
-        std::cout << "[IO] Warning: horse_embedding.bin not found, using zeros." << std::endl;
+        std::cout << "[IO] Warning: " << emb_path << " not found, using zeros." << std::endl;
         h_emb.assign(128, 0.0f);
     }
 
@@ -295,7 +299,9 @@ void execute_model_pipeline(OpenCLEngine& engine, std::vector<float>& output_ima
     clFinish(engine.queue);
     output_image.resize(3 * img_size * img_size);
     clEnqueueReadBuffer(engine.queue, d_img, CL_TRUE, 0, output_image.size() * sizeof(float), output_image.data(), 0, nullptr, nullptr);
-    save_ppm("output_horse_generation.ppm", output_image, img_size, img_size, 3);
+    
+    std::string out_name = "output_" + LABEL_NAMES[label_idx] + ".ppm";
+    save_ppm(out_name, output_image, img_size, img_size, 3);
     
     clReleaseMemObject(d_z); clReleaseMemObject(d_emb); clReleaseMemObject(d_drift); clReleaseMemObject(d_img);
 }
@@ -320,9 +326,11 @@ public:
         createLogicalDevice();
     }
 
-    void run(const std::vector<float>& image_data) {
+    void run(const std::vector<float>& image_data, int label_idx) {
         if (!window) return;
-        std::cout << "[Vulkan] Running... (Check output_horse_generation.ppm)" << std::endl;
+        std::string title = "ONNX Output: " + LABEL_NAMES[label_idx];
+        glfwSetWindowTitle(window, title.c_str());
+        std::cout << "[Vulkan] Running... (Check output_" << LABEL_NAMES[label_idx] << ".ppm)" << std::endl;
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
         }
@@ -380,15 +388,23 @@ private:
     }
 };
 
-int main() {
+int main(int argc, char** argv) {
+    int label_idx = 6; // Default: horse
+    if (argc > 1) {
+        label_idx = std::stoi(argv[1]);
+        if (label_idx < 0 || label_idx > 9) {
+            std::cerr << "Error: Label index must be between 0 and 9." << std::endl;
+            return 1;
+        }
+    }
     try {
         OpenCLEngine ocl;
         ocl.init();
         std::vector<float> img;
-        execute_model_pipeline(ocl, img);
+        execute_model_pipeline(ocl, img, label_idx);
         VulkanFrontend vk;
         vk.init();
-        vk.run(img);
+        vk.run(img, label_idx);
         vk.cleanup();
         ocl.cleanup();
     } catch (const std::exception& e) {
