@@ -14,7 +14,12 @@ make -j$(nproc)
 if [ $? -eq 0 ]; then
     echo "Build successful. Copying assets..."
     cp ../dsp_imp.cl .
-    cp ../../horse_embedding.bin . 2>/dev/null || true
+    
+    if [ -f "../horse_embedding.bin" ]; then
+        cp ../horse_embedding.bin .
+    elif [ -f "../../horse_embedding.bin" ]; then
+        cp "../../horse_embedding.bin" .
+    fi
     
     echo "Running inference_app..."
     ./inference_app

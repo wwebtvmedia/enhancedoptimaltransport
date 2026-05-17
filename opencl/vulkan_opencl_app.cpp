@@ -322,7 +322,7 @@ public:
 
     void run(const std::vector<float>& image_data) {
         if (!window) return;
-        std::cout << "[Vulkan] Running... (Check output_full_pipeline.ppm)" << std::endl;
+        std::cout << "[Vulkan] Running... (Check output_horse_generation.ppm)" << std::endl;
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
         }

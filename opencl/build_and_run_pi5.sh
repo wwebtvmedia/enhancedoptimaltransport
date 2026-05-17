@@ -14,7 +14,13 @@ make -j4
 if [ $? -eq 0 ]; then
     echo "[Pi5] Build successful. Copying kernels and assets..."
     cp ../dsp_imp.cl .
-    cp ../../horse_embedding.bin . 2>/dev/null || true
+    
+    # Try to find horse_embedding.bin in multiple locations
+    if [ -f "../horse_embedding.bin" ]; then
+        cp ../horse_embedding.bin .
+    elif [ -f "../../horse_embedding.bin" ]; then
+        cp "../../horse_embedding.bin" .
+    fi
     
     echo "----------------------------------------------------"
     echo "[Pi5] Running inference_app..."
