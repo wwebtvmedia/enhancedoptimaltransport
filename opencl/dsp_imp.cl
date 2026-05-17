@@ -126,11 +126,13 @@ kernel void conv2d_mac(
                     int ih = oh + kh; // simple stride=1, padding=0
                     int iw = ow + kw;
                     
-                    float val = input[(ic * in_h + ih) * in_w + iw];
-                    float w = weight[((oc * in_channels + ic) * kernel_h + kh) * kernel_w + kw];
-                    
-                    // Core MAC primitive
-                    sum += val * w;
+                    if (ih < in_h && iw < in_w) {
+                        float val = input[(ic * in_h + ih) * in_w + iw];
+                        float w = weight[((oc * in_channels + ic) * kernel_h + kh) * kernel_w + kw];
+                        
+                        // Core MAC primitive
+                        sum += val * w;
+                    }
                 }
             }
         }
@@ -152,6 +154,14 @@ kernel void sigmoid_activation(global const float* in, global float* out, int n)
 kernel void tanh_activation(global const float* in, global float* out, int n) {
     int i = get_global_id(0);
     if (i < n) out[i] = tanh(in[i]);
+}
+
+kernel void silu_activation(global const float* in, global float* out, int n) {
+    int i = get_global_id(0);
+    if (i < n) {
+        float x = in[i];
+        out[i] = x / (1.0f + exp(-x));
+    }
 }
 
 kernel void clip_op(global const float* in, global float* out, float min_val, float max_val, int n) {
@@ -232,5 +242,34 @@ kernel void softmax_op(global const float* in, global float* out, int inner_dim,
         for (int i = 0; i < inner_dim; i++) {
             out[o * inner_dim + i] /= sum;
         }
+    }
+}
+
+// --- 9. Tensor Manipulation: Pixel Shuffle ---
+
+kernel void pixel_shuffle(
+    global const float* input,
+    global float* output,
+    int upscale_factor,
+    int in_c, int in_h, int in_w)
+{
+    int oc = get_global_id(2); // Output Channel
+    int oh = get_global_id(1); // Output Height
+    int ow = get_global_id(0); // Output Width
+
+    int out_h = in_h * upscale_factor;
+    int out_w = in_w * upscale_factor;
+    int out_c = in_c / (upscale_factor * upscale_factor);
+
+    if (oc < out_c && oh < out_h && ow < out_w) {
+        int ih = oh / upscale_factor;
+        int iw = ow / upscale_factor;
+        int r = upscale_factor;
+        
+        // PixelShuffle formula: 
+        // ic = oc * r^2 + (oh % r) * r + (ow % r)
+        int ic = oc * (r * r) + (oh % r) * r + (ow % r);
+        
+        output[(oc * out_h + oh) * out_w + ow] = input[(ic * in_h + ih) * in_w + iw];
     }
 }
