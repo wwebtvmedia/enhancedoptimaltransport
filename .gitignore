@@ -32,6 +32,18 @@ stm32n6_app/build/
 *.map
 *.su
 
+# OpenCL runtime — exported assets (regenerated from .onnx via export_onnx_assets.py)
+opencl/runtime/assets/
+opencl/runtime/logs/
+opencl/build/
+opencl/test_output/
+
+# VHDL simulation artefacts
+openvhdl/*.vcd
+openvhdl/work-obj*.cf
+openvhdl/output_image.txt
+openvhdl/logs/
+
 # IDE / OS / misc
 .claude/
 *.png
