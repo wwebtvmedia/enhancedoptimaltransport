@@ -60,9 +60,41 @@ case "$MODE" in
     echo "[Pi5] Generator verify..."
     ./build/onnx_opencl_runner "${COMMON[@]}" --steps 20 --gen-only --verify-gen
     ;;
+  numpy-ref)
+    echo "[Pi5] Numpy reference walker (validates math without OpenCL)"
+    python3 numpy_walker.py drift --continue 2>&1 | tail -30
+    ;;
   run|*)
     echo "[Pi5] Full pipeline: 20 drift steps → generator → output_horse.ppm"
     ./build/onnx_opencl_runner "${COMMON[@]}" --steps 20 --out output_horse.ppm
+    # Convert PPM → PNG for easy viewing (no Wayland window needed).
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - <<'PY'
+try:
+    from PIL import Image
+    im = Image.open("output_horse.ppm")
+    im.save("output_horse.png")
+    arr = im.convert("RGB")
+    import numpy as np
+    a = np.asarray(arr)
+    print(f"[viewer] output_horse.png  shape={a.shape}  "
+          f"min={int(a.min())} max={int(a.max())} mean={a.mean():.1f} std={a.std():.1f}")
+    if a.std() < 5:
+        print("[viewer] WARNING: very low std — image is near-uniform (likely grey).")
+        print("         This means the OpenCL runtime is producing zeros for many ops.")
+        print("         Re-run with: ./build_and_run_pi5.sh verify-drift")
+        print("         and send back the first FAIL/ skip lines.")
+except Exception as e:
+    print(f"[viewer] couldn't convert: {e}")
+PY
+    fi
+    # If a display is present, try to show it.
+    if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+      if   command -v feh    >/dev/null 2>&1; then feh    output_horse.png &
+      elif command -v xdg-open >/dev/null 2>&1; then xdg-open output_horse.png &
+      elif command -v eog    >/dev/null 2>&1; then eog    output_horse.png &
+      fi
+    fi
     ;;
 esac
 
