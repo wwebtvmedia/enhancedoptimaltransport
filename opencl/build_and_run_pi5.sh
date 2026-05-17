@@ -1,5 +1,30 @@
 #!/bin/bash
-# build_and_run_pi5.sh - Optimized build and run for Raspberry Pi 5
+# build_and_run_pi5.sh - DEPRECATED legacy stub.
+#
+# This script builds the OLD vulkan_opencl_app.cpp, which uses hardcoded
+# identity weights and CANNOT reproduce the real ONNX models. It is kept
+# only as a smoke-test for the legacy display pipeline.
+#
+# For the real ONNX-driven inference (drift + generator with actual
+# weights, golden-tensor verification, per-op logging) use:
+#
+#     cd opencl/runtime
+#     ./build_and_run_pi5.sh
+
+cat <<'WARN'
+============================================================
+WARNING: This script builds the LEGACY stub (identity weights).
+         The new ONNX-driven runtime lives in opencl/runtime/.
+
+         To build/run the real inference:
+             cd opencl/runtime
+             ./build_and_run_pi5.sh
+
+         Continuing with the legacy build in 5 seconds...
+         (Ctrl+C to abort)
+============================================================
+WARN
+sleep 5
 
 # Create build directory
 mkdir -p build
