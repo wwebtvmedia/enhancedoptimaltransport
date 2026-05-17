@@ -1,0 +1,9 @@
+build/
+bin/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.out
+inference_app
