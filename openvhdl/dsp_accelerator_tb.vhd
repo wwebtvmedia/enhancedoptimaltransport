@@ -165,6 +165,23 @@ begin
         report "Conv2D Completed. Checking result at RAM[32768]...";
         assert system_memory(32768) /= x"00000000" report "Error: Conv2D output is zero!" severity error;
         
+        -- 3. Test Opcode 9: Conditioning (Broadcast Add)
+        report "Starting Opcode 9: Conditioning Test...";
+        -- Input Image at RAM[0], Vector at RAM[16384], Output at RAM[49152]
+        system_memory(16384) <= x"0000000A"; -- Bias of 10 for channel 0
+        
+        axi_write("0001000", x"00000009"); -- Opcode 9: Cond
+        axi_write("0011000", x"00000000"); -- Addr A (Feature Map): 0
+        axi_write("0011100", x"00010000"); -- Addr B (Vector): 16384*4
+        axi_write("0100000", x"00030000"); -- Addr Out: 49152*4
+        
+        axi_write("0000000", x"00000001"); -- Start
+        wait until interrupt = '1';
+        
+        report "Conditioning Completed. Checking result at RAM[49152]...";
+        -- First pixel should be 0 + 10 = 10 (x"A")
+        assert system_memory(49152) = x"0000000A" report "Error: Conditioning output incorrect! Expected 10, got " & integer'image(to_integer(unsigned(system_memory(49152)))) severity error;
+
         report "Simulation Success: VHDL aligned with OpenCL Memory-Mapped Parameters.";
         wait;
     end process;

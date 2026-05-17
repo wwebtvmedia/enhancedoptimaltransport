@@ -26,6 +26,7 @@ public:
     cl_kernel pixel_shuffle_kernel = nullptr;
     cl_kernel tanh_kernel = nullptr;
     cl_kernel silu_kernel = nullptr;
+    cl_kernel broadcast_add_kernel = nullptr;
 
     void init() {
         uint32_t num_platforms;
@@ -83,6 +84,7 @@ public:
         pixel_shuffle_kernel = create_k("pixel_shuffle");
         tanh_kernel = create_k("tanh_activation");
         silu_kernel = create_k("silu_activation");
+        broadcast_add_kernel = create_k("broadcast_add_vector");
         
         std::cout << "[OpenCL] Kernels created successfully." << std::endl;
     }
@@ -95,6 +97,7 @@ public:
         if (pixel_shuffle_kernel) clReleaseKernel(pixel_shuffle_kernel);
         if (tanh_kernel) clReleaseKernel(tanh_kernel);
         if (silu_kernel) clReleaseKernel(silu_kernel);
+        if (broadcast_add_kernel) clReleaseKernel(broadcast_add_kernel);
         if (program) clReleaseProgram(program);
         if (queue) clReleaseCommandQueue(queue);
         if (context) clReleaseContext(context);
@@ -108,6 +111,17 @@ void run_silu(OpenCLEngine& engine, cl_mem data, int n) {
     clSetKernelArg(engine.silu_kernel, 2, sizeof(int), &n);
     size_t global = (size_t)n;
     clEnqueueNDRangeKernel(engine.queue, engine.silu_kernel, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+}
+
+void run_conditioning(OpenCLEngine& engine, cl_mem feature_map, cl_mem embedding, int channels, int h, int w) {
+    if (!engine.broadcast_add_kernel) return;
+    clSetKernelArg(engine.broadcast_add_kernel, 0, sizeof(cl_mem), &feature_map);
+    clSetKernelArg(engine.broadcast_add_kernel, 1, sizeof(cl_mem), &embedding);
+    clSetKernelArg(engine.broadcast_add_kernel, 2, sizeof(int), &channels);
+    clSetKernelArg(engine.broadcast_add_kernel, 3, sizeof(int), &h);
+    clSetKernelArg(engine.broadcast_add_kernel, 4, sizeof(int), &w);
+    size_t global[3] = { (size_t)w, (size_t)h, (size_t)channels };
+    clEnqueueNDRangeKernel(engine.queue, engine.broadcast_add_kernel, 3, nullptr, global, nullptr, 0, nullptr, nullptr);
 }
 
 void run_conv(OpenCLEngine& engine, cl_mem in, cl_mem out, int in_c, int out_c, int in_h, int in_w, int k_h, int k_w) {
@@ -172,14 +186,20 @@ void execute_drift(OpenCLEngine& engine, cl_mem d_z, cl_mem d_out, int channels,
     clReleaseMemObject(d_h2);
 }
 
-void execute_generator(OpenCLEngine& engine, cl_mem d_z, cl_mem d_out, int z_c, int h, int w) {
-    std::cout << "[Generator] Executing Generator Network..." << std::endl;
+void execute_generator(OpenCLEngine& engine, cl_mem d_z, cl_mem d_out, cl_mem d_emb, int z_c, int h, int w) {
+    std::cout << "[Generator] Executing Class-Conditioned Generator Network (Horse)..." << std::endl;
     int c1 = 256, c2 = 128, c3 = 64;
     cl_mem d_h1 = clCreateBuffer(engine.context, CL_MEM_READ_WRITE, 512 * h * w * sizeof(float), nullptr, nullptr);
     cl_mem d_up1 = clCreateBuffer(engine.context, CL_MEM_READ_WRITE, c1 * (h*2) * (w*2) * sizeof(float), nullptr, nullptr);
     cl_mem d_up2 = clCreateBuffer(engine.context, CL_MEM_READ_WRITE, c2 * (h*4) * (w*4) * sizeof(float), nullptr, nullptr);
     cl_mem d_up3 = clCreateBuffer(engine.context, CL_MEM_READ_WRITE, c3 * (h*8) * (w*8) * sizeof(float), nullptr, nullptr);
+    
+    // Initial Latent Processing
     run_conv(engine, d_z, d_h1, z_c, 512, h, w, 3, 3);
+    
+    // Apply Label Conditioning (Simplification: add first 128 values of embedding to first 128 channels)
+    run_conditioning(engine, d_h1, d_emb, 128, h, w);
+
     run_subpixel_upsample(engine, d_h1, d_up1, 512, c1, h, w);
     run_subpixel_upsample(engine, d_up1, d_up2, c1, c2, h*2, w*2);
     run_subpixel_upsample(engine, d_up2, d_up3, c2, c3, h*4, w*4);
@@ -231,6 +251,17 @@ void save_ppm(const std::string& filename, const std::vector<float>& data, int w
     std::cout << "[IO] Saved: " << filename << std::endl;
 }
 
+std::vector<float> load_binary(const std::string& filename) {
+    std::ifstream f(filename, std::ios::binary);
+    if (!f.is_open()) throw std::runtime_error("Could not open " + filename);
+    f.seekg(0, std::ios::end);
+    size_t size = f.tellg();
+    f.seekg(0, std::ios::beg);
+    std::vector<float> data(size / sizeof(float));
+    f.read((char*)data.data(), size);
+    return data;
+}
+
 void execute_model_pipeline(OpenCLEngine& engine, std::vector<float>& output_image) {
     int z_c = 8, z_h = 12, z_w = 12, img_size = 96;
     size_t z_size = z_c * z_h * z_w;
@@ -242,16 +273,31 @@ void execute_model_pipeline(OpenCLEngine& engine, std::vector<float>& output_ima
             }
         }
     }
+    
+    // Load Horse Embedding
+    std::vector<float> h_emb;
+    try {
+        h_emb = load_binary("horse_embedding.bin");
+        std::cout << "[IO] Loaded horse embedding (128 dims)." << std::endl;
+    } catch (...) {
+        std::cout << "[IO] Warning: horse_embedding.bin not found, using zeros." << std::endl;
+        h_emb.assign(128, 0.0f);
+    }
+
     cl_mem d_z = clCreateBuffer(engine.context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, z_size * sizeof(float), h_z.data(), nullptr);
+    cl_mem d_emb = clCreateBuffer(engine.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, h_emb.size() * sizeof(float), h_emb.data(), nullptr);
     cl_mem d_drift = clCreateBuffer(engine.context, CL_MEM_READ_WRITE, z_size * sizeof(float), nullptr, nullptr);
     cl_mem d_img = clCreateBuffer(engine.context, CL_MEM_READ_WRITE, 3 * img_size * img_size * sizeof(float), nullptr, nullptr);
+    
     execute_drift(engine, d_z, d_drift, z_c, z_h, z_w);
-    execute_generator(engine, d_z, d_img, z_c, z_h, z_w);
+    execute_generator(engine, d_z, d_img, d_emb, z_c, z_h, z_w);
+    
     clFinish(engine.queue);
     output_image.resize(3 * img_size * img_size);
     clEnqueueReadBuffer(engine.queue, d_img, CL_TRUE, 0, output_image.size() * sizeof(float), output_image.data(), 0, nullptr, nullptr);
-    save_ppm("output_full_pipeline.ppm", output_image, img_size, img_size, 3);
-    clReleaseMemObject(d_z); clReleaseMemObject(d_drift); clReleaseMemObject(d_img);
+    save_ppm("output_horse_generation.ppm", output_image, img_size, img_size, 3);
+    
+    clReleaseMemObject(d_z); clReleaseMemObject(d_emb); clReleaseMemObject(d_drift); clReleaseMemObject(d_img);
 }
 
 class VulkanFrontend {

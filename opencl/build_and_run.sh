@@ -12,8 +12,9 @@ echo "Compiling..."
 make -j$(nproc)
 
 if [ $? -eq 0 ]; then
-    echo "Build successful. Copying dsp_imp.cl to build directory..."
+    echo "Build successful. Copying assets..."
     cp ../dsp_imp.cl .
+    cp ../../horse_embedding.bin . 2>/dev/null || true
     
     echo "Running inference_app..."
     ./inference_app

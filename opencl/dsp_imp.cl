@@ -245,31 +245,18 @@ kernel void softmax_op(global const float* in, global float* out, int inner_dim,
     }
 }
 
-// --- 9. Tensor Manipulation: Pixel Shuffle ---
-
-kernel void pixel_shuffle(
-    global const float* input,
-    global float* output,
-    int upscale_factor,
-    int in_c, int in_h, int in_w)
+// --- 10. Label Conditioning: Broadcast Addition ---
+kernel void broadcast_add_vector(
+    global float* feature_map,
+    global const float* vector,
+    int channels, int height, int width)
 {
-    int oc = get_global_id(2); // Output Channel
-    int oh = get_global_id(1); // Output Height
-    int ow = get_global_id(0); // Output Width
+    int c = get_global_id(2);
+    int y = get_global_id(1);
+    int x = get_global_id(0);
 
-    int out_h = in_h * upscale_factor;
-    int out_w = in_w * upscale_factor;
-    int out_c = in_c / (upscale_factor * upscale_factor);
-
-    if (oc < out_c && oh < out_h && ow < out_w) {
-        int ih = oh / upscale_factor;
-        int iw = ow / upscale_factor;
-        int r = upscale_factor;
-        
-        // PixelShuffle formula: 
-        // ic = oc * r^2 + (oh % r) * r + (ow % r)
-        int ic = oc * (r * r) + (oh % r) * r + (ow % r);
-        
-        output[(oc * out_h + oh) * out_w + ow] = input[(ic * in_h + ih) * in_w + iw];
+    if (c < channels && y < height && x < width) {
+        // Add the channel-specific component of the vector to every pixel
+        feature_map[(c * height + y) * width + x] += vector[c];
     }
 }

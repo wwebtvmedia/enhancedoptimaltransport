@@ -6,10 +6,10 @@ use IEEE.NUMERIC_STD.ALL;
 -- DSP Hardware Accelerator (Ported from dsp_imp.cl)
 -- 
 -- Features:
--- - AXI4-Lite Control Interface (expanded for Conv2D/PixelShuffle)
+-- - AXI4-Lite Control Interface (expanded for Conv2D/PixelShuffle/Cond)
 -- - AXI4 Master DMA Interface for fetching and storing data/parameters
--- - All Parameters (Weights, Bias) fetched from emulated RAM
--- - Support for: Add, Sub, Mul, MAC, Quantize, PixelShuffle, SiLU, Conv2D
+-- - All Parameters (Weights, Bias, Embeddings) fetched from emulated RAM
+-- - Support for: Add, Sub, Mul, MAC, Quantize, PixelShuffle, SiLU, Conv2D, Cond
 -- =========================================================================
 
 entity dsp_accelerator is
@@ -187,6 +187,10 @@ begin
                             temp_idx := resize(temp_idx * resize(unsigned(reg_in_w(15 downto 0)), 32), 32);
                             temp_idx := temp_idx + resize(ow_cnt + kw_cnt, 32);
                             addr_v := unsigned(reg_addr_a) + shift_left(temp_idx, 2);
+                        elsif reg_opcode(3 downto 0) = "1001" then -- Condition (Opcode 9)
+                            temp_idx := resize(resize(oc_cnt, 32) * resize(unsigned(reg_in_h(15 downto 0)), 32) * resize(unsigned(reg_in_w(15 downto 0)), 32), 32);
+                            temp_idx := temp_idx + resize(resize(oh_cnt, 32) * resize(unsigned(reg_in_w(15 downto 0)), 32), 32) + resize(ow_cnt, 32);
+                            addr_v := unsigned(reg_addr_a) + shift_left(temp_idx, 2);
                         elsif reg_opcode(3 downto 0) = "0101" then -- PixelShuffle
                             r_v := to_integer(unsigned(reg_upscale));
                             if r_v = 0 then r_v := 1; end if;
@@ -201,12 +205,18 @@ begin
                         if m_axi_arready = '1' then
                             data_a <= signed(m_axi_rdata); m_axi_arvalid <= '0';
                             if reg_opcode(3 downto 0) = "1000" then current_state <= FETCH_W;
+                            elsif reg_opcode(3 downto 0) = "1001" then current_state <= FETCH_B;
                             elsif reg_opcode(3 downto 0) = "0101" or reg_opcode(3 downto 0) = "0110" then current_state <= EXECUTE;
                             else current_state <= FETCH_B; end if;
                         end if;
 
                     when FETCH_B =>
-                        m_axi_araddr <= std_logic_vector(unsigned(reg_addr_b) + shift_left(elem_cnt, 2));
+                        if reg_opcode(3 downto 0) = "1001" then
+                            addr_v := unsigned(reg_addr_b) + shift_left(resize(oc_cnt, 32), 2);
+                        else
+                            addr_v := unsigned(reg_addr_b) + shift_left(elem_cnt, 2);
+                        end if;
+                        m_axi_araddr <= std_logic_vector(addr_v);
                         m_axi_arvalid <= '1';
                         if m_axi_arready = '1' then data_b <= signed(m_axi_rdata); m_axi_arvalid <= '0'; current_state <= EXECUTE; end if;
 
@@ -220,7 +230,7 @@ begin
 
                     when EXECUTE =>
                         case reg_opcode(3 downto 0) is
-                            when "0000" => data_out <= data_a + data_b; -- Add
+                            when "0000" | "1001" => data_out <= data_a + data_b; -- Add / Cond
                             when "0010" => data_out <= resize(data_a * data_b, 32); -- Mul
                             when "0101" => data_out <= data_a; -- Shuffle
                             when "0110" => if data_a > 0 then data_out <= data_a; else data_out <= (others => '0'); end if;

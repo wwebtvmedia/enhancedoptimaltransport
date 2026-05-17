@@ -12,8 +12,9 @@ echo "[Pi5] Compiling with 4 cores..."
 make -j4
 
 if [ $? -eq 0 ]; then
-    echo "[Pi5] Build successful. Copying kernels..."
+    echo "[Pi5] Build successful. Copying kernels and assets..."
     cp ../dsp_imp.cl .
+    cp ../../horse_embedding.bin . 2>/dev/null || true
     
     echo "----------------------------------------------------"
     echo "[Pi5] Running inference_app..."
