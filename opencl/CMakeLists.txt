@@ -4,29 +4,44 @@ project(DSP_Inference_Engine)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-# Find OpenCL
+# --- 1. Robust OpenCL Discovery ---
+# Try standard CMake find_package
 find_package(OpenCL)
 
-# Fallback to PkgConfig if find_package fails (common on some ARM distros)
+# If not found, try PkgConfig (without REQUIRED to avoid crashing)
 if(NOT OpenCL_FOUND)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(OpenCL REQUIRED OpenCL)
-    set(OpenCL_INCLUDE_DIRS ${OpenCL_INCLUDE_DIRS})
-    set(OpenCL_LIBRARIES ${OpenCL_LIBRARIES})
+    find_package(PkgConfig)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(OCL_PKG OpenCL)
+        if(OCL_PKG_FOUND)
+            set(OpenCL_INCLUDE_DIRS ${OCL_PKG_INCLUDE_DIRS})
+            set(OpenCL_LIBRARIES ${OCL_PKG_LIBRARIES})
+            set(OpenCL_FOUND TRUE)
+        endif()
+    endif()
 endif()
 
-# Explicitly search in common Pi paths if still not found
-if(NOT OpenCL_INCLUDE_DIRS)
+# Final Fallback: Manual search in ARM/Pi common paths
+if(NOT OpenCL_FOUND)
+    message(STATUS "[OpenCL] Standard discovery failed. Searching manually...")
     find_path(OpenCL_INCLUDE_DIR CL/cl.h PATHS /usr/include /usr/local/include)
-    find_library(OpenCL_LIBRARY NAMES OpenCL PATHS /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf)
-    set(OpenCL_INCLUDE_DIRS ${OpenCL_INCLUDE_DIR})
-    set(OpenCL_LIBRARIES ${OpenCL_LIBRARY})
+    find_library(OpenCL_LIBRARY NAMES OpenCL PATHS /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib)
+    
+    if(OpenCL_INCLUDE_DIR AND OpenCL_LIBRARY)
+        set(OpenCL_INCLUDE_DIRS ${OpenCL_INCLUDE_DIR})
+        set(OpenCL_LIBRARIES ${OpenCL_LIBRARY})
+        set(OpenCL_FOUND TRUE)
+        message(STATUS "[OpenCL] Found manually at ${OpenCL_LIBRARY}")
+    endif()
 endif()
 
-# Find Vulkan
-find_package(Vulkan REQUIRED)
+# Mandatory check
+if(NOT OpenCL_FOUND)
+    message(FATAL_ERROR "Could NOT find OpenCL. Please run ./setup_pi5.sh first.")
+endif()
 
-# Find GLFW (using pkg-config or standard search)
+# --- 2. Vulkan & GLFW ---
+find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
 
 # Add executable
